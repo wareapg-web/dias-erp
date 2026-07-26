@@ -24,8 +24,29 @@ import {
   earningsToDb,
   earningsTotal,
 } from '../lib/techEarnings'
+import {
+  AGREEMENT_TYPES,
+  agreementRpcArgs,
+  agreementTypeLabel,
+  emptyAgreementForm,
+  formatAgreementAmount,
+} from '../lib/techAgreements'
+import {
+  PAYMENT_TYPES,
+  emptyPaymentForm,
+  formatPaymentAmount,
+  paymentToDb,
+  paymentTypeLabel,
+} from '../lib/techPayments'
+import {
+  computeLedgerBalances,
+  formatLedgerAmount,
+  ledgerTypeLabel,
+  monthDateRange,
+} from '../lib/techLedger'
 import { employmentLabel, paymentMethodLabel } from '../lib/personnel'
 import PersonnelPanel from './PersonnelPanel'
+import MovementModal from './MovementModal'
 
 export default function TechAnalysisModal({
   tech,
@@ -64,6 +85,25 @@ export default function TechAnalysisModal({
   const [earningsError, setEarningsError] = useState(null)
   const [earningsMissing, setEarningsMissing] = useState(false)
   const [earningsDirty, setEarningsDirty] = useState(false)
+  const [agreements, setAgreements] = useState([])
+  const [agreementsLoading, setAgreementsLoading] = useState(false)
+  const [agreementsSaving, setAgreementsSaving] = useState(false)
+  const [agreementsError, setAgreementsError] = useState(null)
+  const [agreementsMissing, setAgreementsMissing] = useState(false)
+  const [agreementForm, setAgreementForm] = useState(emptyAgreementForm)
+  const [payments, setPayments] = useState([])
+  const [paymentsLoading, setPaymentsLoading] = useState(false)
+  const [paymentsSaving, setPaymentsSaving] = useState(false)
+  const [paymentsError, setPaymentsError] = useState(null)
+  const [paymentsMissing, setPaymentsMissing] = useState(false)
+  const [paymentForm, setPaymentForm] = useState(emptyPaymentForm)
+  const [ledgerRows, setLedgerRows] = useState([])
+  const [ledgerLoading, setLedgerLoading] = useState(false)
+  const [ledgerError, setLedgerError] = useState(null)
+  const [ledgerMissing, setLedgerMissing] = useState(false)
+  const [ledgerTick, setLedgerTick] = useState(0)
+  const [movementOpen, setMovementOpen] = useState(false)
+  const [selectedRowData, setSelectedRowData] = useState(null)
 
   useEffect(() => {
     setAnalysisYear(initialYear)
@@ -194,6 +234,176 @@ export default function TechAnalysisModal({
       cancelled = true
     }
   }, [tech?.id])
+
+  const loadAgreements = async () => {
+    if (!tech?.id) {
+      setAgreements([])
+      return
+    }
+    setAgreementsLoading(true)
+    setAgreementsError(null)
+    try {
+      const { data, error } = await diasClient
+        .from('tech_agreements')
+        .select('*')
+        .eq('tech_id', String(tech.id))
+        .eq('is_active', true)
+        .order('type_code', { ascending: true })
+
+      if (error) {
+        setAgreementsMissing(isMissingTableError(error))
+        setAgreementsError(
+          formatSupabaseError(error, { table: 'tech_agreements', clientLabel: 'DIAS ERP' })
+        )
+        setAgreements([])
+      } else {
+        setAgreementsMissing(false)
+        setAgreements(data || [])
+      }
+    } catch (err) {
+      setAgreementsMissing(isMissingTableError(err))
+      setAgreementsError(
+        formatSupabaseError(err, { table: 'tech_agreements', clientLabel: 'DIAS ERP' })
+      )
+      setAgreements([])
+    } finally {
+      setAgreementsLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    setAgreementForm(emptyAgreementForm())
+    loadAgreements()
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- reload when tech changes
+  }, [tech?.id])
+
+  const loadPayments = async () => {
+    if (!tech?.id) {
+      setPayments([])
+      return
+    }
+    setPaymentsLoading(true)
+    setPaymentsError(null)
+    try {
+      const { data, error } = await diasClient
+        .from('payment_entries')
+        .select('*')
+        .eq('tech_id', String(tech.id))
+        .order('payment_date', { ascending: false })
+        .order('created_at', { ascending: false })
+
+      if (error) {
+        setPaymentsMissing(isMissingTableError(error))
+        setPaymentsError(
+          formatSupabaseError(error, { table: 'payment_entries', clientLabel: 'DIAS ERP' })
+        )
+        setPayments([])
+      } else {
+        setPaymentsMissing(false)
+        setPayments(data || [])
+      }
+    } catch (err) {
+      setPaymentsMissing(isMissingTableError(err))
+      setPaymentsError(
+        formatSupabaseError(err, { table: 'payment_entries', clientLabel: 'DIAS ERP' })
+      )
+      setPayments([])
+    } finally {
+      setPaymentsLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    setPaymentForm(emptyPaymentForm())
+    loadPayments()
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- reload when tech changes
+  }, [tech?.id])
+
+  useEffect(() => {
+    if (!tech?.id) {
+      setLedgerRows([])
+      return
+    }
+
+    let cancelled = false
+
+    async function loadLedger() {
+      setLedgerLoading(true)
+      setLedgerError(null)
+      const { from, to } = monthDateRange(analysisYear, selectedMonth)
+      try {
+        const { data, error } = await diasClient
+          .from('tech_ledger_view')
+          .select('*')
+          .eq('tech_id', String(tech.id))
+          .gte('entry_date', from)
+          .lte('entry_date', to)
+          .order('entry_date', { ascending: false })
+          .order('created_at', { ascending: false })
+
+        if (cancelled) return
+
+        if (error) {
+          setLedgerMissing(isMissingTableError(error) || String(error.message || '').includes('tech_ledger'))
+          setLedgerError(
+            formatSupabaseError(error, { table: 'tech_ledger_view', clientLabel: 'DIAS ERP' })
+          )
+          setLedgerRows([])
+        } else {
+          setLedgerMissing(false)
+          setLedgerRows(data || [])
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setLedgerMissing(isMissingTableError(err))
+          setLedgerError(
+            formatSupabaseError(err, { table: 'tech_ledger_view', clientLabel: 'DIAS ERP' })
+          )
+          setLedgerRows([])
+        }
+      } finally {
+        if (!cancelled) setLedgerLoading(false)
+      }
+    }
+
+    loadLedger()
+    return () => {
+      cancelled = true
+    }
+  }, [tech?.id, analysisYear, selectedMonth, payments.length, ledgerTick])
+
+  const openMovementCreate = () => {
+    setSelectedRowData(null)
+    setMovementOpen(true)
+  }
+
+  const openMovementEdit = (row) => {
+    setSelectedRowData(row)
+    setMovementOpen(true)
+  }
+
+  const closeMovement = () => {
+    setMovementOpen(false)
+    setSelectedRowData(null)
+  }
+
+  const handleMovementSaved = async ({ wasPayment } = {}) => {
+    setLedgerTick((n) => n + 1)
+    if (wasPayment) await loadPayments()
+  }
+
+  const ledgerBalances = useMemo(() => computeLedgerBalances(ledgerRows), [ledgerRows])
+
+  const LEDGER_MIN_ROWS = 12
+  const ledgerDisplayRows = useMemo(() => {
+    const pad = Math.max(0, LEDGER_MIN_ROWS - (ledgerRows?.length || 0))
+    const empties = Array.from({ length: pad }, (_, i) => ({
+      __empty: true,
+      id: null,
+      _padKey: `empty-${i}`,
+    }))
+    return [...(ledgerRows || []), ...empties]
+  }, [ledgerRows])
 
   const monthlyPayrolls = useMemo(() => {
     if (!tech) return []
@@ -344,13 +554,92 @@ export default function TechAnalysisModal({
 
   const earningsSum = earningsTotal(earningsForm)
 
+  const patchAgreement = (field, value) => {
+    setAgreementForm((prev) => ({ ...prev, [field]: value }))
+  }
+
+  const handleSaveAgreement = async (e) => {
+    e?.preventDefault?.()
+    if (!tech?.id || agreementsMissing) return
+    setAgreementsSaving(true)
+    setAgreementsError(null)
+    try {
+      const args = agreementRpcArgs(agreementForm, tech.id)
+      const { data, error } = await diasClient.rpc('add_tech_agreement', args)
+      if (error) throw error
+      void data
+      setAgreementForm((prev) => ({
+        ...emptyAgreementForm(),
+        type_code: prev.type_code,
+        valid_from: new Date().toISOString().slice(0, 10),
+      }))
+      await loadAgreements()
+    } catch (err) {
+      const msg = String(err?.message || err || '')
+      if (msg.includes('add_tech_agreement') || msg.includes('function') || isMissingTableError(err)) {
+        setAgreementsMissing(true)
+        setAgreementsError(
+          'Λείπει πίνακας/RPC tech_agreements. Τρέξε supabase/03_tech_agreements.sql στο DIAS.'
+        )
+      } else if (msg.includes('foreign key') || msg.includes('personnel')) {
+        setAgreementsError(
+          'Ο υπάλληλος πρέπει να υπάρχει στο DIAS personnel (tech_id). Αποθήκευσε/εισήγαγε πρώτα το προσωπικό.'
+        )
+      } else {
+        setAgreementsError(
+          formatSupabaseError(err, { table: 'tech_agreements', clientLabel: 'DIAS ERP' }) || msg
+        )
+      }
+    } finally {
+      setAgreementsSaving(false)
+    }
+  }
+
+  const patchPayment = (field, value) => {
+    setPaymentForm((prev) => ({ ...prev, [field]: value }))
+  }
+
+  const handleSavePayment = async (e) => {
+    e?.preventDefault?.()
+    if (!tech?.id || paymentsMissing) return
+    setPaymentsSaving(true)
+    setPaymentsError(null)
+    try {
+      const payload = paymentToDb(paymentForm, tech)
+      const { error } = await diasClient.from('payment_entries').insert(payload)
+      if (error) throw error
+      setPaymentForm(emptyPaymentForm())
+      await loadPayments()
+      setLedgerTick((n) => n + 1)
+    } catch (err) {
+      const msg = String(err?.message || err || '')
+      if (isMissingTableError(err) || msg.includes('payment_date') || msg.includes('payment_type')) {
+        setPaymentsMissing(true)
+        setPaymentsError(
+          'Λείπουν στήλες payment_entries. Τρέξε supabase/04_payment_entries.sql στο DIAS.'
+        )
+      } else if (msg.includes('foreign key') || msg.includes('personnel')) {
+        setPaymentsError(
+          'Ο υπάλληλος πρέπει να υπάρχει στο DIAS personnel (tech_id).'
+        )
+      } else {
+        setPaymentsError(
+          formatSupabaseError(err, { table: 'payment_entries', clientLabel: 'DIAS ERP' }) || msg
+        )
+      }
+    } finally {
+      setPaymentsSaving(false)
+    }
+  }
+
   const showMatrix = activeTab === 'analysis'
   const showMovements = activeTab === 'movements'
   const showTechDropdown = !embedded && Array.isArray(techList) && techList.length > 0 && onTechChange
   const innerTabs = [
     { id: 'analysis', label: 'Οικονομική Ανάλυση' },
     { id: 'earnings', label: 'Αποδοχές' },
-    { id: 'payments', label: 'Λίστα Πληρωμών' },
+    { id: 'agreements', label: 'Συμφωνίες (Agreements)' },
+    { id: 'payments', label: 'Πληρωμές (Payments)' },
     { id: 'movements', label: 'Αναλυτικά στοιχεία' },
   ]
 
@@ -677,9 +966,20 @@ export default function TechAnalysisModal({
               </div>
             </div>
 
-            {/* Πινακάκι κινήσεων παλιού ERP — layout· λογική ανά κουμπί/tab αργότερα */}
+            {/* Μηνιαία Ανάλυση — unified ledger (payroll_entries ∪ payment_entries) */}
             <div className="flex flex-col gap-3 lg:flex-row lg:items-stretch">
               <div className="min-w-0 flex-1 overflow-hidden rounded-2xl border border-white/10 bg-slate-900/75 shadow-2xl backdrop-blur-md">
+                {ledgerMissing && (
+                  <div className="border-b border-amber-500/30 bg-amber-500/10 px-4 py-2 text-xs text-amber-100">
+                    Λείπει το <code className="rounded bg-black/30 px-1">tech_ledger_view</code>. Τρέξε{' '}
+                    <code className="rounded bg-black/30 px-1">supabase/05_payroll_entries_and_ledger.sql</code>.
+                  </div>
+                )}
+                {ledgerError && !ledgerMissing && (
+                  <div className="border-b border-rose-500/30 bg-rose-500/10 px-4 py-2 text-xs text-rose-200">
+                    {ledgerError}
+                  </div>
+                )}
                 <div className="overflow-x-auto">
                   <table className="w-full min-w-[980px] border-collapse text-left text-sm">
                     <thead>
@@ -696,27 +996,102 @@ export default function TechAnalysisModal({
                       </tr>
                     </thead>
                     <tbody>
-                      <tr>
-                        <td colSpan={9} className="px-4 py-10 text-center text-sm text-slate-500">
-                          Κενό πινακάκι — η λογική εγγραφών θα συνδεθεί με τις οδηγίες σου.
-                        </td>
-                      </tr>
+                      {ledgerLoading && ledgerRows.length === 0
+                        ? Array.from({ length: LEDGER_MIN_ROWS }, (_, i) => (
+                            <tr key={`loading-${i}`} className="h-10 border-b border-slate-700/80">
+                              {Array.from({ length: 9 }, (_, c) => (
+                                <td key={c} className="px-3 py-0 text-slate-700">
+                                  &nbsp;
+                                </td>
+                              ))}
+                            </tr>
+                          ))
+                        : ledgerDisplayRows.map((row) => {
+                            if (row.__empty) {
+                              return (
+                                <tr
+                                  key={row._padKey}
+                                  onDoubleClick={openMovementCreate}
+                                  title="Διπλό κλικ για νέα κίνηση"
+                                  className="h-10 cursor-pointer border-b border-slate-700/80 hover:bg-slate-800/50"
+                                >
+                                  {Array.from({ length: 9 }, (_, c) => (
+                                    <td key={c} className="px-3 py-0">
+                                      &nbsp;
+                                    </td>
+                                  ))}
+                                </tr>
+                              )
+                            }
+
+                            const isCredit = row.source === 'PAYMENT'
+                            return (
+                              <tr
+                                key={`${row.source}-${row.id}`}
+                                onDoubleClick={() => openMovementEdit(row)}
+                                title="Διπλό κλικ για επεξεργασία"
+                                className="h-10 cursor-pointer border-b border-slate-700/80 hover:bg-slate-800/50"
+                              >
+                                <td className="px-3 py-1.5 font-medium text-sky-300">
+                                  {row.entry_date
+                                    ? new Date(row.entry_date).toLocaleDateString('el-GR')
+                                    : ''}
+                                </td>
+                                <td
+                                  className={`px-3 py-1.5 font-semibold ${
+                                    isCredit ? 'text-emerald-200' : 'text-rose-200'
+                                  }`}
+                                >
+                                  {ledgerTypeLabel(row.type)}
+                                </td>
+                                <td className="max-w-[240px] truncate px-3 py-1.5 text-slate-300">
+                                  {row.description || ''}
+                                </td>
+                                <td className="px-3 py-1.5 text-right font-mono text-slate-200">
+                                  {formatLedgerAmount(row.salary_debit)}
+                                </td>
+                                <td className="px-3 py-1.5 text-right font-mono text-emerald-100">
+                                  {formatLedgerAmount(row.salary_credit)}
+                                </td>
+                                <td className="px-3 py-1.5 text-right font-mono text-slate-200">
+                                  {formatLedgerAmount(row.other_debit)}
+                                </td>
+                                <td className="px-3 py-1.5 text-right font-mono text-emerald-100">
+                                  {formatLedgerAmount(row.other_credit)}
+                                </td>
+                                <td className="max-w-[120px] truncate px-3 py-1.5 text-slate-500">
+                                  {row.notes || ''}
+                                </td>
+                                <td className="whitespace-nowrap px-3 py-1.5 text-[11px] text-slate-500">
+                                  {row.created_at
+                                    ? new Date(row.created_at).toLocaleString('el-GR')
+                                    : ''}
+                                </td>
+                              </tr>
+                            )
+                          })}
                     </tbody>
                   </table>
                 </div>
 
                 <div className="flex flex-wrap gap-3 border-t border-white/10 bg-slate-950/50 px-3 py-2.5">
-                  <BalanceChip label="Υπόλοιπο" value={formatEuro(0)} />
-                  <BalanceChip label="Υπόλοιπο (1)" value={formatEuro(0)} />
-                  <BalanceChip label="Υπόλοιπο (2)" value={formatEuro(0)} />
+                  <BalanceChip label="Υπόλοιπο" value={formatEuro(ledgerBalances.balance)} />
+                  <BalanceChip label="Υπόλοιπο (1)" value={formatEuro(ledgerBalances.balance1)} />
+                  <BalanceChip label="Υπόλοιπο (2)" value={formatEuro(ledgerBalances.balance2)} />
                   <BalanceChip label="Έξτρα" value={formatEuro(0)} />
                   <BalanceChip label="Τιμολόγιο" value={formatEuro(0)} />
                 </div>
               </div>
 
               <aside className="flex shrink-0 flex-row gap-2 overflow-x-auto lg:w-36 lg:flex-col lg:overflow-visible">
+                <button
+                  type="button"
+                  onClick={openMovementCreate}
+                  className="shrink-0 rounded-xl border border-cyan-500/40 bg-cyan-500/15 px-3 py-2.5 text-left text-xs font-semibold text-cyan-100 transition hover:bg-cyan-500/25 lg:w-full"
+                >
+                  Εισαγωγή
+                </button>
                 {[
-                  'Εισαγωγή',
                   'Εμφάνιση',
                   'Διαγραφή',
                   'Πληρωμή',
@@ -727,7 +1102,11 @@ export default function TechAnalysisModal({
                   <button
                     key={label}
                     type="button"
-                    onClick={() => alert(`${label} — σύντομα με τις οδηγίες σου`)}
+                    onClick={() => {
+                      if (label === 'Εμφάνιση' && ledgerRows[0]) openMovementEdit(ledgerRows[0])
+                      else if (label === 'Πληρωμή') setActiveTab('payments')
+                      else alert(`${label} — σύντομα`)
+                    }}
                     className="shrink-0 rounded-xl border border-white/10 bg-slate-900/80 px-3 py-2.5 text-left text-xs font-semibold text-slate-200 transition hover:border-cyan-500/40 hover:bg-cyan-500/10 hover:text-cyan-100 lg:w-full"
                   >
                     {label}
@@ -735,6 +1114,14 @@ export default function TechAnalysisModal({
                 ))}
               </aside>
             </div>
+
+            <MovementModal
+              open={movementOpen}
+              selectedRowData={selectedRowData}
+              tech={tech}
+              onClose={closeMovement}
+              onSaved={handleMovementSaved}
+            />
           </>
         )}
 
@@ -916,39 +1303,330 @@ export default function TechAnalysisModal({
           </div>
         )}
 
-        {activeTab === 'payments' && (
-          <div className="overflow-hidden rounded-2xl border border-white/10 bg-slate-900/75 shadow-xl backdrop-blur-md">
-            <div className="border-b border-white/10 px-4 py-3">
-              <h3 className="text-sm font-semibold text-white">Λίστα Πληρωμών</h3>
-              <p className="text-xs text-slate-400">
-                Ιστορικό πληρωμών / εξοφλήσεων — η λογική θα συνδεθεί με τις οδηγίες σου.
-              </p>
+        {activeTab === 'agreements' && (
+          <div className="space-y-3">
+            {agreementsMissing && (
+              <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
+                Λείπει ο πίνακας / RPC <code className="rounded bg-black/30 px-1">tech_agreements</code>.
+                Τρέξε το SQL από{' '}
+                <code className="rounded bg-black/30 px-1">supabase/03_tech_agreements.sql</code> στο DIAS
+                SQL Editor.
+              </div>
+            )}
+            {agreementsError && !agreementsMissing && (
+              <div className="rounded-xl border border-rose-500/40 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
+                {agreementsError}
+              </div>
+            )}
+
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-start">
+              <div className="min-w-0 flex-1 overflow-hidden rounded-2xl border border-white/10 bg-slate-900/75 shadow-xl backdrop-blur-md">
+                <div className="border-b border-white/10 px-4 py-3">
+                  <h3 className="text-sm font-semibold text-white">Ενεργές συμφωνίες</h3>
+                  <p className="text-xs text-slate-400">
+                    Mirror APG EMPLOEE_MISTO — μόνο <code className="text-slate-300">is_active = true</code>. Νέα
+                    τιμή ίδιου τύπου απενεργοποιεί την παλιά (ιστορικό).
+                  </p>
+                </div>
+                {agreementsLoading ? (
+                  <div className="px-4 py-12 text-center text-slate-400">Φόρτωση συμφωνιών...</div>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full min-w-[560px] border-collapse text-left text-sm">
+                      <thead>
+                        <tr className="border-b border-white/10 bg-slate-950/60 text-[10px] uppercase tracking-wider text-slate-400">
+                          <th className="px-4 py-2.5 font-semibold">Τύπος</th>
+                          <th className="px-3 py-2.5 text-right font-semibold">Ποσό</th>
+                          <th className="px-3 py-2.5 text-right font-semibold">Από (up_from)</th>
+                          <th className="px-3 py-2.5 text-right font-semibold">Ελάχιστο</th>
+                          <th className="px-3 py-2.5 font-semibold">Ισχύει από</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {agreements.length === 0 ? (
+                          <tr>
+                            <td colSpan={5} className="px-4 py-10 text-center text-sm text-slate-500">
+                              Καμία ενεργή συμφωνία — πρόσθεσε από τη φόρμα δεξιά.
+                            </td>
+                          </tr>
+                        ) : (
+                          agreements.map((row) => (
+                            <tr
+                              key={row.id}
+                              className="border-b border-white/5 hover:bg-slate-800/40"
+                            >
+                              <td className="px-4 py-2.5 font-medium text-white">
+                                {agreementTypeLabel(row.type_code)}
+                                <span className="mt-0.5 block font-mono text-[10px] text-slate-500">
+                                  {row.type_code}
+                                </span>
+                              </td>
+                              <td className="px-3 py-2.5 text-right font-mono text-cyan-100">
+                                {formatAgreementAmount(row.amount)}
+                              </td>
+                              <td className="px-3 py-2.5 text-right font-mono text-slate-300">
+                                {row.up_from != null ? row.up_from : '—'}
+                              </td>
+                              <td className="px-3 py-2.5 text-right font-mono text-slate-300">
+                                {row.minimum != null ? row.minimum : '—'}
+                              </td>
+                              <td className="px-3 py-2.5 text-slate-300">
+                                {row.valid_from
+                                  ? new Date(row.valid_from).toLocaleDateString('el-GR')
+                                  : '—'}
+                              </td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+
+              <form
+                onSubmit={handleSaveAgreement}
+                className="w-full shrink-0 space-y-3 rounded-2xl border border-white/10 bg-slate-900/75 p-4 shadow-xl backdrop-blur-md lg:w-80"
+              >
+                <h3 className="text-sm font-semibold text-white">Νέα συμφωνία</h3>
+                <p className="text-[11px] text-slate-400">
+                  Αποθήκευση μέσω RPC <code className="text-slate-300">add_tech_agreement</code>
+                </p>
+
+                <div>
+                  <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                    Τύπος αμοιβής
+                  </label>
+                  <select
+                    value={agreementForm.type_code}
+                    onChange={(e) => patchAgreement('type_code', e.target.value)}
+                    disabled={agreementsMissing || agreementsSaving}
+                    className="mt-1 w-full rounded-xl border border-white/10 bg-slate-950/60 px-3 py-2 text-sm text-white disabled:opacity-50"
+                  >
+                    {AGREEMENT_TYPES.map((t) => (
+                      <option key={t.value} value={t.value}>
+                        {t.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                    Ποσό (€)
+                  </label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    required
+                    value={agreementForm.amount}
+                    onChange={(e) => patchAgreement('amount', e.target.value)}
+                    disabled={agreementsMissing || agreementsSaving}
+                    className="mt-1 w-full rounded-xl border border-white/10 bg-slate-950/60 px-3 py-2 font-mono text-sm text-white disabled:opacity-50"
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                      Από (up_from)
+                    </label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      value={agreementForm.up_from}
+                      onChange={(e) => patchAgreement('up_from', e.target.value)}
+                      disabled={agreementsMissing || agreementsSaving}
+                      placeholder="π.χ. 8"
+                      className="mt-1 w-full rounded-xl border border-white/10 bg-slate-950/60 px-3 py-2 font-mono text-sm text-white placeholder:text-slate-600 disabled:opacity-50"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                      Ελάχιστο
+                    </label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      value={agreementForm.minimum}
+                      onChange={(e) => patchAgreement('minimum', e.target.value)}
+                      disabled={agreementsMissing || agreementsSaving}
+                      className="mt-1 w-full rounded-xl border border-white/10 bg-slate-950/60 px-3 py-2 font-mono text-sm text-white disabled:opacity-50"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                    Ισχύει από
+                  </label>
+                  <input
+                    type="date"
+                    value={agreementForm.valid_from}
+                    onChange={(e) => patchAgreement('valid_from', e.target.value)}
+                    disabled={agreementsMissing || agreementsSaving}
+                    className="mt-1 w-full rounded-xl border border-white/10 bg-slate-950/60 px-3 py-2 text-sm text-white disabled:opacity-50"
+                  />
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={agreementsMissing || agreementsSaving || !tech}
+                  className="w-full rounded-xl border border-emerald-500/40 bg-emerald-500/20 px-4 py-2.5 text-sm font-bold text-emerald-100 transition hover:bg-emerald-500/30 disabled:opacity-50"
+                >
+                  {agreementsSaving ? 'Αποθήκευση...' : 'Αποθήκευση συμφωνίας'}
+                </button>
+              </form>
             </div>
-            <div className="overflow-x-auto">
-              <table className="w-full min-w-[1100px] border-collapse text-left text-sm">
-                <thead>
-                  <tr className="border-b border-white/10 bg-slate-950/60 text-[10px] uppercase tracking-wider text-slate-400">
-                    <th className="px-3 py-2.5 font-semibold">Ημερομηνία</th>
-                    <th className="px-3 py-2.5 font-semibold">Τύπος</th>
-                    <th className="px-3 py-2.5 text-center font-semibold">Μήνας</th>
-                    <th className="px-3 py-2.5 text-center font-semibold">Έτος</th>
-                    <th className="min-w-[140px] px-3 py-2.5 font-semibold">Περιγραφή</th>
-                    <th className="px-3 py-2.5 text-right font-semibold">Μισθός Χρ.</th>
-                    <th className="px-3 py-2.5 text-right font-semibold">Μισθός Πιστ.</th>
-                    <th className="px-3 py-2.5 text-right font-semibold">Λοιπά Χρ.</th>
-                    <th className="px-3 py-2.5 text-right font-semibold">Λοιπά Πιστ.</th>
-                    <th className="px-3 py-2.5 font-semibold">Notes</th>
-                    <th className="px-3 py-2.5 font-semibold">Εισαγωγή</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr>
-                    <td colSpan={11} className="px-4 py-12 text-center text-sm text-slate-500">
-                      Δεν υπάρχουν εγγραφές ακόμα — θα γεμίσει όταν δέσουμε τη λογική πληρωμών.
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
+          </div>
+        )}
+
+        {activeTab === 'payments' && (
+          <div className="space-y-3">
+            {paymentsMissing && (
+              <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
+                Λείπουν στήλες / πίνακας <code className="rounded bg-black/30 px-1">payment_entries</code>.
+                Τρέξε το SQL από{' '}
+                <code className="rounded bg-black/30 px-1">supabase/04_payment_entries.sql</code> στο DIAS.
+              </div>
+            )}
+            {paymentsError && !paymentsMissing && (
+              <div className="rounded-xl border border-rose-500/40 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
+                {paymentsError}
+              </div>
+            )}
+
+            <form
+              onSubmit={handleSavePayment}
+              className="grid gap-3 rounded-2xl border border-white/10 bg-slate-900/75 p-4 shadow-xl backdrop-blur-md sm:grid-cols-2 lg:grid-cols-5"
+            >
+              <div>
+                <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                  Ημερομηνία
+                </label>
+                <input
+                  type="date"
+                  value={paymentForm.payment_date}
+                  onChange={(e) => patchPayment('payment_date', e.target.value)}
+                  disabled={paymentsMissing || paymentsSaving}
+                  className="mt-1 w-full rounded-xl border border-white/10 bg-slate-950/60 px-3 py-2 text-sm text-white disabled:opacity-50"
+                />
+              </div>
+              <div>
+                <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                  Ποσό (€)
+                </label>
+                <input
+                  type="number"
+                  step="0.01"
+                  required
+                  value={paymentForm.amount}
+                  onChange={(e) => patchPayment('amount', e.target.value)}
+                  disabled={paymentsMissing || paymentsSaving}
+                  className="mt-1 w-full rounded-xl border border-white/10 bg-slate-950/60 px-3 py-2 font-mono text-sm text-white disabled:opacity-50"
+                />
+              </div>
+              <div>
+                <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                  Τύπος πληρωμής
+                </label>
+                <select
+                  value={paymentForm.payment_type}
+                  onChange={(e) => patchPayment('payment_type', e.target.value)}
+                  disabled={paymentsMissing || paymentsSaving}
+                  className="mt-1 w-full rounded-xl border border-white/10 bg-slate-950/60 px-3 py-2 text-sm text-white disabled:opacity-50"
+                >
+                  {PAYMENT_TYPES.map((t) => (
+                    <option key={t.value} value={t.value}>
+                      {t.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="sm:col-span-2 lg:col-span-1">
+                <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                  Αιτιολογία / σχόλια
+                </label>
+                <input
+                  type="text"
+                  value={paymentForm.notes}
+                  onChange={(e) => patchPayment('notes', e.target.value)}
+                  disabled={paymentsMissing || paymentsSaving}
+                  placeholder="προαιρετικό"
+                  className="mt-1 w-full rounded-xl border border-white/10 bg-slate-950/60 px-3 py-2 text-sm text-white placeholder:text-slate-600 disabled:opacity-50"
+                />
+              </div>
+              <div className="flex items-end sm:col-span-2 lg:col-span-1">
+                <button
+                  type="submit"
+                  disabled={paymentsMissing || paymentsSaving || !tech}
+                  className="w-full rounded-xl border border-emerald-500/40 bg-emerald-500/20 px-4 py-2.5 text-sm font-bold text-emerald-100 transition hover:bg-emerald-500/30 disabled:opacity-50"
+                >
+                  {paymentsSaving ? 'Αποθήκευση...' : 'Καταχώρηση'}
+                </button>
+              </div>
+            </form>
+
+            <div className="overflow-hidden rounded-2xl border border-white/10 bg-slate-900/75 shadow-xl backdrop-blur-md">
+              <div className="border-b border-white/10 px-4 py-3">
+                <h3 className="text-sm font-semibold text-white">Ιστορικό πληρωμών</h3>
+                <p className="text-xs text-slate-400">Νεότερες πρώτα · πίνακας payment_entries</p>
+              </div>
+              {paymentsLoading ? (
+                <div className="px-4 py-12 text-center text-slate-400">Φόρτωση πληρωμών...</div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full min-w-[640px] border-collapse text-left text-sm">
+                    <thead>
+                      <tr className="border-b border-white/10 bg-slate-950/60 text-[10px] uppercase tracking-wider text-slate-400">
+                        <th className="px-4 py-2.5 font-semibold">Ημερομηνία</th>
+                        <th className="px-3 py-2.5 font-semibold">Τύπος</th>
+                        <th className="px-3 py-2.5 text-right font-semibold">Ποσό</th>
+                        <th className="px-3 py-2.5 font-semibold">Αιτιολογία</th>
+                        <th className="px-3 py-2.5 font-semibold">Καταχώρηση</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {payments.length === 0 ? (
+                        <tr>
+                          <td colSpan={5} className="px-4 py-10 text-center text-sm text-slate-500">
+                            Δεν υπάρχουν πληρωμές ακόμα.
+                          </td>
+                        </tr>
+                      ) : (
+                        payments.map((row) => (
+                          <tr
+                            key={row.id}
+                            className="border-b border-white/5 hover:bg-slate-800/40"
+                          >
+                            <td className="px-4 py-2.5 text-slate-200">
+                              {row.payment_date
+                                ? new Date(row.payment_date).toLocaleDateString('el-GR')
+                                : '—'}
+                            </td>
+                            <td className="px-3 py-2.5">
+                              <span className="rounded-lg border border-white/10 bg-white/5 px-2 py-0.5 text-xs font-semibold text-slate-200">
+                                {paymentTypeLabel(row.payment_type || row.entry_type)}
+                              </span>
+                            </td>
+                            <td className="px-3 py-2.5 text-right font-mono font-semibold text-cyan-100">
+                              {formatPaymentAmount(row.amount)}
+                            </td>
+                            <td className="max-w-[280px] truncate px-3 py-2.5 text-slate-400">
+                              {row.notes || row.description || '—'}
+                            </td>
+                            <td className="px-3 py-2.5 text-xs text-slate-500">
+                              {row.created_at
+                                ? new Date(row.created_at).toLocaleString('el-GR')
+                                : '—'}
+                            </td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </div>
           </div>
         )}
