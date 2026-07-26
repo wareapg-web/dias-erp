@@ -18,9 +18,17 @@
 
 Δημιουργεί:
 - `personnel` — κατάλογος υπαλλήλων DIAS
-- `tech_earnings` — tab Αποδοχές
+- `tech_earnings` — tab Αποδοχές (wide / bank)
+- `tech_agreements` — tab Συμφωνίες (ιστορικό rates, `03_tech_agreements.sql`)
 - `payrolls` — οριστική αποθήκευση μισθοδοσίας
-- `payment_entries` — λίστα πληρωμών / ledger
+- `payment_entries` — tab Πληρωμές (`04_payment_entries.sql`)
+
+Μετά το bootstrap τρέξε και:
+- `supabase/02_personnel_hr.sql`
+- `supabase/03_tech_agreements.sql`
+- `supabase/04_payment_entries.sql`
+- `supabase/05_payroll_entries_and_ledger.sql`
+- `supabase/06_transaction_types.sql`
 
 ## Βήμα 2 — Env
 
