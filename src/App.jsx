@@ -7,104 +7,37 @@ import {
   isMissingTableError,
   safeQuery,
 } from './lib/supabase'
-import {
-  buildMonthlyPayroll,
-  mapAssignmentRow,
-  mapDailyStatusRow,
-  mapJobRow,
-  mapTechRow,
-  payrollTechs,
-} from './lib/crewPayroll'
+import { mapTechRow } from './lib/crewPayroll'
+import { personnelAsTech, personnelFromDb } from './lib/personnel'
 import TechAnalysisModal from './components/TechAnalysisModal'
 import AdminLoginScreen from './components/AdminLoginScreen'
 import ErpWindow from './components/ErpWindow'
-
-const MONTHS = [
-  'Ιανουάριος',
-  'Φεβρουάριος',
-  'Μάρτιος',
-  'Απρίλιος',
-  'Μάιος',
-  'Ιούνιος',
-  'Ιούλιος',
-  'Αύγουστος',
-  'Σεπτέμβριος',
-  'Οκτώβριος',
-  'Νοέμβριος',
-  'Δεκέμβριος',
-]
-
-const ALL_TECHS = 'Όλοι'
 
 function formatPeriod(year, month) {
   return `${year}-${String(month).padStart(2, '0')}`
 }
 
-function exportMovementsCsv(rows, month, year) {
-  const header = [
-    'Ημερομηνία',
-    'Τεχνικός',
-    'Έργο/Κατάσταση',
-    'Φάση',
-    'Ώρες',
-    'Σύνολο ωρών',
-    'Νυχτερινά',
-    'Υπερωρίες',
-    'Αργίες/ΣΚ',
-  ]
-  const lines = [
-    header.join(';'),
-    ...rows.map((r) =>
-      [
-        r.dateIso,
-        r.tech,
-        `"${String(r.jobOrStatus || '').replace(/"/g, '""')}"`,
-        r.phase,
-        r.timeStart && r.timeEnd && r.timeStart !== '-'
-          ? `${r.timeStart} – ${r.timeEnd}`
-          : '',
-        r.workedHours ?? '',
-        r.nightHours ?? '',
-        r.overtime ?? '',
-        r.weekendHolidayHours ?? '',
-      ].join(';')
-    ),
-  ]
-  const blob = new Blob(['\ufeff' + lines.join('\n')], {
-    type: 'text/csv;charset=utf-8;',
-  })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = `misthodosia_${year}-${String(month).padStart(2, '0')}.csv`
-  a.click()
-  URL.revokeObjectURL(url)
-}
-
 export default function App() {
   const now = new Date()
   const [techs, setTechs] = useState([])
-  const [jobs, setJobs] = useState([])
-  const [assignments, setAssignments] = useState([])
-  const [dailyStatus, setDailyStatus] = useState([])
+  const [personnel, setPersonnel] = useState([])
   const [payrolls, setPayrolls] = useState([])
 
   const [loading, setLoading] = useState(true)
-  const [payrollsLoading, setPayrollsLoading] = useState(true)
   const [error, setError] = useState(null)
-  const [warnings, setWarnings] = useState([])
-  const [payrollsError, setPayrollsError] = useState(null)
   const [payrollsMissing, setPayrollsMissing] = useState(false)
+  const [personnelMissing, setPersonnelMissing] = useState(false)
+  const [personnelError, setPersonnelError] = useState(null)
 
-  const [selectedMonth, setSelectedMonth] = useState(now.getMonth() + 1)
-  const [selectedYear, setSelectedYear] = useState(now.getFullYear())
-  const [techFilter, setTechFilter] = useState(ALL_TECHS)
+  const [selectedMonth] = useState(now.getMonth() + 1)
+  const [selectedYear] = useState(now.getFullYear())
   const [saving, setSaving] = useState(false)
-  const [analysisTech, setAnalysisTech] = useState(null)
+  const [selectedPerson, setSelectedPerson] = useState(null)
+  const [listFilter, setListFilter] = useState('active')
+  const [typeFilter, setTypeFilter] = useState('all')
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [adminSession, setAdminSession] = useState(null)
   const [authLoading, setAuthLoading] = useState(true)
-  const [dataStats, setDataStats] = useState({ assignments: 0, dailyStatus: 0, jobs: 0 })
 
   const period = formatPeriod(selectedYear, selectedMonth)
 
@@ -126,76 +59,51 @@ export default function App() {
   }, [])
 
   const loadPayrolls = useCallback(async () => {
-    setPayrollsLoading(true)
-    setPayrollsError(null)
-
     const result = await safeQuery(
       diasClient.from('payrolls').select('*').order('created_at', { ascending: false }),
       { table: 'payrolls', clientLabel: 'DIAS ERP' }
     )
-
-    setPayrolls(result.data)
+    setPayrolls(result.data || [])
     setPayrollsMissing(result.missing)
-    setPayrollsError(result.error)
-    setPayrollsLoading(false)
   }, [])
 
-  const loadAdminData = useCallback(async () => {
-    if (!adminSession) return
+  const loadPersonnel = useCallback(async () => {
+    setPersonnelError(null)
+    const result = await safeQuery(
+      diasClient.from('personnel').select('*').order('tech_name', { ascending: true }),
+      { table: 'personnel', clientLabel: 'DIAS ERP' }
+    )
+    const rows = (result.data || []).map(personnelFromDb)
+    setPersonnel(rows)
+    setPersonnelMissing(result.missing)
+    if (result.error) setPersonnelError(result.error)
+    return rows
+  }, [])
 
+  const loadAdminTechs = useCallback(async () => {
+    if (!adminSession) return
     setLoading(true)
     setError(null)
-    setWarnings([])
-
-    const pad = (n) => String(n).padStart(2, '0')
-    const prevMonthDate = new Date(selectedYear, selectedMonth - 1, 0)
-    const from = `${prevMonthDate.getFullYear()}-${pad(prevMonthDate.getMonth() + 1)}-${pad(prevMonthDate.getDate())}`
-    const lastDay = new Date(selectedYear, selectedMonth, 0).getDate()
-    const to = `${selectedYear}-${pad(selectedMonth)}-${pad(lastDay)}`
-
-    const dateFilter = (q) => q.gte('date_iso', from).lte('date_iso', to)
-
     try {
-      const [techsRaw, jobsRaw, assignmentsRaw, statusRaw] = await Promise.all([
-        fetchAllRows(adminClient, 'techs'),
-        fetchAllRows(adminClient, 'jobs'),
-        fetchAllRows(adminClient, 'assignments', dateFilter),
-        fetchAllRows(adminClient, 'daily_status', dateFilter),
-      ])
-
+      const techsRaw = await fetchAllRows(adminClient, 'techs')
       setTechs(techsRaw.map(mapTechRow))
-      setJobs(jobsRaw.map(mapJobRow))
-      setAssignments(assignmentsRaw.map(mapAssignmentRow))
-      setDailyStatus(statusRaw.map(mapDailyStatusRow))
-      setDataStats({
-        assignments: assignmentsRaw.length,
-        dailyStatus: statusRaw.length,
-        jobs: jobsRaw.length,
-      })
     } catch (err) {
       setError(formatSupabaseError(err, { clientLabel: 'Admin App' }))
       setTechs([])
-      setJobs([])
-      setAssignments([])
-      setDailyStatus([])
-      setDataStats({ assignments: 0, dailyStatus: 0, jobs: 0 })
     } finally {
       setLoading(false)
     }
-  }, [selectedMonth, selectedYear, adminSession])
+  }, [adminSession])
 
   useEffect(() => {
     if (!adminSession) return
-    loadAdminData()
-  }, [loadAdminData, adminSession])
-
-  useEffect(() => {
+    loadAdminTechs()
+    loadPersonnel()
     loadPayrolls()
-  }, [loadPayrolls])
+  }, [adminSession, loadAdminTechs, loadPersonnel, loadPayrolls])
 
   useEffect(() => {
     if (payrollsMissing) return undefined
-
     const channel = diasClient
       .channel('payrolls-live')
       .on(
@@ -206,11 +114,43 @@ export default function App() {
         }
       )
       .subscribe()
-
     return () => {
       diasClient.removeChannel(channel)
     }
   }, [loadPayrolls, payrollsMissing])
+
+  const handlePersonnelMutated = useCallback(async () => {
+    const rows = await loadPersonnel()
+    if (selectedPerson?.id) {
+      const next = rows.find((p) => p.id === selectedPerson.id)
+      if (next) setSelectedPerson(next)
+      else if (rows.length) setSelectedPerson(rows.find((p) => p.is_active !== false) || rows[0])
+      else setSelectedPerson(null)
+    }
+  }, [loadPersonnel, selectedPerson?.id])
+
+  useEffect(() => {
+    if (!personnel.length) {
+      if (selectedPerson) setSelectedPerson(null)
+      return
+    }
+    if (!selectedPerson) {
+      const first =
+        listFilter === 'archive'
+          ? personnel.find((p) => p.is_active === false)
+          : personnel.find((p) => p.is_active !== false) || personnel[0]
+      if (first) setSelectedPerson(first)
+      return
+    }
+    if (!personnel.some((p) => p.id === selectedPerson.id)) {
+      setSelectedPerson(personnel.find((p) => p.is_active !== false) || personnel[0])
+    }
+  }, [personnel, selectedPerson, listFilter])
+
+  const analysisTech = useMemo(
+    () => personnelAsTech(selectedPerson, techs),
+    [selectedPerson, techs]
+  )
 
   const savePayrollToErp = useCallback(
     async (payrollRecord = {}) => {
@@ -234,7 +174,6 @@ export default function App() {
           })
           if (isMissingTableError(saveError)) {
             setPayrollsMissing(true)
-            setPayrollsError(message)
           }
           setError(message)
           throw saveError
@@ -252,90 +191,6 @@ export default function App() {
     },
     [selectedMonth, selectedYear, loadPayrolls]
   )
-
-  const activeTechs = useMemo(() => payrollTechs(techs), [techs])
-
-  useEffect(() => {
-    if (!analysisTech && activeTechs.length > 0) {
-      setAnalysisTech(activeTechs[0])
-    } else if (
-      analysisTech &&
-      activeTechs.length > 0 &&
-      !activeTechs.some((t) => t.id === analysisTech.id)
-    ) {
-      setAnalysisTech(activeTechs[0])
-    }
-  }, [activeTechs, analysisTech])
-
-  const payrollByTech = useMemo(() => {
-    const map = new Map()
-    for (const tech of activeTechs) {
-      map.set(
-        tech.name,
-        buildMonthlyPayroll(
-          tech,
-          selectedYear,
-          selectedMonth,
-          assignments,
-          jobs,
-          dailyStatus
-        )
-      )
-    }
-    return map
-  }, [activeTechs, selectedYear, selectedMonth, assignments, jobs, dailyStatus])
-
-  const summaries = useMemo(() => {
-    return activeTechs.map((tech) => {
-      const { summary } = payrollByTech.get(tech.name) || {
-        summary: {
-          tech: tech.name,
-          totalHours: 0,
-          holidayHours: 0,
-          nightHours: 0,
-          overtimeHours: 0,
-          overnightDays: 0,
-          metroDays: 0,
-          workDays: 0,
-          repoDays: 0,
-          leaveDays: 0,
-          sickDays: 0,
-          weekendBonus: 0,
-        },
-      }
-      return { ...summary, techId: tech.id }
-    })
-  }, [activeTechs, payrollByTech])
-
-  const filteredSummaries = useMemo(() => {
-    if (techFilter === ALL_TECHS) return summaries
-    return summaries.filter((s) => s.tech === techFilter)
-  }, [summaries, techFilter])
-
-  const heroSummary = filteredSummaries[0] || null
-
-  const movementRows = useMemo(() => {
-    const list =
-      techFilter === ALL_TECHS
-        ? activeTechs
-        : activeTechs.filter((t) => t.name === techFilter)
-
-    const rows = []
-    for (const tech of list) {
-      const { rows: techRows } = payrollByTech.get(tech.name) || { rows: [] }
-      rows.push(...techRows)
-    }
-    rows.sort(
-      (a, b) =>
-        String(a.dateIso).localeCompare(String(b.dateIso)) ||
-        String(a.tech).localeCompare(String(b.tech)) ||
-        String(a.timeStart || '').localeCompare(String(b.timeStart || ''))
-    )
-    return rows
-  }, [activeTechs, techFilter, payrollByTech])
-
-  const selectClass =
-    'rounded-xl border border-white/10 bg-slate-900/75 px-3 py-2 text-sm font-medium text-white backdrop-blur-md'
 
   if (authLoading) {
     return (
@@ -384,14 +239,28 @@ export default function App() {
         }
       >
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden p-3 md:p-4">
+          {(error || personnelError || personnelMissing) && (
+            <div className="mb-3 shrink-0 rounded-xl border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
+              {personnelMissing
+                ? 'Λείπει ο πίνακας personnel στο DIAS — τρέξε supabase/01_dias_bootstrap.sql και 02_personnel_hr.sql.'
+                : error || personnelError}
+            </div>
+          )}
           <TechAnalysisModal
             embedded
             tech={analysisTech}
-            techList={activeTechs}
-            onTechChange={setAnalysisTech}
+            adminTechs={techs}
+            personnel={personnel}
+            selectedPersonId={selectedPerson?.id || null}
+            onPersonSelect={setSelectedPerson}
+            onPersonnelMutated={handlePersonnelMutated}
+            listFilter={listFilter}
+            onListFilterChange={setListFilter}
+            typeFilter={typeFilter}
+            onTypeFilterChange={setTypeFilter}
             initialMonth={selectedMonth}
             initialYear={selectedYear}
-            saving={saving}
+            saving={saving || loading}
             payrolls={payrolls}
             onSaveToErp={savePayrollToErp}
           />
@@ -409,8 +278,7 @@ export default function App() {
           <div className="relative w-full max-w-md rounded-2xl border border-white/10 bg-slate-900/95 p-6 shadow-2xl backdrop-blur-md">
             <h3 className="text-lg font-bold text-white">Γενικές Παράμετροι</h3>
             <p className="mt-2 text-sm text-slate-400">
-              Οι παράμετροι μισθοδοσίας του DIAS ERP θα ρυθμίζονται εδώ. Η σύνδεση με τον πίνακα
-              ρυθμίσεων θα ενεργοποιηθεί μόλις δημιουργηθεί στο νέο schema.
+              Οι παράμετροι μισθοδοσίας του DIAS ERP θα ρυθμίζονται εδώ.
             </p>
             <div className="mt-4 rounded-xl border border-white/10 bg-slate-950/60 px-3 py-2 text-xs text-slate-500">
               Περίοδος εργασίας: <span className="font-mono text-cyan-300">{period}</span>
@@ -425,15 +293,6 @@ export default function App() {
           </div>
         </div>
       )}
-    </div>
-  )
-}
-
-function StatChip({ label, value }) {
-  return (
-    <div className="rounded-xl border border-white/5 bg-slate-950/40 px-3 py-2">
-      <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">{label}</p>
-      <p className="mt-0.5 text-sm font-bold text-white">{value}</p>
     </div>
   )
 }

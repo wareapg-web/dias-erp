@@ -24,11 +24,22 @@ import {
   earningsToDb,
   earningsTotal,
 } from '../lib/techEarnings'
+import { employmentLabel, paymentMethodLabel } from '../lib/personnel'
+import PersonnelPanel from './PersonnelPanel'
 
 export default function TechAnalysisModal({
   tech,
   techList,
   onTechChange,
+  adminTechs = [],
+  personnel = [],
+  selectedPersonId = null,
+  onPersonSelect,
+  onPersonnelMutated,
+  listFilter = 'active',
+  onListFilterChange,
+  typeFilter = 'all',
+  onTypeFilterChange,
   initialMonth,
   initialYear,
   saving,
@@ -63,11 +74,22 @@ export default function TechAnalysisModal({
     if (!tech) return
 
     let cancelled = false
+    /** Ώρες μόνο αν υπάρχει σύνδεση με Admin (όνομα βάρδιας). */
+    const hoursName = tech._adminTech?.name || (tech.admin_tech_id ? tech.name : null)
 
     async function loadLegacyData() {
       try {
         setLoading(true)
         setLoadError(null)
+
+        if (!hoursName) {
+          setAssignments([])
+          setJobs([])
+          setDailyStatus([])
+          setLoadError(null)
+          setLoading(false)
+          return
+        }
 
         const from = `${analysisYear}-01-01`
         const to = `${analysisYear}-12-31`
@@ -77,7 +99,7 @@ export default function TechAnalysisModal({
             adminClient
               .from('assignments')
               .select('*')
-              .eq('tech', tech.name)
+              .eq('tech', hoursName)
               .gte('date_iso', from)
               .lte('date_iso', to),
             { table: 'assignments', clientLabel: 'Admin App' }
@@ -90,7 +112,7 @@ export default function TechAnalysisModal({
             adminClient
               .from('daily_status')
               .select('*')
-              .eq('tech', tech.name)
+              .eq('tech', hoursName)
               .gte('date_iso', from)
               .lte('date_iso', to),
             { table: 'daily_status', clientLabel: 'Admin App' }
@@ -233,9 +255,13 @@ export default function TechAnalysisModal({
     )
   }
 
-  const { lastName, firstName } = tech ? splitTechName(tech.name) : { lastName: '', firstName: '' }
+  const split = tech ? splitTechName(tech.displayName || tech.name) : { lastName: '', firstName: '' }
+  const lastName = tech?.last_name || split.lastName
+  const firstName = tech?.first_name || split.firstName
+  const displayName = tech?.displayName || tech?.name || ''
   const photoUrl = tech ? techPhotoUrl(tech) : null
   const hireDate = tech ? techHireDate(tech) : null
+  const hasAdminHours = Boolean(tech?._adminTech || tech?.admin_tech_id)
 
   const handleSave = () => {
     if (!tech) return
@@ -244,7 +270,7 @@ export default function TechAnalysisModal({
       estimateAmount(tech, selectedSummary?.workDays ?? 0, selectedSummary?.totalHours ?? 0)
     onSaveToErp?.({
       tech_id: tech.id,
-      tech_name: tech.name,
+      tech_name: displayName || tech.name,
       days: selectedSummary?.workDays ?? 0,
       hours: selectedSummary?.totalHours ?? 0,
       overtime_hours: selectedSummary?.overtimeHours ?? 0,
@@ -328,66 +354,81 @@ export default function TechAnalysisModal({
     { id: 'movements', label: 'Αναλυτικά στοιχεία' },
   ]
 
-  const techSidebar =
-    embedded && onTechChange ? (
-      <aside className="flex max-h-56 w-full shrink-0 flex-col overflow-hidden rounded-2xl border border-white/10 bg-slate-900/75 shadow-xl backdrop-blur-md md:max-h-none md:w-72 md:self-stretch lg:w-80">
-        <div className="border-b border-white/10 px-3 py-3">
-          <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-cyan-400/80">
-            Προσωπικό
-          </p>
-          <p className="mt-0.5 text-sm font-semibold text-white">Επιλογή τεχνικού</p>
-          <input
-            type="search"
-            value={techSearch}
-            onChange={(e) => setTechSearch(e.target.value)}
-            placeholder="Αναζήτηση..."
-            className="mt-2 w-full rounded-xl border border-white/10 bg-slate-950/60 px-3 py-2 text-sm text-white placeholder:text-slate-500"
-          />
-        </div>
-        <div className="min-h-0 flex-1 overflow-y-auto p-2">
-          {filteredTechList.length === 0 ? (
-            <p className="px-2 py-6 text-center text-xs text-slate-500">Κανένα αποτέλεσμα</p>
-          ) : (
-            filteredTechList.map((t) => {
-              const selected = tech?.id === t.id
-              const parts = splitTechName(t.name)
-              const initials = (t.initials || parts.lastName.slice(0, 2) || '?').toUpperCase()
-              return (
-                <button
-                  key={t.id}
-                  type="button"
-                  onClick={() => onTechChange(t)}
-                  className={`mb-1 flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-left transition ${
-                    selected
-                      ? 'border border-cyan-500/40 bg-cyan-500/15 text-cyan-100'
-                      : 'border border-transparent text-slate-300 hover:bg-white/5 hover:text-white'
+  const usePersonnelSidebar = embedded && typeof onPersonSelect === 'function'
+
+  const techSidebar = usePersonnelSidebar ? (
+    <PersonnelPanel
+      personnel={personnel}
+      adminTechs={adminTechs}
+      selectedId={selectedPersonId}
+      onSelect={onPersonSelect}
+      onMutated={onPersonnelMutated}
+      listFilter={listFilter}
+      onListFilterChange={onListFilterChange}
+      typeFilter={typeFilter}
+      onTypeFilterChange={onTypeFilterChange}
+    />
+  ) : embedded && onTechChange ? (
+    <aside className="flex max-h-56 w-full shrink-0 flex-col overflow-hidden rounded-2xl border border-white/10 bg-slate-900/75 shadow-xl backdrop-blur-md md:max-h-none md:w-72 md:self-stretch lg:w-80">
+      <div className="border-b border-white/10 px-3 py-3">
+        <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-cyan-400/80">
+          Προσωπικό
+        </p>
+        <p className="mt-0.5 text-sm font-semibold text-white">Επιλογή τεχνικού</p>
+        <input
+          type="search"
+          value={techSearch}
+          onChange={(e) => setTechSearch(e.target.value)}
+          placeholder="Αναζήτηση..."
+          className="mt-2 w-full rounded-xl border border-white/10 bg-slate-950/60 px-3 py-2 text-sm text-white placeholder:text-slate-500"
+        />
+      </div>
+      <div className="min-h-0 flex-1 overflow-y-auto p-2">
+        {filteredTechList.length === 0 ? (
+          <p className="px-2 py-6 text-center text-xs text-slate-500">Κανένα αποτέλεσμα</p>
+        ) : (
+          filteredTechList.map((t) => {
+            const selected = tech?.id === t.id
+            const parts = splitTechName(t.name)
+            const initials = (t.initials || parts.lastName.slice(0, 2) || '?').toUpperCase()
+            return (
+              <button
+                key={t.id}
+                type="button"
+                onClick={() => onTechChange(t)}
+                className={`mb-1 flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-left transition ${
+                  selected
+                    ? 'border border-cyan-500/40 bg-cyan-500/15 text-cyan-100'
+                    : 'border border-transparent text-slate-300 hover:bg-white/5 hover:text-white'
+                }`}
+              >
+                <span
+                  className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-xs font-bold ${
+                    selected ? 'bg-cyan-500/25 text-cyan-100' : 'bg-slate-800 text-slate-300'
                   }`}
                 >
-                  <span
-                    className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-xs font-bold ${
-                      selected ? 'bg-cyan-500/25 text-cyan-100' : 'bg-slate-800 text-slate-300'
-                    }`}
-                  >
-                    {initials}
-                  </span>
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-sm font-semibold">{t.name}</span>
-                    <span className="block text-[10px] text-slate-500">#{t.id}</span>
-                  </span>
-                </button>
-              )
-            })
-          )}
-        </div>
-        <div className="border-t border-white/10 px-3 py-2 text-[10px] text-slate-500">
-          {filteredTechList.length} / {(techList || []).length} τεχνικοί
-        </div>
-      </aside>
-    ) : null
+                  {initials}
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-sm font-semibold">{t.name}</span>
+                  <span className="block text-[10px] text-slate-500">#{t.id}</span>
+                </span>
+              </button>
+            )
+          })
+        )}
+      </div>
+      <div className="border-t border-white/10 px-3 py-2 text-[10px] text-slate-500">
+        {filteredTechList.length} / {(techList || []).length} τεχνικοί
+      </div>
+    </aside>
+  ) : null
 
   const mainPanel = !tech ? (
     <div className="flex flex-1 items-center justify-center rounded-2xl border border-white/10 bg-slate-900/75 px-6 py-16 text-center text-slate-400">
-      Επίλεξε τεχνικό από τη λίστα αριστερά.
+      {usePersonnelSidebar
+        ? 'Πρόσθεσε υπάλληλο στο DIAS (+ Νέος) ή εισήγαγε από Admin (βάρδιες).'
+        : 'Επίλεξε τεχνικό από τη λίστα αριστερά.'}
     </div>
   ) : (
     <div className={`relative flex min-w-0 flex-1 flex-col ${embedded ? 'space-y-4' : 'flex-1 overflow-hidden'}`}>
@@ -474,20 +515,39 @@ export default function TechAnalysisModal({
             </div>
 
             <div className="grid min-w-0 flex-1 grid-cols-2 gap-2 sm:grid-cols-4">
-              <InfoField label="Κωδικός" value={tech.id} />
+              <InfoField label="Κωδικός" value={tech.code || tech.id} />
               <InfoField label="Επώνυμο" value={lastName} />
               <InfoField label="Όνομα" value={firstName} />
               <InfoField label="Πρόσληψη" value={hireDate || '—'} />
             </div>
 
-            <div className="h-20 w-20 shrink-0 self-center overflow-hidden rounded-xl border border-white/10 bg-slate-800 lg:self-auto">
-              {photoUrl ? (
-                <img src={photoUrl} alt={tech.name} className="h-full w-full object-cover" />
-              ) : (
-                <div className="flex h-full w-full items-center justify-center text-2xl font-bold text-cyan-300/80">
-                  {(tech.initials || lastName.slice(0, 2)).toUpperCase()}
-                </div>
-              )}
+            <div className="flex flex-col items-center gap-2 lg:items-end">
+              <div className="flex flex-wrap justify-end gap-1">
+                {tech.employment_type && (
+                  <span className="rounded-lg border border-cyan-500/30 bg-cyan-500/10 px-2 py-0.5 text-[10px] font-semibold text-cyan-100">
+                    {employmentLabel(tech.employment_type)}
+                  </span>
+                )}
+                {tech.payment_method && (
+                  <span className="rounded-lg border border-white/10 bg-white/5 px-2 py-0.5 text-[10px] font-semibold text-slate-300">
+                    {paymentMethodLabel(tech.payment_method)}
+                  </span>
+                )}
+                {!hasAdminHours && (
+                  <span className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[10px] font-semibold text-amber-100">
+                    Χωρίς ώρες Admin
+                  </span>
+                )}
+              </div>
+              <div className="h-20 w-20 shrink-0 overflow-hidden rounded-xl border border-white/10 bg-slate-800">
+                {photoUrl ? (
+                  <img src={photoUrl} alt={displayName} className="h-full w-full object-cover" />
+                ) : (
+                  <div className="flex h-full w-full items-center justify-center text-2xl font-bold text-cyan-300/80">
+                    {(tech.initials || lastName.slice(0, 2)).toUpperCase()}
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         </div>
