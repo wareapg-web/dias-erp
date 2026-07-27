@@ -40,13 +40,25 @@ import {
 } from '../lib/techPayments'
 import {
   computeLedgerBalances,
-  formatLedgerAmount,
-  ledgerTypeLabel,
+  ledgerRowKey,
   monthDateRange,
+  buildLedgerDescriptionForType,
+  buildLedgerAmountForType,
 } from '../lib/techLedger'
+import {
+  buildTemplateMergeRows,
+  resolveLedgerSide,
+  visibleTransactionTypes,
+} from '../lib/ledgerMapping'
+import {
+  buildTypeLookup,
+  fetchTransactionTypes,
+  resolveTransactionType,
+} from '../lib/transactionTypes'
 import { employmentLabel, paymentMethodLabel } from '../lib/personnel'
 import PersonnelPanel from './PersonnelPanel'
 import MovementModal from './MovementModal'
+import LedgerAnalysisGrid from './LedgerAnalysisGrid'
 
 export default function TechAnalysisModal({
   tech,
@@ -104,11 +116,43 @@ export default function TechAnalysisModal({
   const [ledgerTick, setLedgerTick] = useState(0)
   const [movementOpen, setMovementOpen] = useState(false)
   const [selectedRowData, setSelectedRowData] = useState(null)
+  const [selectedLedgerRowKey, setSelectedLedgerRowKey] = useState(null)
+  const [movementPresetTypeId, setMovementPresetTypeId] = useState(null)
+  const [movementPresetSide, setMovementPresetSide] = useState(null)
+  const [movementPresetDescription, setMovementPresetDescription] = useState(null)
+  const [movementPresetAmount, setMovementPresetAmount] = useState(null)
+  const [transactionTypes, setTransactionTypes] = useState([])
+  const [transactionTypesError, setTransactionTypesError] = useState(null)
 
   useEffect(() => {
     setAnalysisYear(initialYear)
     setSelectedMonth(initialMonth)
   }, [tech?.id, initialYear, initialMonth])
+
+  useEffect(() => {
+    let cancelled = false
+    async function loadTransactionTypes() {
+      try {
+        const list = await fetchTransactionTypes()
+        if (!cancelled) {
+          setTransactionTypes(list)
+          setTransactionTypesError(null)
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setTransactionTypes([])
+          setTransactionTypesError(
+            formatSupabaseError(err, { table: 'transaction_types', clientLabel: 'DIAS ERP' }) ||
+              'Τρέξε supabase/07_transaction_types_ledger_group.sql στο DIAS.'
+          )
+        }
+      }
+    }
+    loadTransactionTypes()
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   useEffect(() => {
     if (!tech) return
@@ -372,20 +416,105 @@ export default function TechAnalysisModal({
     }
   }, [tech?.id, analysisYear, selectedMonth, payments.length, ledgerTick])
 
-  const openMovementCreate = () => {
+  useEffect(() => {
+    setSelectedLedgerRowKey(null)
+  }, [tech?.id, analysisYear, selectedMonth])
+
+  useEffect(() => {
+    if (activeTab === 'analysis') return
+    setMovementOpen(false)
     setSelectedRowData(null)
+    setSelectedLedgerRowKey(null)
+    setMovementPresetTypeId(null)
+    setMovementPresetSide(null)
+    setMovementPresetDescription(null)
+    setMovementPresetAmount(null)
+  }, [activeTab])
+
+  const typeLookup = useMemo(() => buildTypeLookup(transactionTypes), [transactionTypes])
+
+  const sortedTransactionTypes = useMemo(
+    () => visibleTransactionTypes(transactionTypes),
+    [transactionTypes]
+  )
+
+  const openMovementCreate = (preset = {}) => {
+    setSelectedRowData(null)
+    setSelectedLedgerRowKey(null)
+    setMovementPresetTypeId(preset.typeId ?? null)
+    setMovementPresetSide(preset.side ?? null)
+
+    const ctx = { summary: selectedSummary, earningsForm }
+    let presetDescription = preset.description ?? null
+    let presetAmount = preset.amount ?? null
+
+    if (preset.typeId != null) {
+      const tt = typeLookup?.byId?.get(Number(preset.typeId))
+      if (tt) {
+        if (presetDescription == null) {
+          presetDescription = buildLedgerDescriptionForType(tt, ctx) || null
+        }
+        if (presetAmount == null) {
+          const amt = buildLedgerAmountForType(tt, ctx)
+          presetAmount = amt > 0 ? amt : null
+        }
+      }
+    }
+
+    setMovementPresetDescription(presetDescription)
+    setMovementPresetAmount(presetAmount)
     setMovementOpen(true)
   }
 
+  const selectLedgerRow = (row) => {
+    const key = ledgerRowKey(row)
+    if (key) setSelectedLedgerRowKey(key)
+  }
+
   const openMovementEdit = (row) => {
+    selectLedgerRow(row)
     setSelectedRowData(row)
+    setMovementPresetTypeId(null)
+    setMovementPresetSide(null)
+    setMovementPresetDescription(null)
+    setMovementPresetAmount(null)
     setMovementOpen(true)
+  }
+
+  const openMovementViewSelected = () => {
+    const row = ledgerDisplayRows.find((r) => ledgerRowKey(r) === selectedLedgerRowKey)
+    if (!row) return
+    if (row.__template && row.__type) {
+      openMovementCreate({
+        typeId: row.__type.id,
+        side: resolveLedgerSide(row.__type, 0),
+      })
+      return
+    }
+    openMovementEdit(row)
   }
 
   const closeMovement = () => {
     setMovementOpen(false)
     setSelectedRowData(null)
+    setMovementPresetTypeId(null)
+    setMovementPresetSide(null)
+    setMovementPresetDescription(null)
+    setMovementPresetAmount(null)
   }
+
+  const findTypeByDescription = (label) =>
+    resolveTransactionType(typeLookup, { description: label, typeCode: label })
+
+  const quickActionPresets = useMemo(
+    () => [
+      { label: 'Εξόφληση (1)', typeId: 91, side: 'CREDIT' },
+      { label: 'Εξόφληση (2)', typeId: 92, side: 'CREDIT' },
+      { label: 'Bonus', typeId: 4, side: 'DEBIT' },
+      { label: 'Πληρωμή', tab: 'payments' },
+    ],
+    []
+  )
 
   const handleMovementSaved = async ({ wasPayment } = {}) => {
     setLedgerTick((n) => n + 1)
@@ -393,17 +522,6 @@ export default function TechAnalysisModal({
   }
 
   const ledgerBalances = useMemo(() => computeLedgerBalances(ledgerRows), [ledgerRows])
-
-  const LEDGER_MIN_ROWS = 12
-  const ledgerDisplayRows = useMemo(() => {
-    const pad = Math.max(0, LEDGER_MIN_ROWS - (ledgerRows?.length || 0))
-    const empties = Array.from({ length: pad }, (_, i) => ({
-      __empty: true,
-      id: null,
-      _padKey: `empty-${i}`,
-    }))
-    return [...(ledgerRows || []), ...empties]
-  }, [ledgerRows])
 
   const monthlyPayrolls = useMemo(() => {
     if (!tech) return []
@@ -444,6 +562,27 @@ export default function TechAnalysisModal({
   const selectedSummary = selectedPayroll?.summary
   const selectedSalary = salaryMatrix.months[selectedMonth - 1]
   const monthSettled = salaryMatrix.selectedSettled?.(selectedMonth)
+
+  const ledgerMonthContext = useMemo(
+    () => ({
+      summary: selectedSummary || null,
+      earningsForm,
+      hasInvoice:
+        Boolean(earningsForm?.issues_invoice) || tech?.payment_method === 'invoice',
+    }),
+    [selectedSummary, earningsForm, tech?.payment_method]
+  )
+
+  const ledgerDisplayRows = useMemo(
+    () =>
+      buildTemplateMergeRows({
+        transactionTypes: sortedTransactionTypes,
+        savedEntries: ledgerRows,
+        typeLookup,
+        monthContext: ledgerMonthContext,
+      }),
+    [sortedTransactionTypes, ledgerRows, typeLookup, ledgerMonthContext]
+  )
 
   const filteredTechList = useMemo(() => {
     const list = Array.isArray(techList) ? techList : []
@@ -975,150 +1114,93 @@ export default function TechAnalysisModal({
                     <code className="rounded bg-black/30 px-1">supabase/05_payroll_entries_and_ledger.sql</code>.
                   </div>
                 )}
+                {transactionTypesError && (
+                  <div className="border-b border-amber-500/30 bg-amber-500/10 px-4 py-2 text-xs text-amber-100">
+                    {transactionTypesError}
+                  </div>
+                )}
                 {ledgerError && !ledgerMissing && (
                   <div className="border-b border-rose-500/30 bg-rose-500/10 px-4 py-2 text-xs text-rose-200">
                     {ledgerError}
                   </div>
                 )}
-                <div className="overflow-x-auto">
-                  <table className="w-full min-w-[980px] border-collapse text-left text-sm">
-                    <thead>
-                      <tr className="border-b border-white/10 bg-slate-950/60 text-[10px] uppercase tracking-wider text-slate-400">
-                        <th className="px-3 py-2.5 font-semibold">Ημερομηνία</th>
-                        <th className="px-3 py-2.5 font-semibold">Τύπος</th>
-                        <th className="min-w-[180px] px-3 py-2.5 font-semibold">Περιγραφή</th>
-                        <th className="px-3 py-2.5 text-right font-semibold">Μισθός Χρ.</th>
-                        <th className="px-3 py-2.5 text-right font-semibold">Μισθός Πιστ.</th>
-                        <th className="px-3 py-2.5 text-right font-semibold">Λοιπά Χρ.</th>
-                        <th className="px-3 py-2.5 text-right font-semibold">Λοιπά Πιστ.</th>
-                        <th className="px-3 py-2.5 font-semibold">Notes</th>
-                        <th className="px-3 py-2.5 font-semibold">Εισαγωγή</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {ledgerLoading && ledgerRows.length === 0
-                        ? Array.from({ length: LEDGER_MIN_ROWS }, (_, i) => (
-                            <tr key={`loading-${i}`} className="h-10 border-b border-slate-700/80">
-                              {Array.from({ length: 9 }, (_, c) => (
-                                <td key={c} className="px-3 py-0 text-slate-700">
-                                  &nbsp;
-                                </td>
-                              ))}
-                            </tr>
-                          ))
-                        : ledgerDisplayRows.map((row) => {
-                            if (row.__empty) {
-                              return (
-                                <tr
-                                  key={row._padKey}
-                                  onDoubleClick={openMovementCreate}
-                                  title="Διπλό κλικ για νέα κίνηση"
-                                  className="h-10 cursor-pointer border-b border-slate-700/80 hover:bg-slate-800/50"
-                                >
-                                  {Array.from({ length: 9 }, (_, c) => (
-                                    <td key={c} className="px-3 py-0">
-                                      &nbsp;
-                                    </td>
-                                  ))}
-                                </tr>
-                              )
-                            }
-
-                            const isCredit = row.source === 'PAYMENT'
-                            return (
-                              <tr
-                                key={`${row.source}-${row.id}`}
-                                onDoubleClick={() => openMovementEdit(row)}
-                                title="Διπλό κλικ για επεξεργασία"
-                                className="h-10 cursor-pointer border-b border-slate-700/80 hover:bg-slate-800/50"
-                              >
-                                <td className="px-3 py-1.5 font-medium text-sky-300">
-                                  {row.entry_date
-                                    ? new Date(row.entry_date).toLocaleDateString('el-GR')
-                                    : ''}
-                                </td>
-                                <td
-                                  className={`px-3 py-1.5 font-semibold ${
-                                    isCredit ? 'text-emerald-200' : 'text-rose-200'
-                                  }`}
-                                >
-                                  {ledgerTypeLabel(row.type)}
-                                </td>
-                                <td className="max-w-[240px] truncate px-3 py-1.5 text-slate-300">
-                                  {row.description || ''}
-                                </td>
-                                <td className="px-3 py-1.5 text-right font-mono text-slate-200">
-                                  {formatLedgerAmount(row.salary_debit)}
-                                </td>
-                                <td className="px-3 py-1.5 text-right font-mono text-emerald-100">
-                                  {formatLedgerAmount(row.salary_credit)}
-                                </td>
-                                <td className="px-3 py-1.5 text-right font-mono text-slate-200">
-                                  {formatLedgerAmount(row.other_debit)}
-                                </td>
-                                <td className="px-3 py-1.5 text-right font-mono text-emerald-100">
-                                  {formatLedgerAmount(row.other_credit)}
-                                </td>
-                                <td className="max-w-[120px] truncate px-3 py-1.5 text-slate-500">
-                                  {row.notes || ''}
-                                </td>
-                                <td className="whitespace-nowrap px-3 py-1.5 text-[11px] text-slate-500">
-                                  {row.created_at
-                                    ? new Date(row.created_at).toLocaleString('el-GR')
-                                    : ''}
-                                </td>
-                              </tr>
-                            )
-                          })}
-                    </tbody>
-                  </table>
-                </div>
+                <LedgerAnalysisGrid
+                  rows={ledgerDisplayRows}
+                  loading={ledgerLoading}
+                  skeletonCount={sortedTransactionTypes.length}
+                  selectedRowKey={selectedLedgerRowKey}
+                  typeLookup={typeLookup}
+                  monthContext={ledgerMonthContext}
+                  hasInvoice={ledgerMonthContext.hasInvoice}
+                  onSelectRow={selectLedgerRow}
+                  onOpenCreateForType={openMovementCreate}
+                  onOpenEditRow={openMovementEdit}
+                />
 
                 <div className="flex flex-wrap gap-3 border-t border-white/10 bg-slate-950/50 px-3 py-2.5">
                   <BalanceChip label="Υπόλοιπο" value={formatEuro(ledgerBalances.balance)} />
                   <BalanceChip label="Υπόλοιπο (1)" value={formatEuro(ledgerBalances.balance1)} />
                   <BalanceChip label="Υπόλοιπο (2)" value={formatEuro(ledgerBalances.balance2)} />
                   <BalanceChip label="Έξτρα" value={formatEuro(0)} />
-                  <BalanceChip label="Τιμολόγιο" value={formatEuro(0)} />
+                  <BalanceChip label="Τιμολόγιο" value={formatEuro(ledgerBalances.invoice || 0)} />
                 </div>
               </div>
 
               <aside className="flex shrink-0 flex-row gap-2 overflow-x-auto lg:w-36 lg:flex-col lg:overflow-visible">
                 <button
                   type="button"
-                  onClick={openMovementCreate}
+                  onClick={() => openMovementCreate()}
                   className="shrink-0 rounded-xl border border-cyan-500/40 bg-cyan-500/15 px-3 py-2.5 text-left text-xs font-semibold text-cyan-100 transition hover:bg-cyan-500/25 lg:w-full"
                 >
                   Εισαγωγή
                 </button>
                 {[
-                  'Εμφάνιση',
-                  'Διαγραφή',
-                  'Πληρωμή',
-                  'Bonus',
-                  'Εξόφληση (1)',
-                  'Εξόφληση (2)',
-                ].map((label) => (
+                  {
+                    label: 'Εμφάνιση',
+                    action: openMovementViewSelected,
+                    disabled: !selectedLedgerRowKey,
+                  },
+                  { label: 'Διαγραφή', action: () => alert('Διαγραφή — σύντομα') },
+                  ...quickActionPresets,
+                ].map((item) => (
                   <button
-                    key={label}
+                    key={item.label}
                     type="button"
+                    disabled={item.disabled}
                     onClick={() => {
-                      if (label === 'Εμφάνιση' && ledgerRows[0]) openMovementEdit(ledgerRows[0])
-                      else if (label === 'Πληρωμή') setActiveTab('payments')
-                      else alert(`${label} — σύντομα`)
+                      if (item.tab === 'payments') setActiveTab('payments')
+                      else if (item.action) item.action()
+                      else if (item.typeId) openMovementCreate({ typeId: item.typeId, side: item.side })
+                      else {
+                        const tt = findTypeByDescription(item.label)
+                        openMovementCreate({
+                          typeId: tt?.id ?? item.typeId,
+                          side: item.side || 'DEBIT',
+                        })
+                      }
                     }}
-                    className="shrink-0 rounded-xl border border-white/10 bg-slate-900/80 px-3 py-2.5 text-left text-xs font-semibold text-slate-200 transition hover:border-cyan-500/40 hover:bg-cyan-500/10 hover:text-cyan-100 lg:w-full"
+                    className="shrink-0 rounded-xl border border-white/10 bg-slate-900/80 px-3 py-2.5 text-left text-xs font-semibold text-slate-200 transition hover:border-cyan-500/40 hover:bg-cyan-500/10 hover:text-cyan-100 disabled:cursor-not-allowed disabled:opacity-40 lg:w-full"
                   >
-                    {label}
+                    {item.label}
                   </button>
                 ))}
               </aside>
             </div>
 
             <MovementModal
+              key={
+                selectedRowData
+                  ? `${selectedRowData.source}-${selectedRowData.id}`
+                  : `new-${movementPresetTypeId || 'blank'}`
+              }
               open={movementOpen}
               selectedRowData={selectedRowData}
               tech={tech}
+              presetTypeId={movementPresetTypeId}
+              presetSide={movementPresetSide}
+              presetDescription={movementPresetDescription}
+              presetAmount={movementPresetAmount}
+              hasInvoice={ledgerMonthContext.hasInvoice}
               onClose={closeMovement}
               onSaved={handleMovementSaved}
             />

@@ -295,7 +295,7 @@ export default function PersonnelPanel({
             return (
               <div
                 key={p.id}
-                className={`mb-1 flex w-full items-start gap-1 rounded-xl border px-1 py-1 ${
+                className={`mb-1 flex w-full items-center justify-between gap-2 rounded-xl border py-1 pl-1.5 pr-3 ${
                   selected
                     ? 'border-cyan-500/40 bg-cyan-500/15'
                     : 'border-transparent hover:bg-white/5'
@@ -304,7 +304,7 @@ export default function PersonnelPanel({
                 <button
                   type="button"
                   onClick={() => onSelect?.(p)}
-                  className="flex min-w-0 flex-1 items-center gap-2.5 px-1.5 py-1.5 text-left"
+                  className="flex min-w-0 flex-1 items-center gap-2.5 py-1.5 text-left"
                 >
                   <span
                     className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-xs font-bold ${
@@ -323,32 +323,64 @@ export default function PersonnelPanel({
                     </span>
                   </span>
                 </button>
-                <div className="flex flex-col gap-0.5 py-1 pr-1">
+                <div className="flex shrink-0 items-center gap-0.5">
                   <button
                     type="button"
                     title="Επεξεργασία"
+                    aria-label="Επεξεργασία"
                     onClick={() => openEdit(p)}
-                    className="rounded px-1.5 text-[10px] text-slate-400 hover:bg-white/10 hover:text-white"
+                    className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-slate-300 transition hover:bg-slate-700 hover:text-white"
                   >
-                    ✎
+                    <svg
+                      viewBox="0 0 20 20"
+                      fill="currentColor"
+                      className="h-4 w-4"
+                      aria-hidden="true"
+                    >
+                      <path d="M2.695 14.763l-1.262 3.154a.5.5 0 00.65.65l3.155-1.262a4 4 0 001.343-.885L17.5 5.5a2.121 2.121 0 00-3-3L3.58 13.42a4 4 0 00-.885 1.343z" />
+                    </svg>
                   </button>
                   {p.is_active ? (
                     <button
                       type="button"
-                      title="Αρχείο"
+                      title="Αρχειοθέτηση"
+                      aria-label="Αρχειοθέτηση"
                       onClick={() => handleArchive(p)}
-                      className="rounded px-1.5 text-[10px] text-slate-400 hover:bg-rose-500/20 hover:text-rose-200"
+                      className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-slate-300 transition hover:bg-rose-500/25 hover:text-rose-100"
                     >
-                      ⌁
+                      <svg
+                        viewBox="0 0 20 20"
+                        fill="currentColor"
+                        className="h-4 w-4"
+                        aria-hidden="true"
+                      >
+                        <path
+                          fillRule="evenodd"
+                          d="M8.75 1A2.75 2.75 0 006 3.75v.443c-.795.077-1.584.176-2.365.298a.75.75 0 10.23 1.482l.149-.022.341 10.234A1.75 1.75 0 006.105 17.5h7.79a1.75 1.75 0 001.75-1.515l.341-10.234.149.022a.75.75 0 00.23-1.482A41.03 41.03 0 0014 4.193V3.75A2.75 2.75 0 0011.25 1h-2.5zM10 4c.84 0 1.673.025 2.5.075V3.75c0-.69-.56-1.25-1.25-1.25h-2.5c-.69 0-1.25.56-1.25 1.25v.325C8.327 4.025 9.16 4 10 4zM8.58 7.72a.75.75 0 00-1.5.06l.3 7.5a.75.75 0 101.5-.06l-.3-7.5zm4.34.06a.75.75 0 10-1.5-.06l-.3 7.5a.75.75 0 101.5.06l.3-7.5z"
+                          clipRule="evenodd"
+                        />
+                      </svg>
                     </button>
                   ) : (
                     <button
                       type="button"
                       title="Επαναφορά"
+                      aria-label="Επαναφορά"
                       onClick={() => handleRestore(p)}
-                      className="rounded px-1.5 text-[10px] text-slate-400 hover:bg-emerald-500/20 hover:text-emerald-200"
+                      className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-slate-300 transition hover:bg-emerald-500/25 hover:text-emerald-100"
                     >
-                      ↺
+                      <svg
+                        viewBox="0 0 20 20"
+                        fill="currentColor"
+                        className="h-4 w-4"
+                        aria-hidden="true"
+                      >
+                        <path
+                          fillRule="evenodd"
+                          d="M15.312 11.424a5.5 5.5 0 01-9.201 2.466l-.312-.311h2.433a.75.75 0 000-1.5H4.39a.75.75 0 00-.75.75v3.842a.75.75 0 001.5 0v-2.26l.31.31a7 7 0 0011.712-3.138.75.75 0 00-1.449-.388zm-9.624-2.848a5.5 5.5 0 019.201-2.466l.312.311H12.77a.75.75 0 000 1.5h3.843a.75.75 0 00.75-.75V3.329a.75.75 0 00-1.5 0V5.59l-.31-.31A7 7 0 003.84 8.417a.75.75 0 001.45.388z"
+                          clipRule="evenodd"
+                        />
+                      </svg>
                     </button>
                   )}
                 </div>

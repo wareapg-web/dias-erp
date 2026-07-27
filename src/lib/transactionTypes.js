@@ -1,32 +1,213 @@
-/** transaction_types — APG EMPLOEE_PAYMENT_TYPE mirror */
+/**
+ * Runtime helpers for transaction_types (JS — used by MovementModal + ledger grid).
+ * Canonical types: ../types/transactionTypes.ts
+ */
 
-/** type_pay === 1 → Χρέωση / payroll_entries · type_pay === 2 → Πίστωση / payment_entries */
-export function isPaymentTypePay(typePay) {
-  return Number(typePay) === 2
+import { diasClient } from './supabase'
+import { extractLedgerAmount } from './techLedger'
+
+/** ledger_group === 'SALARY' → Μισθός columns (is_salary_type). */
+export function isSalaryLedgerGroup(ledgerGroup) {
+  return String(ledgerGroup || '').toUpperCase() === 'SALARY'
 }
 
-/** col_index === 1 → Μισθός · αλλιώς Λοιπά */
+export function ledgerGroupLabel(ledgerGroup) {
+  const g = String(ledgerGroup || '').toUpperCase()
+  if (g === 'SALARY') return 'Μισθός'
+  if (g === 'INVOICE') return 'Τιμολόγιο'
+  return 'Λοιπά'
+}
+
+/** @deprecated use isSalaryLedgerGroup — kept for old col_index rows during transition */
 export function isSalaryColIndex(colIndex) {
   return Number(colIndex) === 1
 }
 
 /**
- * Προσωρινό map description → payment_entries.payment_type enum.
- * Κανόνας (όπως ζητήθηκε):
- *   περιέχει '1' ή 'Έναντι' → SETTLEMENT_1
- *   περιέχει '2' → SETTLEMENT_2
- *   αλλιώς → ADVANCE
+ * Target grid column from ledger_group + side (DEBIT|CREDIT).
+ * @returns {'salary_debit'|'salary_credit'|'other_debit'|'other_credit'|'invoice_amount'}
  */
-export function paymentTypeCodeFromDescription(description) {
+export function ledgerColumnFor(ledgerGroup, side) {
+  const g = String(ledgerGroup || '').toUpperCase()
+  if (g === 'INVOICE') return 'invoice_amount'
+  const salary = g === 'SALARY'
+  const credit = String(side || '').toUpperCase() === 'CREDIT'
+  if (salary) return credit ? 'salary_credit' : 'salary_debit'
+  return credit ? 'other_credit' : 'other_debit'
+}
+
+export function sideFromLedgerBucket(bucket) {
+  if (bucket === 'salary_credit' || bucket === 'other_credit') return 'CREDIT'
+  return 'DEBIT'
+}
+
+export function ledgerColumnLabel(column) {
+  const map = {
+    salary_debit: 'Μισθός Χρέωση',
+    salary_credit: 'Μισθός Πίστωση',
+    other_debit: 'Λοιπά Χρέωση',
+    other_credit: 'Λοιπά Πίστωση',
+    invoice_amount: 'Τιμολόγιο Χρ.-Πιστ.',
+  }
+  return map[column] || column || '—'
+}
+
+/** Load active transaction types from DIAS Supabase. */
+export async function fetchTransactionTypes() {
+  const { data, error } = await diasClient
+    .from('transaction_types')
+    .select('id, description, ledger_group, is_for_sum, sort_order, is_active, ept_type_pay')
+    .eq('is_active', true)
+    .order('sort_order', { ascending: true })
+    .order('id', { ascending: true })
+
+  if (error) throw error
+  return data || []
+}
+
+/** description → TransactionType map (case-insensitive fallback). */
+export function buildTypeLookup(types = []) {
+  const byId = new Map()
+  const byDescription = new Map()
+  const byDescriptionLower = new Map()
+
+  for (const t of types) {
+    byId.set(Number(t.id), t)
+    byDescription.set(t.description, t)
+    byDescriptionLower.set(String(t.description || '').toLowerCase(), t)
+  }
+
+  return { byId, byDescription, byDescriptionLower, list: types }
+}
+
+/** Default transaction_type id hints for payment_entries.payment_type codes. */
+const PAYMENT_CODE_TYPE_IDS = {
+  SETTLEMENT: 1,
+  SETTLEMENT_1: 91,
+  SETTLEMENT_2: 92,
+  ADVANCE: 2,
+  BONUS_PAYOUT: 4,
+  EXPENSES: 24,
+}
+
+export function resolveTransactionType(lookup, { typeId, description, typeCode } = {}) {
+  if (!lookup) return null
+  if (typeId != null && lookup.byId.has(Number(typeId))) {
+    return lookup.byId.get(Number(typeId))
+  }
+
+  const tryDescription = (value) => {
+    if (!value) return null
+    if (lookup.byDescription.has(value)) return lookup.byDescription.get(value)
+    return lookup.byDescriptionLower.get(String(value).toLowerCase()) || null
+  }
+
+  const fromDesc = tryDescription(description)
+  if (fromDesc) return fromDesc
+
+  const fromCode = tryDescription(typeCode)
+  if (fromCode) return fromCode
+
+  if (typeCode) {
+    const code = String(typeCode)
+    const fromList = lookup.list.find(
+      (t) =>
+        t.description === code ||
+        String(t.description).toLowerCase() === code.toLowerCase()
+    )
+    if (fromList) return fromList
+  }
+
+  return null
+}
+
+/**
+ * Resolve transaction_types row from a tech_ledger_view row (edit mode).
+ * Uses type code only — description holds hours text, not the type name.
+ */
+export function resolveTransactionTypeFromLedgerRow(lookup, row) {
+  if (!lookup || !row) return null
+
+  const typeCode = String(row.type || '').trim()
+
+  let hit = resolveTransactionType(lookup, { description: typeCode, typeCode })
+  if (hit) return hit
+
+  if (row.source === 'PAYMENT' && typeCode) {
+    const hintedId = PAYMENT_CODE_TYPE_IDS[typeCode.toUpperCase()]
+    if (hintedId != null && lookup.byId.has(hintedId)) {
+      return lookup.byId.get(hintedId)
+    }
+  }
+
+  const { bucket } = extractLedgerAmount(row)
+  if (bucket === 'other_credit') {
+    return lookup.byId.get(92) || lookup.byId.get(24) || null
+  }
+  if (bucket === 'salary_credit') {
+    return lookup.byId.get(1) || lookup.byId.get(91) || null
+  }
+
+  return null
+}
+
+export function resolveLedgerGroupForRow(lookup, row) {
+  const tt = resolveTransactionTypeFromLedgerRow(lookup, row)
+  if (tt?.ledger_group) return tt.ledger_group
+
+  const { bucket } = extractLedgerAmount(row)
+  if (bucket.startsWith('salary')) return 'SALARY'
+  if (bucket.startsWith('other')) return 'OTHER'
+  return 'OTHER'
+}
+
+/**
+ * payment_entries.payment_type for credit postings.
+ * Uses description heuristics + ledger_group for column routing in tech_ledger_view.
+ */
+export function paymentTypeCodeFromDescription(description, ledgerGroup) {
   const d = String(description || '')
   const lower = d.toLowerCase()
-  if (lower.includes('έναντι') || lower.includes('εναντι') || d.includes('1')) {
+  const salary = isSalaryLedgerGroup(ledgerGroup)
+
+  if (lower.includes('εξόφληση (2)') || lower.includes('εξοφληση (2)') || /\(2\)/.test(d)) {
+    return 'SETTLEMENT_2'
+  }
+  if (lower.includes('εξόφληση (1)') || lower.includes('εξοφληση (1)') || /\(1\)/.test(d)) {
     return 'SETTLEMENT_1'
   }
-  if (d.includes('2')) return 'SETTLEMENT_2'
-  return 'ADVANCE'
+  if (lower.includes('εξόφληση') || lower.includes('εξοφληση')) {
+    return salary ? 'SETTLEMENT' : 'SETTLEMENT_2'
+  }
+  if (lower.includes('προκαταβολή') || lower.includes('προκαταβολη')) return 'ADVANCE'
+  if (lower.includes('έναντι') || lower.includes('εναντι')) return 'ADVANCE'
+  if (lower.includes('έξοδα') || lower.includes('εξοδα')) return 'EXPENSES'
+  if (lower.includes('bonus')) return 'BONUS_PAYOUT'
+  if (lower.includes('δανειο') || lower.includes('δάνειο')) return salary ? 'ADVANCE' : 'EXPENSES'
+  return salary ? 'SETTLEMENT' : 'SETTLEMENT_2'
 }
 
 export function payrollTypeCodeFromDescription(description) {
   return String(description || '').trim() || 'Κίνηση'
+}
+
+/** True when posting should go to payment_entries (credit side). */
+export function shouldPostAsPayment(side) {
+  return String(side || '').toUpperCase() === 'CREDIT'
+}
+
+/** Default side for a type — settlement-like → CREDIT, else DEBIT. */
+export function defaultSideForType(description) {
+  const lower = String(description || '').toLowerCase()
+  if (
+    lower.includes('εξόφληση') ||
+    lower.includes('εξοφληση') ||
+    lower.includes('προκαταβολή') ||
+    lower.includes('προκαταβολη') ||
+    lower.includes('έναντι') ||
+    lower.includes('εναντι')
+  ) {
+    return 'CREDIT'
+  }
+  return 'DEBIT'
 }

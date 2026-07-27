@@ -7,6 +7,7 @@ create table if not exists public.payroll_entries (
   reference_date date not null default (current_date),
   type_code text not null,
   description text,
+  notes text,
   amount numeric(12, 2) not null default 0,
   is_salary_type boolean not null default true,
   created_at timestamptz not null default now()
@@ -61,7 +62,7 @@ select
   0::numeric(12, 2) as salary_credit,
   case when not pe.is_salary_type then pe.amount else 0 end as other_debit,
   0::numeric(12, 2) as other_credit,
-  ''::text as notes,
+  coalesce(pe.notes, '') as notes,
   pe.created_at
 from public.payroll_entries pe
 
@@ -73,7 +74,7 @@ select
   'PAYMENT'::text as source,
   pay.payment_date as entry_date,
   pay.payment_type as type,
-  coalesce(pay.notes, '') as description,
+  coalesce(pay.description, '') as description,
   0::numeric(12, 2) as salary_debit,
   case
     when pay.payment_type in ('ADVANCE', 'SETTLEMENT', 'SETTLEMENT_1') then pay.amount
@@ -82,8 +83,7 @@ select
   0::numeric(12, 2) as other_debit,
   case
     when pay.payment_type in ('EXPENSES', 'BONUS_PAYOUT', 'SETTLEMENT_2') then pay.amount
-    else 0
-  end as other_credit,
+    else 0 end as other_credit,
   coalesce(pay.notes, '') as notes,
   pay.created_at
 from public.payment_entries pay;

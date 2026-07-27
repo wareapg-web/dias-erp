@@ -40,7 +40,144 @@ export function formatLedgerAmount(value) {
   }).format(n)
 }
 
-/** Ποσό από τις 4 στήλες ledger (μη μηδενική, συμπεριλαμβανομένων αρνητικών). */
+function fmtLedgerNum(value, digits = 2) {
+  const n = Number(value)
+  if (!Number.isFinite(n)) return '0,00'
+  return n.toLocaleString('el-GR', {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  })
+}
+
+function earningsAmount(earningsForm, prefix) {
+  const amount = Number(earningsForm?.[`${prefix}_amount`])
+  return Number.isFinite(amount) && amount > 0 ? amount : 0
+}
+
+/** Ώρες × τιμή (Υπερωρίες, Αργίες, Νυχτερινά) — ποιοτική επεξήγηση, όχι ποσό. */
+function hoursDescription(hours, rate) {
+  const h = Number(hours) || 0
+  const r = Number(rate) || 0
+  if (h === 0) return ''
+  if (r > 0) return `${fmtLedgerNum(h)} ώρα/ες x ${fmtLedgerNum(r)} €`
+  return `${fmtLedgerNum(h)} ώρα/ες`
+}
+
+/** Ακέραια ποσότητα × τιμή (Μετρό, Διανυκτέρευση). */
+function countDescription(count, rate) {
+  const c = Math.round(Number(count) || 0)
+  const r = Number(rate) || 0
+  if (c === 0) return ''
+  if (r > 0) return `${fmtLedgerNum(c)} x ${fmtLedgerNum(r)} €`
+  return fmtLedgerNum(c, 0)
+}
+
+/** True αν το κείμενο είναι σκέτο ποσό (€) χωρίς μαθηματική επεξήγηση. */
+export function isBareEuroText(text) {
+  const s = String(text || '').trim()
+  if (!s) return false
+  // "1.200,00 €" / "1200.00" / "100 €" — χωρίς "x" / "ώρα"
+  if (/[x×]|ώρα|ημέρ/i.test(s)) return false
+  return /^[\d.,\s]+€?$/.test(s)
+}
+
+/**
+ * Περιγραφή για template / preview — ΜΟΝΟ ποιοτικά:
+ * μαθηματική επεξήγηση (ώρες/μονάδες × τιμή). Ποτέ σκέτο ποσό €.
+ * Σταθερά (Μισθός, Bonus, Ticket) → κενό· το ποσό πάει στις 4 ledger στήλες.
+ */
+export function buildLedgerDescriptionForType(type, { summary, earningsForm } = {}) {
+  if (!type) return ''
+  const id = Number(type.id)
+  const s = summary || {}
+  const e = earningsForm || {}
+
+  switch (id) {
+    case 7:
+      return hoursDescription(s.overtimeHours, earningsAmount(e, 'overtime'))
+    case 8:
+      return hoursDescription(s.holidayHours, earningsAmount(e, 'holiday'))
+    case 9:
+      return hoursDescription(s.nightHours, earningsAmount(e, 'night'))
+    case 22:
+      return countDescription(s.overnightDays, earningsAmount(e, 'overnight'))
+    case 25:
+      return countDescription(s.metroDays, earningsAmount(e, 'metro'))
+    default:
+      // Μισθός / Bonus / Ticket / εξοφλήσεις κλπ. — χωρίς κείμενο ποσού στην Περιγραφή
+      return ''
+  }
+}
+
+/**
+ * Υπολογισμένο ποσό από Αποδοχές + ώρες Admin (για prefill modal / preview στήλης).
+ * Δεν μπαίνει στην Περιγραφή.
+ */
+export function buildLedgerAmountForType(type, { summary, earningsForm } = {}) {
+  if (!type) return 0
+  const id = Number(type.id)
+  const s = summary || {}
+  const e = earningsForm || {}
+  const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100
+
+  switch (id) {
+    case 3:
+      return round2(earningsAmount(e, 'salary'))
+    case 4:
+      return round2(earningsAmount(e, 'bonus'))
+    case 41:
+      return round2(earningsAmount(e, 'bonus_plus'))
+    case 24:
+      return round2(earningsAmount(e, 'ticket'))
+    case 7:
+      return round2((Number(s.overtimeHours) || 0) * earningsAmount(e, 'overtime'))
+    case 8:
+      return round2((Number(s.holidayHours) || 0) * earningsAmount(e, 'holiday'))
+    case 9:
+      return round2((Number(s.nightHours) || 0) * earningsAmount(e, 'night'))
+    case 22:
+      return round2(Math.round(Number(s.overnightDays) || 0) * earningsAmount(e, 'overnight'))
+    case 25:
+      return round2(Math.round(Number(s.metroDays) || 0) * earningsAmount(e, 'metro'))
+    default:
+      return 0
+  }
+}
+
+/** Ημ/νία + ώρα εισαγωγής κίνησης (στήλη Εισαγωγή — read-only, από created_at). */
+export function formatLedgerImportAt(value) {
+  if (!value) return ''
+  const d = new Date(value)
+  if (Number.isNaN(d.getTime())) return ''
+  return d.toLocaleString('el-GR', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
+/**
+ * Περιγραφή στο grid: μόνο ποιοτικά (τύπος ώρες×τιμή ή ελεύθερο κείμενο).
+ * Σκέτα ποσά € αποκλείονται — πάνε στις 4 λογιστικές στήλες.
+ */
+export function ledgerDescriptionForRow(row, context = {}) {
+  if (!row) return ''
+
+  if (row.__template) {
+    if (row.__type) {
+      return buildLedgerDescriptionForType(row.__type, context) || ''
+    }
+    return ''
+  }
+
+  const fromDb = String(row.description || '').trim()
+  if (fromDb && !isBareEuroText(fromDb)) return fromDb
+  return ''
+}
+
+/** Ποσό από τις ledger στήλες (μη μηδενική, συμπεριλαμβανομένων αρνητικών). */
 export function extractLedgerAmount(row) {
   if (!row) return { amount: 0, bucket: 'salary_debit' }
   const cols = [
@@ -48,14 +185,31 @@ export function extractLedgerAmount(row) {
     ['salary_credit', Number(row.salary_credit) || 0],
     ['other_debit', Number(row.other_debit) || 0],
     ['other_credit', Number(row.other_credit) || 0],
+    ['invoice_amount', Number(row.invoice_amount) || 0],
   ]
   const hit = cols.find(([, v]) => v !== 0)
   if (!hit) return { amount: 0, bucket: 'salary_debit' }
   return { amount: hit[1], bucket: hit[0] }
 }
 
-export function isSalaryBucket(bucket) {
-  return bucket === 'salary_debit' || bucket === 'salary_credit'
+function isSalaryBucket(bucket) {
+  return String(bucket || '').startsWith('salary')
+}
+
+/** Stable key for a ledger grid row. */
+export function ledgerRowKey(row) {
+  if (row?._gridKey) return row._gridKey
+  if (!row?.id) return null
+  return `${row.source || 'PAYROLL'}-${row.id}`
+}
+
+/** Normalize DB / locale dates for <input type="date">. */
+export function normalizeEntryDate(value) {
+  if (!value) return new Date().toISOString().slice(0, 10)
+  if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}/.test(value)) return value.slice(0, 10)
+  const d = new Date(value)
+  if (!Number.isNaN(d.getTime())) return d.toISOString().slice(0, 10)
+  return new Date().toISOString().slice(0, 10)
 }
 
 /** Form state από ledger row (ή κενό για INSERT). */
@@ -65,23 +219,37 @@ export function movementFormFromRow(row) {
       id: null,
       source: 'PAYROLL',
       entry_date: new Date().toISOString().slice(0, 10),
-      type: 'HOLIDAY',
+      type: '',
       description: '',
       amount: '',
       notes: '',
+      side: 'DEBIT',
+      ledger_group: null,
       is_salary_type: false,
+      post_to_invoice: false,
     }
   }
   const { amount, bucket } = extractLedgerAmount(row)
+  const side =
+    bucket === 'salary_credit' || bucket === 'other_credit' ? 'CREDIT' : 'DEBIT'
+  const ledger_group =
+    bucket === 'invoice_amount'
+      ? 'INVOICE'
+      : isSalaryBucket(bucket)
+        ? 'SALARY'
+        : 'OTHER'
   return {
     id: row.id,
     source: row.source || 'PAYROLL',
-    entry_date: row.entry_date || new Date().toISOString().slice(0, 10),
+    entry_date: normalizeEntryDate(row.entry_date),
     type: row.type || '',
     description: row.description || '',
-    amount: String(amount),
+    amount: amount === 0 ? '' : String(amount),
     notes: row.notes || '',
+    side,
+    ledger_group,
     is_salary_type: isSalaryBucket(bucket),
+    post_to_invoice: bucket === 'invoice_amount',
   }
 }
 
@@ -98,6 +266,7 @@ export function computeLedgerBalances(rows = []) {
   let salaryCredit = 0
   let otherDebit = 0
   let otherCredit = 0
+  let invoiceAmount = 0
   let y1 = 0
   let y2 = 0
 
@@ -106,15 +275,19 @@ export function computeLedgerBalances(rows = []) {
     salaryCredit += Number(r.salary_credit) || 0
     otherDebit += Number(r.other_debit) || 0
     otherCredit += Number(r.other_credit) || 0
-    if (r.type === 'SETTLEMENT_1') y1 += Number(r.salary_credit) || 0
+    invoiceAmount += Number(r.invoice_amount) || 0
+    if (r.type === 'SETTLEMENT_1') {
+      y1 += Number(r.salary_credit) || Number(r.invoice_amount) || 0
+    }
     if (r.type === 'SETTLEMENT_2') y2 += Number(r.other_credit) || 0
   }
 
   const round2 = (n) => Math.round(n * 100) / 100
   return {
-    balance: round2(salaryDebit + otherDebit - salaryCredit - otherCredit),
+    balance: round2(salaryDebit + otherDebit + invoiceAmount - salaryCredit - otherCredit),
     balance1: round2(salaryDebit - salaryCredit),
     balance2: round2(otherDebit - otherCredit),
+    invoice: round2(invoiceAmount),
     y1: round2(y1),
     y2: round2(y2),
   }
