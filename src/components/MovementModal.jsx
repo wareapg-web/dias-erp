@@ -1,20 +1,37 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { diasClient, formatSupabaseError } from '../lib/supabase'
-import { movementFormFromRow, parseMovementAmount } from '../lib/techLedger'
+import { movementFormFromRow, parseMovementAmount, extractLedgerAmount, isBareEuroText } from '../lib/techLedger'
 import {
-  isPaymentTypePay,
-  isSalaryColIndex,
+  resolveLedgerColumn,
+  resolveLedgerSide,
+} from '../lib/ledgerMapping'
+import {
+  buildTypeLookup,
+  isSalaryLedgerGroup,
+  ledgerColumnFor,
+  ledgerColumnLabel,
+  ledgerGroupLabel,
   paymentTypeCodeFromDescription,
   payrollTypeCodeFromDescription,
+  resolveTransactionTypeFromLedgerRow,
+  shouldPostAsPayment,
+  sideFromLedgerBucket,
 } from '../lib/transactionTypes'
 
 /**
- * Κίνηση modal — 100% data-driven από transaction_types (όχι hardcoded lists).
+ * Κίνηση modal — data-driven από transaction_types.
+ * ledger_group (SALARY|OTHER) → Μισθός vs Λοιπά columns.
+ * side (DEBIT|CREDIT) → Χρέωση vs Πίστωση (UI choice, not locked by type).
  */
 export default function MovementModal({
   open,
   selectedRowData,
   tech,
+  presetTypeId = null,
+  presetSide = null,
+  presetDescription = null,
+  presetAmount = null,
+  hasInvoice = false,
   onClose,
   onSaved,
   error: externalError = null,
@@ -30,6 +47,26 @@ export default function MovementModal({
   const isEdit = Boolean(selectedRowData?.id)
   const rowSource = selectedRowData?.source || 'PAYROLL'
 
+  const typeIsSalary = (t) => {
+    if (!t) return false
+    if (t.ledger_group) return isSalaryLedgerGroup(t.ledger_group)
+    return Number(t.col_index) === 1
+  }
+
+  const applyType = (t, sideOverride) => {
+    if (!t) return
+    const side = sideOverride || resolveLedgerSide(t, 0, { hasInvoice })
+    const salary = typeIsSalary(t)
+    setForm((prev) => ({
+      ...prev,
+      type: t.description,
+      is_salary_type: salary,
+      ledger_group: t.ledger_group || (salary ? 'SALARY' : 'OTHER'),
+      side,
+      post_to_invoice: Boolean(hasInvoice && salary),
+    }))
+  }
+
   useEffect(() => {
     if (!open) return
     setForm(movementFormFromRow(selectedRowData))
@@ -42,7 +79,9 @@ export default function MovementModal({
       try {
         const { data, error: err } = await diasClient
           .from('transaction_types')
-          .select('id, description, type_pay, col_index, is_for_sum, sort_order, is_active')
+          .select(
+            'id, description, ledger_group, is_for_sum, sort_order, is_active, ept_type_pay, col_index'
+          )
           .eq('is_active', true)
           .order('sort_order', { ascending: true })
           .order('id', { ascending: true })
@@ -52,33 +91,56 @@ export default function MovementModal({
 
         const list = data || []
         setTypes(list)
+        const lookup = buildTypeLookup(list)
 
-        if (selectedRowData?.type) {
-          const match =
-            list.find((t) => t.description === selectedRowData.type) ||
-            list.find(
-              (t) =>
-                String(t.description).toLowerCase() ===
-                String(selectedRowData.type).toLowerCase()
-            )
-          setSelectedTypeId(match?.id ?? list[0]?.id ?? null)
-          if (match) {
-            setForm((prev) => ({
-              ...prev,
-              type: match.description,
-              is_salary_type: isSalaryColIndex(match.col_index),
-            }))
-          }
-        } else {
-          const first = list[0]
-          setSelectedTypeId(first?.id ?? null)
-          if (first) {
-            setForm((prev) => ({
-              ...prev,
-              type: first.description,
-              is_salary_type: isSalaryColIndex(first.col_index),
-            }))
-          }
+        let match = null
+        if (presetTypeId != null) {
+          match = list.find((t) => Number(t.id) === Number(presetTypeId))
+        } else if (selectedRowData) {
+          match = resolveTransactionTypeFromLedgerRow(lookup, selectedRowData)
+        }
+
+        const chosen = match || list[0] || null
+        setSelectedTypeId(chosen?.id ?? null)
+
+        if (chosen) {
+          const base = selectedRowData
+            ? movementFormFromRow(selectedRowData)
+            : movementFormFromRow(null)
+          const { bucket } = selectedRowData
+            ? extractLedgerAmount(selectedRowData)
+            : { bucket: null }
+          const side =
+            presetSide ||
+            base.side ||
+            (bucket ? sideFromLedgerBucket(bucket) : null) ||
+            resolveLedgerSide(chosen, Number(base.amount) || 0, { hasInvoice })
+          const salary = typeIsSalary(chosen)
+          const postToInvoice =
+            bucket === 'invoice_amount' ||
+            base.post_to_invoice === true ||
+            (!selectedRowData && hasInvoice && salary)
+          setForm({
+            ...base,
+            type: chosen.description,
+            description:
+              !selectedRowData && presetDescription
+                ? presetDescription
+                : isBareEuroText(base.description)
+                  ? ''
+                  : base.description,
+            amount:
+              !selectedRowData && presetAmount != null && presetAmount !== ''
+                ? String(presetAmount)
+                : base.amount,
+            is_salary_type: salary,
+            ledger_group:
+              chosen.ledger_group || (salary ? 'SALARY' : 'OTHER'),
+            side,
+            post_to_invoice: Boolean(postToInvoice),
+          })
+        } else if (selectedRowData) {
+          setForm(movementFormFromRow(selectedRowData))
         }
       } catch (err) {
         if (!cancelled) {
@@ -86,7 +148,7 @@ export default function MovementModal({
           setTypesError(
             formatSupabaseError(err, { table: 'transaction_types', clientLabel: 'DIAS ERP' }) ||
               err.message ||
-              'Λείπει το transaction_types — τρέξε supabase/06_transaction_types.sql'
+              'Λείπει ledger_group — τρέξε supabase/07_transaction_types_ledger_group.sql'
           )
         }
       } finally {
@@ -98,12 +160,22 @@ export default function MovementModal({
     return () => {
       cancelled = true
     }
-  }, [open, selectedRowData])
+  }, [open, selectedRowData, presetTypeId, presetSide, presetDescription, presetAmount, hasInvoice])
 
   const selectedType = useMemo(
     () => types.find((t) => Number(t.id) === Number(selectedTypeId)) || null,
     [types, selectedTypeId]
   )
+
+  const targetColumn = useMemo(() => {
+    if (!selectedType) return null
+    if (form.post_to_invoice) return 'invoice_amount'
+    return resolveLedgerColumn(selectedType, Number(form.amount) || 0, {
+      hasInvoice,
+      forceInvoice: false,
+      side: form.side,
+    })
+  }, [selectedType, form.side, form.amount, form.post_to_invoice, hasInvoice])
 
   if (!open) return null
 
@@ -114,11 +186,7 @@ export default function MovementModal({
     setSelectedTypeId(id)
     const t = types.find((x) => Number(x.id) === id)
     if (!t) return
-    setForm((prev) => ({
-      ...prev,
-      type: t.description,
-      is_salary_type: isSalaryColIndex(t.col_index),
-    }))
+    applyType(t, isEdit ? form.side : resolveLedgerSide(t, 0, { hasInvoice }))
   }
 
   const handleSave = async (e) => {
@@ -142,22 +210,35 @@ export default function MovementModal({
       return
     }
 
+    const isSalary = typeIsSalary(selectedType)
+    const side = form.side || 'DEBIT'
+    const postAsPayment = shouldPostAsPayment(side)
+    const postToInvoice = Boolean(hasInvoice && form.post_to_invoice)
+    const invoiceAmount = postToInvoice ? amount : 0
+    const rawDescription = form.description?.trim() || ''
+    const description =
+      rawDescription && !isBareEuroText(rawDescription) ? rawDescription : null
+    const notes = form.notes?.trim() || null
+
     setSaving(true)
     try {
       if (isEdit) {
-        // Επεξεργασία: ενημέρωση στο table της υπάρχουσας γραμμής (source από ledger)
         if (rowSource === 'PAYMENT') {
-          const paymentType = paymentTypeCodeFromDescription(selectedType.description)
+          const paymentType = paymentTypeCodeFromDescription(
+            selectedType.description,
+            selectedType.ledger_group
+          )
           const { error } = await diasClient
             .from('payment_entries')
             .update({
               payment_date: form.entry_date,
               payment_type: paymentType,
               amount,
-              notes: form.notes?.trim() || form.description?.trim() || null,
+              invoice_amount: invoiceAmount,
+              notes,
               entry_date: form.entry_date,
               entry_type: paymentType,
-              description: form.description?.trim() || selectedType.description,
+              description,
               tech_name: tech.displayName || tech.name || null,
             })
             .eq('id', selectedRowData.id)
@@ -168,52 +249,49 @@ export default function MovementModal({
             .update({
               reference_date: form.entry_date,
               type_code: payrollTypeCodeFromDescription(selectedType.description),
-              description: form.description?.trim() || null,
+              description,
+              notes,
               amount,
-              is_salary_type: isSalaryColIndex(selectedType.col_index),
+              invoice_amount: invoiceAmount,
+              is_salary_type: isSalary,
             })
             .eq('id', selectedRowData.id)
           if (error) throw error
         }
+      } else if (postAsPayment) {
+        const paymentType = paymentTypeCodeFromDescription(
+          selectedType.description,
+          selectedType.ledger_group
+        )
+        const { error } = await diasClient.from('payment_entries').insert({
+          tech_id: String(tech.id),
+          tech_name: tech.displayName || tech.name || null,
+          payment_date: form.entry_date,
+          payment_type: paymentType,
+          amount,
+          invoice_amount: invoiceAmount,
+          notes,
+          entry_date: form.entry_date,
+          entry_type: paymentType,
+          description,
+        })
+        if (error) throw error
       } else {
-        // Create Mode — 100% από transaction_types
-        // type_pay === 1 → payroll_entries · type_pay === 2 → payment_entries
-        if (Number(selectedType.type_pay) === 1) {
-          const { error } = await diasClient.from('payroll_entries').insert({
-            tech_id: String(tech.id),
-            reference_date: form.entry_date,
-            type_code: payrollTypeCodeFromDescription(selectedType.description),
-            description: form.description?.trim() || null,
-            amount,
-            is_salary_type: Number(selectedType.col_index) === 1,
-          })
-          if (error) throw error
-        } else if (Number(selectedType.type_pay) === 2) {
-          const paymentType = paymentTypeCodeFromDescription(selectedType.description)
-          const { error } = await diasClient.from('payment_entries').insert({
-            tech_id: String(tech.id),
-            tech_name: tech.displayName || tech.name || null,
-            payment_date: form.entry_date,
-            payment_type: paymentType,
-            amount,
-            notes: form.notes?.trim() || form.description?.trim() || null,
-            entry_date: form.entry_date,
-            entry_type: paymentType,
-            description: form.description?.trim() || selectedType.description,
-          })
-          if (error) throw error
-        } else {
-          throw new Error(
-            `Άγνωστο type_pay=${selectedType.type_pay}. Αναμενόμενο 1 (χρέωση) ή 2 (πίστωση).`
-          )
-        }
+        const { error } = await diasClient.from('payroll_entries').insert({
+          tech_id: String(tech.id),
+          reference_date: form.entry_date,
+          type_code: payrollTypeCodeFromDescription(selectedType.description),
+          description,
+          notes,
+          amount,
+          invoice_amount: invoiceAmount,
+          is_salary_type: isSalary,
+        })
+        if (error) throw error
       }
 
       onSaved?.({
-        wasPayment:
-          isEdit
-            ? rowSource === 'PAYMENT'
-            : Number(selectedType.type_pay) === 2,
+        wasPayment: isEdit ? rowSource === 'PAYMENT' : postAsPayment,
       })
       onClose?.()
     } catch (err) {
@@ -222,7 +300,7 @@ export default function MovementModal({
           ? rowSource === 'PAYMENT'
             ? 'payment_entries'
             : 'payroll_entries'
-          : Number(selectedType?.type_pay) === 2
+          : postAsPayment
             ? 'payment_entries'
             : 'payroll_entries'
       setSaveError(
@@ -235,7 +313,6 @@ export default function MovementModal({
     }
   }
 
-  const createTargetIsPayment = selectedType && Number(selectedType.type_pay) === 2
   const displayError = saveError || externalError
   const formDisabled = typesLoading || types.length === 0 || saving
 
@@ -257,15 +334,17 @@ export default function MovementModal({
             <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-cyan-400/80">
               Καρτέλα
             </p>
-            <h3 className="text-lg font-bold text-white">Κίνηση</h3>
+            <h3 className="text-lg font-bold text-white">
+              {isEdit ? 'Επεξεργασία Κίνησης' : 'Κίνηση'}
+            </h3>
             <p className="mt-0.5 text-xs text-slate-400">
               {typesLoading
                 ? 'Φόρτωση τύπων από transaction_types...'
                 : isEdit
-                  ? `Επεξεργασία · ${rowSource === 'PAYMENT' ? 'Πληρωμή' : 'Δεδουλευμένο'}`
-                  : createTargetIsPayment
-                    ? 'Νέα πίστωση → payment_entries (type_pay=2)'
-                    : 'Νέα χρέωση → payroll_entries (type_pay=1)'}
+                  ? `Επεξεργασία · ${rowSource === 'PAYMENT' ? 'Πίστωση' : 'Χρέωση'} · ${selectedRowData?.entry_date ? new Date(selectedRowData.entry_date).toLocaleDateString('el-GR') : ''}`
+                  : shouldPostAsPayment(form.side)
+                    ? 'Νέα πίστωση → payment_entries'
+                    : 'Νέα χρέωση → payroll_entries'}
             </p>
           </div>
           <button
@@ -320,13 +399,62 @@ export default function MovementModal({
                   ) : (
                     types.map((t) => (
                       <option key={t.id} value={t.id}>
-                        {t.description}
+                        {t.description} · {ledgerGroupLabel(t.ledger_group)}
                       </option>
                     ))
                   )}
                 </select>
               </div>
             </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                  Στήλη (ledger_group)
+                </label>
+                <div
+                  className={`mt-1 rounded-xl border px-3 py-2 text-sm font-semibold ${
+                    selectedType && typeIsSalary(selectedType)
+                      ? 'border-cyan-500/30 bg-cyan-500/10 text-cyan-100'
+                      : 'border-violet-500/30 bg-violet-500/10 text-violet-100'
+                  }`}
+                >
+                  {selectedType ? ledgerGroupLabel(selectedType.ledger_group) : '—'}
+                </div>
+              </div>
+              <div>
+                <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                  Χρέωση / Πίστωση
+                </label>
+                <select
+                  value={form.side || 'DEBIT'}
+                  onChange={(e) => patch('side', e.target.value)}
+                  className="mt-1 w-full rounded-xl border border-white/10 bg-slate-950/60 px-3 py-2 text-sm text-white"
+                >
+                  <option value="DEBIT">Χρέωση (Δεδουλευμένα)</option>
+                  <option value="CREDIT">Πίστωση (Πληρωμή)</option>
+                </select>
+              </div>
+            </div>
+
+            {hasInvoice && (
+              <label className="flex cursor-pointer items-center gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-100">
+                <input
+                  type="checkbox"
+                  checked={Boolean(form.post_to_invoice)}
+                  onChange={(e) => patch('post_to_invoice', e.target.checked)}
+                  className="h-4 w-4 rounded border-white/20 bg-slate-950 text-amber-500 focus:ring-amber-500/40"
+                />
+                Στήλη Τιμολόγιο Χρ.-Πιστ.
+              </label>
+            )}
+
+            {targetColumn && (
+              <p className="rounded-lg border border-white/5 bg-slate-900/60 px-3 py-2 text-[11px] text-slate-400">
+                Στόχος στο grid:{' '}
+                <span className="font-semibold text-slate-200">{ledgerColumnLabel(targetColumn)}</span>
+              </p>
+            )}
 
             <div>
               <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
@@ -357,10 +485,8 @@ export default function MovementModal({
 
             {selectedType && !typesLoading && (
               <p className="text-[11px] text-slate-500">
-                id={selectedType.id} · type_pay={selectedType.type_pay} · col_index=
-                {selectedType.col_index} ·{' '}
-                {Number(selectedType.col_index) === 1 ? 'Μισθός' : 'Λοιπά'} ·{' '}
-                {Number(selectedType.type_pay) === 2 ? 'Πίστωση' : 'Χρέωση'}
+                id={selectedType.id} · {ledgerGroupLabel(selectedType.ledger_group)} · is_for_sum=
+                {String(selectedType.is_for_sum)}
               </p>
             )}
 

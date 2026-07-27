@@ -48,7 +48,7 @@ export function paymentToDb(form, tech) {
     entry_type: paymentType,
     month: Number.isFinite(d.getMonth()) ? d.getMonth() + 1 : null,
     year: Number.isFinite(d.getFullYear()) ? d.getFullYear() : null,
-    description: String(form.notes || '').trim() || paymentType,
+    description: null,
   }
 }
 

@@ -29,6 +29,9 @@
 - `supabase/04_payment_entries.sql`
 - `supabase/05_payroll_entries_and_ledger.sql`
 - `supabase/06_transaction_types.sql`
+- `supabase/07_transaction_types_ledger_group.sql` (ledger_group SALARY|OTHER + seed από PaymentTypes.csv)
+- `supabase/08_ledger_columns_description_notes.sql` (type / description ώρων / notes στο tech_ledger_view)
+- `supabase/09_ledger_invoice_column.sql` (στήλη invoice_amount · Τιμολόγιο Χρ.-Πιστ.)
 
 ## Βήμα 2 — Env
 
