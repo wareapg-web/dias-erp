@@ -1153,7 +1153,7 @@ export default function PersonnelPanel({
 
             {form.payment_method && (
               <p className="mt-2 text-[11px] text-slate-500">
-                {paymentMethodLabel(form.payment_method)} · λεπτομέρειες και στις Αποδοχές
+                {paymentMethodLabel(form.payment_method)} · εμφανίζεται στις Αποδοχές (μόνο ανάγνωση)
               </p>
             )}
             </div>

@@ -5,6 +5,7 @@
 
 import { diasClient } from './supabase'
 import { monthDateRange } from './techLedger'
+import { personnelIssuesInvoice } from './personnel'
 import {
   isSalaryLedgerGroup,
   payrollTypeCodeFromDescription,
@@ -69,7 +70,7 @@ export const MONTH_IMPORT_SPECS = [
   {
     typeId: 23,
     label: 'Λογιστής',
-    // Μόνο με issues_invoice === true (gate στο resolveMonthImportLines).
+    // Μόνο με payment_method === 'invoice' (gate στο resolveMonthImportLines).
     // Πηγή: συμφωνία ACCOUNTANT ή αριθμητικό extra στις Αποδοχές.
     fromEarnings: (e) => {
       const extra = String(e?.extra || '').trim()
@@ -84,17 +85,21 @@ export function resolveMonthImportLines({
   earningsForm,
   agreements = [],
   transactionTypes = [],
+  issuesInvoice = null,
 }) {
   const byId = new Map((transactionTypes || []).map((t) => [Number(t.id), t]))
   const lines = []
-  const issuesInvoice = earningsForm?.issues_invoice === true
+  // Gate από master personnel (payment_method), fallback στο earningsForm για συμβατότητα
+  const canInvoice =
+    issuesInvoice === true ||
+    (issuesInvoice == null && earningsForm?.issues_invoice === true)
 
   for (const spec of MONTH_IMPORT_SPECS) {
     const type = byId.get(Number(spec.typeId))
     if (!type) continue
 
-    // Λογιστής (23): μόνο αν «Εκδίδει τιμολόγιο» στις Αποδοχές
-    if (Number(spec.typeId) === 23 && !issuesInvoice) continue
+    // Λογιστής (23): μόνο αν εκδίδει τιμολόγιο (personnel.payment_method === 'invoice')
+    if (Number(spec.typeId) === 23 && !canInvoice) continue
 
     let amount = round2(spec.fromEarnings?.(earningsForm) || 0)
     if (amount <= 0) amount = round2(spec.fromAgreements?.(agreements) || 0)
@@ -135,7 +140,12 @@ export async function importMonthFromAgreements({
 }) {
   if (!tech?.id) throw new Error('Δεν έχει επιλεγεί υπάλληλος')
 
-  const lines = resolveMonthImportLines({ earningsForm, agreements, transactionTypes })
+  const lines = resolveMonthImportLines({
+    earningsForm,
+    agreements,
+    transactionTypes,
+    issuesInvoice: personnelIssuesInvoice(tech),
+  })
   if (!lines.length) {
     throw new Error(
       'Δεν βρέθηκαν ποσά Μισθού / Bonus / Λογιστή στις Αποδοχές ή Συμφωνίες για εισαγωγή.'

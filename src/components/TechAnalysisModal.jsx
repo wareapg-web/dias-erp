@@ -57,7 +57,7 @@ import {
   fetchTransactionTypes,
   resolveTransactionType,
 } from '../lib/transactionTypes'
-import { employmentLabel, paymentMethodLabel } from '../lib/personnel'
+import { employmentLabel, personnelIssuesInvoice } from '../lib/personnel'
 import PersonnelPanel from './PersonnelPanel'
 import MovementModal from './MovementModal'
 import LedgerAnalysisGrid from './LedgerAnalysisGrid'
@@ -618,10 +618,10 @@ export default function TechAnalysisModal({
     () => ({
       summary: selectedSummary || null,
       earningsForm,
-      // Στήλη τιμολογίου μόνο με ρητό issues_invoice === true (Αποδοχές)
-      hasInvoice: earningsForm?.issues_invoice === true,
+      // Στήλη τιμολογίου από master personnel.payment_method === 'invoice'
+      hasInvoice: personnelIssuesInvoice(tech),
     }),
-    [selectedSummary, earningsForm]
+    [selectedSummary, earningsForm, tech]
   )
 
   const ledgerDisplayRows = useMemo(
@@ -662,6 +662,7 @@ export default function TechAnalysisModal({
   const photoUrl = tech ? techPhotoUrl(tech) : null
   const hireDate = tech ? techHireDate(tech) : null
   const hasAdminHours = Boolean(tech?._adminTech || tech?.admin_tech_id)
+  const issuesInvoice = personnelIssuesInvoice(tech)
 
   const handleSave = () => {
     if (!tech) return
@@ -1001,11 +1002,6 @@ export default function TechAnalysisModal({
                 {tech.employment_type && (
                   <span className="rounded-lg border border-cyan-500/30 bg-cyan-500/10 px-2 py-0.5 text-[10px] font-semibold text-cyan-100">
                     {employmentLabel(tech.employment_type)}
-                  </span>
-                )}
-                {tech.payment_method && (
-                  <span className="rounded-lg border border-white/10 bg-white/5 px-2 py-0.5 text-[10px] font-semibold text-slate-300">
-                    {paymentMethodLabel(tech.payment_method)}
                   </span>
                 )}
                 {!hasAdminHours && (
@@ -1385,11 +1381,12 @@ export default function TechAnalysisModal({
                       <input
                         id="earnings-iban"
                         type="text"
-                        value={earningsForm.bank_account}
-                        onChange={(e) => patchEarnings('bank_account', e.target.value)}
-                        disabled={earningsMissing}
-                        placeholder="π.χ. IBAN"
-                        className="mt-1 w-full rounded-xl border border-white/10 bg-slate-950/60 px-3 py-2 font-mono text-sm text-white placeholder:text-slate-600 disabled:opacity-50"
+                        value={tech?.iban || ''}
+                        readOnly
+                        disabled
+                        placeholder="από καρτέλα υπαλλήλου"
+                        title="Επεξεργασία μόνο από την καρτέλα Υπάλληλοι"
+                        className="mt-1 w-full cursor-not-allowed rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 font-mono text-sm text-slate-300 placeholder:text-slate-600 opacity-80"
                       />
                     </div>
                     <div>
@@ -1402,11 +1399,12 @@ export default function TechAnalysisModal({
                       <input
                         id="earnings-bank"
                         type="text"
-                        value={earningsForm.bank_name}
-                        onChange={(e) => patchEarnings('bank_name', e.target.value)}
-                        disabled={earningsMissing}
-                        placeholder="π.χ. EUROBANK"
-                        className="mt-1 w-full rounded-xl border border-white/10 bg-slate-950/60 px-3 py-2 text-sm text-white placeholder:text-slate-600 disabled:opacity-50"
+                        value={tech?.bank_name || ''}
+                        readOnly
+                        disabled
+                        placeholder="από καρτέλα υπαλλήλου"
+                        title="Επεξεργασία μόνο από την καρτέλα Υπάλληλοι"
+                        className="mt-1 w-full cursor-not-allowed rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-300 placeholder:text-slate-600 opacity-80"
                       />
                     </div>
                   </div>
@@ -1416,32 +1414,34 @@ export default function TechAnalysisModal({
                   <p className="mb-3 text-[10px] font-semibold uppercase tracking-[0.18em] text-cyan-400/80">
                     Παραστατικό
                   </p>
-                  <label className="flex cursor-pointer items-center gap-2 text-sm text-slate-200">
-                    <input
-                      type="checkbox"
-                      checked={earningsForm.issues_invoice}
-                      onChange={(e) => patchEarnings('issues_invoice', e.target.checked)}
-                      disabled={earningsMissing}
-                      className="h-4 w-4 rounded border-white/20 bg-slate-950 text-cyan-500 focus:ring-cyan-500/40 disabled:opacity-50"
-                    />
-                    Εκδίδει τιμολόγιο
-                  </label>
-                  <div className="mt-3 flex items-center gap-2">
-                    <label
-                      htmlFor="earnings-extra"
-                      className="shrink-0 text-[10px] font-semibold uppercase tracking-wider text-slate-400"
-                    >
-                      Έξτρα
-                    </label>
-                    <input
-                      id="earnings-extra"
-                      type="text"
-                      value={earningsForm.extra}
-                      onChange={(e) => patchEarnings('extra', e.target.value)}
-                      disabled={earningsMissing}
-                      className="w-full rounded-xl border border-white/10 bg-slate-950/60 px-3 py-2 font-mono text-sm text-white disabled:opacity-50"
-                    />
-                  </div>
+                  <p
+                    title="Ορίζεται από Πληρωμή / παραστατικό στην καρτέλα υπαλλήλου"
+                    className={
+                      issuesInvoice
+                        ? 'text-sm font-medium text-cyan-200/90'
+                        : 'text-sm font-medium text-slate-400'
+                    }
+                  >
+                    {issuesInvoice ? 'Με τιμολόγιο' : 'Χωρίς τιμολόγιο'}
+                  </p>
+                  {issuesInvoice ? (
+                    <div className="mt-3 flex items-center gap-2">
+                      <label
+                        htmlFor="earnings-extra"
+                        className="shrink-0 text-[10px] font-semibold uppercase tracking-wider text-slate-400"
+                      >
+                        Έξτρα
+                      </label>
+                      <input
+                        id="earnings-extra"
+                        type="text"
+                        value={earningsForm.extra}
+                        onChange={(e) => patchEarnings('extra', e.target.value)}
+                        disabled={earningsMissing}
+                        className="w-full rounded-xl border border-white/10 bg-slate-950/60 px-3 py-2 font-mono text-sm text-white disabled:opacity-50"
+                      />
+                    </div>
+                  ) : null}
                 </div>
               </div>
             </div>
