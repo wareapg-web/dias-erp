@@ -3,7 +3,6 @@
 export const EMPLOYMENT_TYPES = [
   { value: 'permanent', label: 'Μόνιμος' },
   { value: 'temporary', label: 'Έκτακτος' },
-  { value: 'contractor', label: 'Συνεργάτης' },
 ]
 
 export const PAYMENT_METHODS = [
@@ -12,7 +11,24 @@ export const PAYMENT_METHODS = [
   { value: 'mixed', label: 'Μικτό' },
 ]
 
+export const MARITAL_STATUSES = [
+  { value: '', label: '—' },
+  { value: 'single', label: 'Άγαμος/η' },
+  { value: 'married', label: 'Έγγαμος/η' },
+  { value: 'divorced', label: 'Διαζευγμένος/η' },
+  { value: 'widowed', label: 'Χήρος/α' },
+]
+
+export const BANKS = [
+  { value: '', label: '—' },
+  { value: 'EUROBANK', label: 'EUROBANK' },
+  { value: 'ALPHA BANK', label: 'ALPHA BANK' },
+  { value: 'ΠΕΙΡΑΙΩΣ', label: 'ΠΕΙΡΑΙΩΣ' },
+  { value: 'ΕΘΝΙΚΗ', label: 'ΕΘΝΙΚΗ' },
+]
+
 export function employmentLabel(value) {
+  if (value === 'contractor') return 'Συνεργάτης' // legacy rows
   return EMPLOYMENT_TYPES.find((t) => t.value === value)?.label || value || '—'
 }
 
@@ -35,7 +51,36 @@ export function emptyPersonnelForm() {
     photo_url: '',
     notes: '',
     is_active: true,
+    position_number: '',
+    address: '',
+    address_number: '',
+    phone: '',
+    mobile: '',
+    birth_date: '',
+    name_day: '',
+    id_number: '',
+    afm: '',
+    doy: '',
+    marital_status: '',
+    in_office: false,
+    bank_name: '',
+    iban: '',
+    bank_account_holder: '',
+    /** In-form ιστορικό συμβάσεων (synced with hire_date/end_date). */
+    periods: [],
   }
+}
+
+function str(v) {
+  return v == null ? '' : String(v)
+}
+
+/** Keep only YYYY-MM-DD for date columns (safe for form + GreekDateInput). */
+function dateOnly(v) {
+  if (!v) return ''
+  const s = String(v).trim()
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10)
+  return ''
 }
 
 export function personnelFromDb(row) {
@@ -47,8 +92,8 @@ export function personnelFromDb(row) {
     code: row.code || '',
     last_name: row.last_name || '',
     first_name: row.first_name || '',
-    hire_date: row.hire_date || '',
-    end_date: row.end_date || '',
+    hire_date: dateOnly(row.hire_date),
+    end_date: dateOnly(row.end_date),
     employment_type: row.employment_type || 'permanent',
     payment_method: row.payment_method || 'salary',
     admin_tech_id: row.admin_tech_id || '',
@@ -58,6 +103,21 @@ export function personnelFromDb(row) {
     archived_at: row.archived_at || null,
     created_at: row.created_at,
     updated_at: row.updated_at,
+    position_number: str(row.position_number),
+    address: str(row.address),
+    address_number: str(row.address_number),
+    phone: str(row.phone),
+    mobile: str(row.mobile),
+    birth_date: dateOnly(row.birth_date),
+    name_day: str(row.name_day),
+    id_number: str(row.id_number),
+    afm: str(row.afm),
+    doy: str(row.doy),
+    marital_status: str(row.marital_status),
+    in_office: row.in_office === true,
+    bank_name: str(row.bank_name),
+    iban: str(row.iban),
+    bank_account_holder: str(row.bank_account_holder),
   }
 }
 
@@ -70,6 +130,14 @@ export function personnelToDb(form) {
   let techId = String(form.tech_id || form.code || '').trim()
   if (!techId) techId = `D-${Date.now()}`
 
+  const endDate = form.end_date || null
+  const hasEndDate = Boolean(String(endDate || '').trim())
+  const emptyToNull = (v) => {
+    const s = String(v || '').trim()
+    return s || null
+  }
+
+  // Λήξη γεμάτη → Απολυμένοι. Λήξη κενή → ενεργός.
   return {
     tech_id: techId,
     tech_name: techName || techId,
@@ -77,14 +145,30 @@ export function personnelToDb(form) {
     last_name: last || null,
     first_name: first || null,
     hire_date: form.hire_date || null,
-    end_date: form.end_date || null,
+    end_date: hasEndDate ? endDate : null,
     employment_type: form.employment_type || 'permanent',
     payment_method: form.payment_method || 'salary',
-    admin_tech_id: String(form.admin_tech_id || '').trim() || null,
-    photo_url: String(form.photo_url || '').trim() || null,
-    notes: String(form.notes || '').trim() || null,
-    is_active: form.is_active !== false,
+    admin_tech_id: emptyToNull(form.admin_tech_id),
+    photo_url: emptyToNull(form.photo_url),
+    notes: emptyToNull(form.notes),
+    is_active: !hasEndDate,
+    archived_at: hasEndDate ? form.archived_at || new Date().toISOString() : null,
     updated_at: new Date().toISOString(),
+    position_number: emptyToNull(form.position_number),
+    address: emptyToNull(form.address),
+    address_number: emptyToNull(form.address_number),
+    phone: emptyToNull(form.phone),
+    mobile: emptyToNull(form.mobile),
+    birth_date: form.birth_date || null,
+    name_day: emptyToNull(form.name_day),
+    id_number: emptyToNull(form.id_number),
+    afm: emptyToNull(form.afm),
+    doy: emptyToNull(form.doy),
+    marital_status: emptyToNull(form.marital_status),
+    in_office: form.in_office === true,
+    bank_name: emptyToNull(form.bank_name),
+    iban: emptyToNull(form.iban),
+    bank_account_holder: emptyToNull(form.bank_account_holder),
   }
 }
 
@@ -119,6 +203,7 @@ export function personnelAsTech(person, adminTechs = []) {
     photo_url: person.photo_url || adminTech?.photo_url,
     is_active: person.is_active,
     notes: person.notes,
+    position_number: person.position_number,
     /** Admin row for hours engine */
     _adminTech: adminTech,
   }

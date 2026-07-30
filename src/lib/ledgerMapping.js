@@ -87,31 +87,27 @@ export function visibleTransactionTypes(typesArray = []) {
 
 /**
  * Resolve which ledger column an amount belongs in.
- * @param {number|object} paymentType
- * @param {number} amount
- * @param {{ hasInvoice?: boolean, forceInvoice?: boolean|null, side?: string }} [options]
+ * Μισθός (id 3) → ΠΑΝΤΑ salary_debit (ποτέ αυτόματα σε τιμολόγιο).
+ * Τιμολόγιο μόνο με forceInvoice === true (ρητή επιλογή στο modal).
  */
 export function resolveLedgerColumn(paymentType, amount, options = {}) {
   const type = normalizePaymentType(paymentType)
   const id = type.id
   const amt = Number(amount)
   const isNegative = Number.isFinite(amt) && amt < 0
-  const { hasInvoice = false, forceInvoice = null } = options
+  const { forceInvoice = null } = options
 
+  // Ρητή επιλογή «Στήλη Τιμολόγιο» στο MovementModal
   if (forceInvoice === true) return 'invoice_amount'
 
   // Ρητά: Υπερωρίες / Αργίες / Νυχτερινά / Μετρό / Διανυκτέρευση → Λοιπά Χρ.
   if (OTHER_DEBIT_IDS.has(id)) return 'other_debit'
 
-  const inSalaryBlock =
-    type.ledger_group === 'SALARY' ||
-    SALARY_DEBIT_IDS.has(id) ||
-    SALARY_CREDIT_IDS.has(id)
+  // Μισθός → ΠΑΝΤΑ Μισθός Χρ. (ανεξάρτητα από hasInvoice)
+  if (SALARY_DEBIT_IDS.has(id)) return 'salary_debit'
 
-  // Υπάλληλος με τιμολόγιο: μισθολογικές κινήσεις → Τιμολόγιο Χρ.-Πιστ.
-  if (hasInvoice && forceInvoice !== false && inSalaryBlock) {
-    return 'invoice_amount'
-  }
+  const inSalaryBlock =
+    type.ledger_group === 'SALARY' || SALARY_CREDIT_IDS.has(id)
 
   if (inSalaryBlock) {
     if (SALARY_CREDIT_IDS.has(id) || isNegative) return 'salary_credit'
@@ -206,7 +202,7 @@ export function normalizeSavedEntry(entry, transactionType, options = {}) {
  * Μισθός, Ticket + ποσότητα×τιμή (Υπερωρίες, Αργίες, Νυχτερινά, Μετρό, Διανυκτέρευση).
  */
 export const DEFAULT_EARNINGS_PREFILL_IDS = new Set([
-  3, // Μισθός → salary_debit (ή invoice_amount αν hasInvoice)
+  3, // Μισθός → salary_debit (πάντα)
   24, // Ticket Restaurant → other_credit
   ...OTHER_DEBIT_IDS, // 7,8,9,22,25 → other_debit
 ])
@@ -226,14 +222,13 @@ function emptyTemplateRow(type, monthContext = null) {
   if (DEFAULT_EARNINGS_PREFILL_IDS.has(id)) {
     const amount = buildLedgerAmountForType(type, ctx)
     if (amount > 0) {
-      const cols = distributeLedgerAmount(type, amount, {
-        hasInvoice: Boolean(ctx.hasInvoice),
-      })
+      // Prefill ποτέ δεν στέλνει σε τιμολόγιο — μόνο κλασικές στήλες
+      const cols = distributeLedgerAmount(type, amount, { forceInvoice: false })
       salary_debit = cols.salary_debit
       salary_credit = cols.salary_credit
       other_debit = cols.other_debit
       other_credit = cols.other_credit
-      invoice_amount = cols.invoice_amount
+      invoice_amount = 0
       __prefilled = true
     }
   }
@@ -281,8 +276,8 @@ function applyTypeLabelGrouping(rows) {
 }
 
 /**
- * Build template rows from transaction_types + merge savedEntries per EPT_ID.
- * monthContext.hasInvoice → Μισθός/Εξόφληση στην στήλη Τιμολόγιο.
+ * Build ledger grid rows from saved entries only (no empty type templates).
+ * Rows without real amounts are omitted — empty month ⇒ empty table.
  */
 export function buildTemplateMergeRows({
   transactionTypes = [],
@@ -290,46 +285,24 @@ export function buildTemplateMergeRows({
   typeLookup,
   monthContext = null,
 }) {
-  const orderedTypes = visibleTransactionTypes(transactionTypes)
+  void transactionTypes
+  void monthContext
   const sourceRows = Array.isArray(savedEntries) ? [...savedEntries] : []
-  const routeOpts = { hasInvoice: Boolean(monthContext?.hasInvoice) }
 
-  if (orderedTypes.length === 0) {
-    return applyTypeLabelGrouping(
-      sourceRows.map((row) =>
-        normalizeSavedEntry(row, resolveTransactionTypeFromLedgerRow(typeLookup, row), routeOpts)
-      )
-    )
-  }
-
-  const grouped = new Map(orderedTypes.map((type) => [Number(type.id), []]))
-  const unmatched = []
-
+  const rows = []
   for (const row of sourceRows) {
     const matchedType = resolveTransactionTypeFromLedgerRow(typeLookup, row)
     if (matchedType && !isLedgerTypeVisible(matchedType)) continue
 
-    const normalized = normalizeSavedEntry(row, matchedType, routeOpts)
-
-    if (matchedType && grouped.has(Number(matchedType.id))) {
-      grouped.get(Number(matchedType.id)).push(normalized)
-    } else {
-      unmatched.push(normalized)
-    }
+    const normalized = normalizeSavedEntry(row, matchedType)
+    const { amount } = extractLedgerAmount(normalized)
+    const invoice = Math.abs(Number(normalized.invoice_amount) || 0)
+    if (Math.abs(amount) < 0.005 && invoice < 0.005) continue
+    rows.push(normalized)
   }
 
-  const rows = []
-  for (const type of orderedTypes) {
-    const matches = (grouped.get(Number(type.id)) || []).sort(compareSavedEntries)
-    if (matches.length > 0) {
-      rows.push(...matches)
-    } else {
-      rows.push(emptyTemplateRow(type, monthContext))
-    }
-  }
-
-  unmatched.sort(compareSavedEntries)
-  return applyTypeLabelGrouping([...rows, ...unmatched])
+  rows.sort(compareSavedEntries)
+  return applyTypeLabelGrouping(rows)
 }
 
 export function ledgerRowClassName(row, isSelected) {

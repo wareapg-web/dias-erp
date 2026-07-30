@@ -32,6 +32,20 @@
 - `supabase/07_transaction_types_ledger_group.sql` (ledger_group SALARY|OTHER + seed από PaymentTypes.csv)
 - `supabase/08_ledger_columns_description_notes.sql` (type / description ώρων / notes στο tech_ledger_view)
 - `supabase/09_ledger_invoice_column.sql` (στήλη invoice_amount · Τιμολόγιο Χρ.-Πιστ.)
+- `supabase/10_personnel_card_fields.sql` (διεύθυνση, ΑΦΜ, κινητό, τράπεζα, κ.λπ. καρτέλας παλιού ERP)
+- `supabase/11_personnel_periods.sql` (ιστορικό συμβάσεων / περίοδοι απασχόλησης)
+- `supabase/12_update_agreements_constraint.sql` (ACCOUNTANT στις συμφωνίες · χωρίς contractor στο employment_type)
+
+### Φωτογραφίες προφίλ (Cloudflare R2 μέσω Edge Function)
+
+1. Deploy: `supabase functions deploy upload-r2-photo --project-ref <DIAS_PROJECT_REF>`
+2. Secrets στο DIAS project:
+   ```bash
+   supabase secrets set R2_ENDPOINT_URL=... R2_ACCESS_KEY_ID=... R2_SECRET_ACCESS_KEY=... R2_BUCKET_NAME=... R2_PUBLIC_BASE_URL=...
+   ```
+3. Στο UI καρτέλας: «Ανέβασμα φωτο (R2)» → συμπίεση → Edge Function → URL στο `photo_url` → **Αποθήκευση** για DB.
+4. R2 key: `personnel/profile/{techId}/{timestamp}-{uuid}.jpg`
+5. `verify_jwt = false` στο `supabase/config.toml` (το DIAS login είναι Admin project).
 
 ## Βήμα 2 — Env
 

@@ -260,7 +260,19 @@ export function parseMovementAmount(value) {
   return n
 }
 
-/** Υπόλοιπα από γραμμές ledger μήνα */
+/** Ticket Restaurant (EPT_ID 24) — ανεξάρτητη παροχή, εκτός υπολοίπων εξόφλησης. */
+export function isTicketRestaurantRow(row) {
+  if (!row) return false
+  const id = Number(row.ept_id ?? row.__type?.id)
+  if (id === 24) return true
+  const label = `${row.type || ''} ${row.__type?.description || ''}`.toLowerCase()
+  return label.includes('ticket')
+}
+
+/**
+ * Υπόλοιπα από γραμμές ledger μήνα.
+ * Ticket Restaurant δεν συμμετέχει στο Υπόλοιπο / Υπόλοιπο (1) / Υπόλοιπο (2).
+ */
 export function computeLedgerBalances(rows = []) {
   let salaryDebit = 0
   let salaryCredit = 0
@@ -271,6 +283,8 @@ export function computeLedgerBalances(rows = []) {
   let y2 = 0
 
   for (const r of rows) {
+    if (isTicketRestaurantRow(r)) continue
+
     salaryDebit += Number(r.salary_debit) || 0
     salaryCredit += Number(r.salary_credit) || 0
     otherDebit += Number(r.other_debit) || 0

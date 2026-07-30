@@ -50,6 +50,8 @@ import {
   resolveLedgerSide,
   visibleTransactionTypes,
 } from '../lib/ledgerMapping'
+import { importMonthFromAgreements } from '../lib/monthImport'
+import { transferHoursToLedger } from '../lib/transferHours'
 import {
   buildTypeLookup,
   fetchTransactionTypes,
@@ -69,10 +71,6 @@ export default function TechAnalysisModal({
   selectedPersonId = null,
   onPersonSelect,
   onPersonnelMutated,
-  listFilter = 'active',
-  onListFilterChange,
-  typeFilter = 'all',
-  onTypeFilterChange,
   initialMonth,
   initialYear,
   saving,
@@ -114,6 +112,9 @@ export default function TechAnalysisModal({
   const [ledgerError, setLedgerError] = useState(null)
   const [ledgerMissing, setLedgerMissing] = useState(false)
   const [ledgerTick, setLedgerTick] = useState(0)
+  const [monthImportSaving, setMonthImportSaving] = useState(false)
+  const [monthImportMessage, setMonthImportMessage] = useState(null)
+  const [hoursTransferSaving, setHoursTransferSaving] = useState(false)
   const [movementOpen, setMovementOpen] = useState(false)
   const [selectedRowData, setSelectedRowData] = useState(null)
   const [selectedLedgerRowKey, setSelectedLedgerRowKey] = useState(null)
@@ -521,6 +522,30 @@ export default function TechAnalysisModal({
     if (wasPayment) await loadPayments()
   }
 
+  const handleMonthImport = async () => {
+    if (!tech?.id || monthImportSaving) return
+    setMonthImportSaving(true)
+    setMonthImportMessage(null)
+    setLedgerError(null)
+    try {
+      const result = await importMonthFromAgreements({
+        tech,
+        year: analysisYear,
+        month: selectedMonth,
+        earningsForm,
+        agreements,
+        transactionTypes,
+        existingLedgerRows: ledgerRows,
+      })
+      setMonthImportMessage(result.message || null)
+      setLedgerTick((n) => n + 1)
+    } catch (err) {
+      setLedgerError(err?.message || String(err))
+    } finally {
+      setMonthImportSaving(false)
+    }
+  }
+
   const ledgerBalances = useMemo(() => computeLedgerBalances(ledgerRows), [ledgerRows])
 
   const monthlyPayrolls = useMemo(() => {
@@ -563,14 +588,40 @@ export default function TechAnalysisModal({
   const selectedSalary = salaryMatrix.months[selectedMonth - 1]
   const monthSettled = salaryMatrix.selectedSettled?.(selectedMonth)
 
+  const handleTransferHours = async () => {
+    if (!tech?.id || hoursTransferSaving) return
+    setHoursTransferSaving(true)
+    setLedgerError(null)
+    try {
+      if (!tech._adminTech && !tech.admin_tech_id) {
+        throw new Error('Ο υπάλληλος δεν έχει σύνδεση με Admin για ώρες βάρδιας.')
+      }
+      const result = await transferHoursToLedger({
+        tech,
+        year: analysisYear,
+        month: selectedMonth,
+        summary: selectedSummary,
+        earningsForm,
+        transactionTypes,
+        existingLedgerRows: ledgerRows,
+      })
+      setMonthImportMessage(result.message || null)
+      setLedgerTick((n) => n + 1)
+    } catch (err) {
+      setLedgerError(err?.message || String(err))
+    } finally {
+      setHoursTransferSaving(false)
+    }
+  }
+
   const ledgerMonthContext = useMemo(
     () => ({
       summary: selectedSummary || null,
       earningsForm,
-      hasInvoice:
-        Boolean(earningsForm?.issues_invoice) || tech?.payment_method === 'invoice',
+      // Στήλη τιμολογίου μόνο με ρητό issues_invoice === true (Αποδοχές)
+      hasInvoice: earningsForm?.issues_invoice === true,
     }),
-    [selectedSummary, earningsForm, tech?.payment_method]
+    [selectedSummary, earningsForm]
   )
 
   const ledgerDisplayRows = useMemo(
@@ -786,15 +837,10 @@ export default function TechAnalysisModal({
 
   const techSidebar = usePersonnelSidebar ? (
     <PersonnelPanel
+      variant="sidebar"
       personnel={personnel}
-      adminTechs={adminTechs}
       selectedId={selectedPersonId}
       onSelect={onPersonSelect}
-      onMutated={onPersonnelMutated}
-      listFilter={listFilter}
-      onListFilterChange={onListFilterChange}
-      typeFilter={typeFilter}
-      onTypeFilterChange={onTypeFilterChange}
     />
   ) : embedded && onTechChange ? (
     <aside className="flex max-h-56 w-full shrink-0 flex-col overflow-hidden rounded-2xl border border-white/10 bg-slate-900/75 shadow-xl backdrop-blur-md md:max-h-none md:w-72 md:self-stretch lg:w-80">
@@ -855,7 +901,7 @@ export default function TechAnalysisModal({
   const mainPanel = !tech ? (
     <div className="flex flex-1 items-center justify-center rounded-2xl border border-white/10 bg-slate-900/75 px-6 py-16 text-center text-slate-400">
       {usePersonnelSidebar
-        ? 'Πρόσθεσε υπάλληλο στο DIAS (+ Νέος) ή εισήγαγε από Admin (βάρδιες).'
+        ? 'Επίλεξε ενεργό μόνιμο υπάλληλο από τη λίστα αριστερά.'
         : 'Επίλεξε τεχνικό από τη λίστα αριστερά.'}
     </div>
   ) : (
@@ -884,6 +930,7 @@ export default function TechAnalysisModal({
 
       <div className={`relative space-y-3 ${embedded ? '' : 'flex-1 overflow-y-auto p-4 sm:p-5'}`}>
         {/* Κεφαλίδα όπως παλιό ERP: μήνας/έτος · στοιχεία · φωτογραφία */}
+        {tech && (
         <div className="rounded-2xl border border-white/10 bg-slate-900/75 p-3 shadow-xl backdrop-blur-md sm:p-4">
           <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
             <div className="flex flex-wrap items-end gap-2">
@@ -979,6 +1026,7 @@ export default function TechAnalysisModal({
             </div>
           </div>
         </div>
+        )}
 
         {/* Tabs παλιού ERP — δεξιά από τη στήλη ονομάτων */}
         <div className="flex gap-1 overflow-x-auto border-b border-white/10 pb-px">
@@ -1072,6 +1120,14 @@ export default function TechAnalysisModal({
                         values={salaryMatrix.months.map((m) => formatEuroPlain(m.y2))}
                         total={formatEuroPlain(salaryMatrix.totals.y2)}
                       />
+                      <MatrixRow
+                        label="Ticket Restaurant"
+                        hint=""
+                        selectedMonth={selectedMonth}
+                        onSelectMonth={setSelectedMonth}
+                        values={Array.from({ length: 12 }, () => '-')}
+                        total="-"
+                      />
                     </tbody>
                   </table>
                 </div>
@@ -1127,7 +1183,7 @@ export default function TechAnalysisModal({
                 <LedgerAnalysisGrid
                   rows={ledgerDisplayRows}
                   loading={ledgerLoading}
-                  skeletonCount={sortedTransactionTypes.length}
+                  skeletonCount={8}
                   selectedRowKey={selectedLedgerRowKey}
                   typeLookup={typeLookup}
                   monthContext={ledgerMonthContext}
@@ -1149,11 +1205,18 @@ export default function TechAnalysisModal({
               <aside className="flex shrink-0 flex-row gap-2 overflow-x-auto lg:w-36 lg:flex-col lg:overflow-visible">
                 <button
                   type="button"
-                  onClick={() => openMovementCreate()}
-                  className="shrink-0 rounded-xl border border-cyan-500/40 bg-cyan-500/15 px-3 py-2.5 text-left text-xs font-semibold text-cyan-100 transition hover:bg-cyan-500/25 lg:w-full"
+                  onClick={handleMonthImport}
+                  disabled={monthImportSaving || ledgerLoading || !tech}
+                  title="Υπολογισμός μήνα από Αποδοχές / Συμφωνίες (Μισθός, Bonus, Λογιστής)"
+                  className="shrink-0 rounded-xl border border-cyan-500/40 bg-cyan-500/15 px-3 py-2.5 text-left text-xs font-semibold text-cyan-100 transition hover:bg-cyan-500/25 disabled:cursor-not-allowed disabled:opacity-40 lg:w-full"
                 >
-                  Εισαγωγή
+                  {monthImportSaving ? 'ΔΗΜΙΟΥΡΓΙΑ...' : 'ΔΗΜΙΟΥΡΓΙΑ'}
                 </button>
+                {monthImportMessage ? (
+                  <p className="hidden text-[10px] leading-snug text-cyan-200/80 lg:block">
+                    {monthImportMessage}
+                  </p>
+                ) : null}
                 {[
                   {
                     label: 'Εμφάνιση',
@@ -1781,8 +1844,12 @@ export default function TechAnalysisModal({
       </div>
 
       <div className="relative flex flex-wrap items-center gap-2 border-t border-white/10 bg-slate-950/70 px-4 py-3 backdrop-blur-md">
-        <ActionButton tone="slate" onClick={() => alert('Μεταφορά Ωρών — σύντομα')}>
-          Μεταφορά Ωρών
+        <ActionButton
+          tone="slate"
+          disabled={hoursTransferSaving || loading || !tech}
+          onClick={handleTransferHours}
+        >
+          {hoursTransferSaving ? 'Μεταφορά...' : 'Μεταφορά Ωρών'}
         </ActionButton>
         <ActionButton tone="slate" onClick={() => alert('Εκτύπωση — σύντομα')}>
           Εκτύπωση
@@ -1823,7 +1890,7 @@ export default function TechAnalysisModal({
       <button
         type="button"
         aria-label="Κλείσιμο"
-        className="absolute inset-0 bg-slate-950/80 backdrop-blur-sm"
+        className="absolute inset-0 bg-slate-950/25 backdrop-blur-[1px]"
         onClick={onClose}
       />
       <div className="relative flex max-h-[94vh] w-full max-w-[1920px] flex-col overflow-hidden rounded-2xl border border-white/10 bg-gradient-to-br from-slate-950 via-slate-900 to-indigo-950 shadow-2xl">

@@ -1,0 +1,10 @@
+# Minimal Supabase config for Edge Functions.
+# Deploy: supabase functions deploy upload-r2-photo --project-ref <DIAS_REF>
+#
+# Secrets (Dashboard → Edge Functions → Secrets or CLI):
+#   supabase secrets set R2_ENDPOINT_URL=... R2_ACCESS_KEY_ID=... R2_SECRET_ACCESS_KEY=... R2_BUCKET_NAME=... R2_PUBLIC_BASE_URL=...
+
+[functions.upload-r2-photo]
+# DIAS SPA logs in via Admin project; diasClient often has no user JWT.
+# Keep R2 keys only in secrets; anon key already exists in the frontend.
+verify_jwt = false
