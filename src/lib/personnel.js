@@ -204,9 +204,17 @@ export function personnelAsTech(person, adminTechs = []) {
     is_active: person.is_active,
     notes: person.notes,
     position_number: person.position_number,
+    iban: person.iban || '',
+    bank_name: person.bank_name || '',
+    bank_account_holder: person.bank_account_holder || '',
     /** Admin row for hours engine */
     _adminTech: adminTech,
   }
+}
+
+/** Master rule: έκδοση τιμολογίου από personnel.payment_method (όχι tech_earnings.issues_invoice). */
+export function personnelIssuesInvoice(personOrTech) {
+  return String(personOrTech?.payment_method || '') === 'invoice'
 }
 
 export function buildFullName(lastName, firstName) {
