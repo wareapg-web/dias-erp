@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react'
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import {
   adminClient,
   diasClient,
@@ -10,8 +10,26 @@ import {
 import { mapTechRow } from './lib/crewPayroll'
 import { personnelAsTech, personnelFromDb } from './lib/personnel'
 import TechAnalysisModal from './components/TechAnalysisModal'
+import PersonnelPanel from './components/PersonnelPanel'
 import AdminLoginScreen from './components/AdminLoginScreen'
 import ErpWindow from './components/ErpWindow'
+import {
+  loadModalSize,
+  saveModalSize,
+  PERSONNEL_CATALOG_MODAL_SIZE_KEY,
+} from './lib/modalSize'
+
+const CATALOG_MODAL_MIN_W = 480
+const CATALOG_MODAL_MIN_H = 320
+
+function defaultCatalogModalSize() {
+  const vw = window.innerWidth
+  const vh = window.innerHeight
+  return {
+    width: Math.min(1024, Math.max(CATALOG_MODAL_MIN_W, vw - 32)),
+    height: Math.min(Math.round(vh * 0.72), Math.max(CATALOG_MODAL_MIN_H, vh - 32)),
+  }
+}
 
 function formatPeriod(year, month) {
   return `${year}-${String(month).padStart(2, '0')}`
@@ -36,10 +54,80 @@ export default function App() {
   const [listFilter, setListFilter] = useState('active')
   const [typeFilter, setTypeFilter] = useState('all')
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [personnelModalOpen, setPersonnelModalOpen] = useState(false)
+  const [catalogSize, setCatalogSize] = useState(() =>
+    loadModalSize(PERSONNEL_CATALOG_MODAL_SIZE_KEY, () => null)
+  )
+  const catalogResizeRef = useRef(null)
+  const catalogFrameRef = useRef(null)
   const [adminSession, setAdminSession] = useState(null)
   const [authLoading, setAuthLoading] = useState(true)
 
   const period = formatPeriod(selectedYear, selectedMonth)
+
+  useEffect(() => {
+    if (catalogSize) saveModalSize(PERSONNEL_CATALOG_MODAL_SIZE_KEY, catalogSize)
+  }, [catalogSize])
+
+  useEffect(() => {
+    const onMove = (e) => {
+      const d = catalogResizeRef.current
+      if (!d) return
+      const dx = e.clientX - d.startX
+      const dy = e.clientY - d.startY
+      const vw = window.innerWidth
+      const vh = window.innerHeight
+      let { width, height } = d.orig
+      const edge = d.edge
+      if (edge.includes('e')) width = d.orig.width + dx
+      if (edge.includes('s')) height = d.orig.height + dy
+      if (edge.includes('w')) width = d.orig.width - dx
+      if (edge.includes('n')) height = d.orig.height - dy
+      width = Math.min(Math.max(width, CATALOG_MODAL_MIN_W), vw - 24)
+      height = Math.min(Math.max(height, CATALOG_MODAL_MIN_H), vh - 24)
+      setCatalogSize({ width, height })
+    }
+    const onUp = () => {
+      catalogResizeRef.current = null
+    }
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+    window.addEventListener('pointercancel', onUp)
+    return () => {
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+      window.removeEventListener('pointercancel', onUp)
+    }
+  }, [])
+
+  const startCatalogResize = useCallback(
+    (edge) => (e) => {
+      if (e.button !== 0) return
+      e.preventDefault()
+      e.stopPropagation()
+      const rect = catalogFrameRef.current?.getBoundingClientRect()
+      const orig = catalogSize || {
+        width: rect?.width || defaultCatalogModalSize().width,
+        height: rect?.height || defaultCatalogModalSize().height,
+      }
+      catalogResizeRef.current = {
+        edge,
+        startX: e.clientX,
+        startY: e.clientY,
+        orig,
+      }
+    },
+    [catalogSize]
+  )
+
+  const catalogResizeHandle = (edge, cursor, extra = '') => (
+    <div
+      role="presentation"
+      onPointerDown={startCatalogResize(edge)}
+      className={`absolute z-30 ${extra}`}
+      style={{ cursor }}
+    />
+  )
 
   useEffect(() => {
     let mounted = true
@@ -70,7 +158,7 @@ export default function App() {
   const loadPersonnel = useCallback(async () => {
     setPersonnelError(null)
     const result = await safeQuery(
-      diasClient.from('personnel').select('*').order('tech_name', { ascending: true }),
+      diasClient.from('personnel').select('*').order('position_number', { ascending: true }),
       { table: 'personnel', clientLabel: 'DIAS ERP' }
     )
     const rows = (result.data || []).map(personnelFromDb)
@@ -134,16 +222,23 @@ export default function App() {
       if (selectedPerson) setSelectedPerson(null)
       return
     }
+    const pickDefault = () =>
+      personnel.find((p) => p.is_active !== false && p.employment_type === 'permanent') ||
+      personnel.find((p) => p.is_active !== false) ||
+      personnel[0]
+
     if (!selectedPerson) {
       const first =
-        listFilter === 'archive'
+        listFilter === 'dismissed'
           ? personnel.find((p) => p.is_active === false)
-          : personnel.find((p) => p.is_active !== false) || personnel[0]
+          : listFilter === 'temporary'
+            ? personnel.find((p) => p.employment_type === 'temporary' && p.is_active !== false)
+            : pickDefault()
       if (first) setSelectedPerson(first)
       return
     }
     if (!personnel.some((p) => p.id === selectedPerson.id)) {
-      setSelectedPerson(personnel.find((p) => p.is_active !== false) || personnel[0])
+      setSelectedPerson(pickDefault())
     }
   }, [personnel, selectedPerson, listFilter])
 
@@ -217,8 +312,8 @@ export default function App() {
 
       <ErpWindow
         titleBar={
-          <div className="flex min-w-0 flex-wrap items-center justify-between gap-3 pr-2">
-            <div className="min-w-0">
+          <div className="flex w-full min-w-0 items-center gap-3 pr-2">
+            <div className="min-w-0 shrink-0">
               <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-cyan-400/80">
                 DIAS ERP · Λογιστήριο
               </p>
@@ -226,12 +321,21 @@ export default function App() {
                 Οικονομικά Στοιχεία Προσωπικού
               </h1>
             </div>
+            <div className="flex flex-1 justify-center px-2">
+              <button
+                type="button"
+                onClick={() => setPersonnelModalOpen(true)}
+                className="rounded-xl border border-cyan-500/40 bg-cyan-500/15 px-4 py-1.5 text-xs font-bold text-cyan-100 transition hover:bg-cyan-500/25 md:px-5 md:text-sm"
+              >
+                Υπάλληλοι
+              </button>
+            </div>
             <button
               type="button"
               onClick={async () => {
                 await adminClient.auth.signOut()
               }}
-              className="rounded-xl border border-rose-500/40 bg-rose-500/15 px-3 py-1.5 text-xs font-bold text-rose-100 transition hover:bg-rose-500/25"
+              className="shrink-0 rounded-xl border border-rose-500/40 bg-rose-500/15 px-3 py-1.5 text-xs font-bold text-rose-100 transition hover:bg-rose-500/25"
             >
               Έξοδος
             </button>
@@ -254,10 +358,6 @@ export default function App() {
             selectedPersonId={selectedPerson?.id || null}
             onPersonSelect={setSelectedPerson}
             onPersonnelMutated={handlePersonnelMutated}
-            listFilter={listFilter}
-            onListFilterChange={setListFilter}
-            typeFilter={typeFilter}
-            onTypeFilterChange={setTypeFilter}
             initialMonth={selectedMonth}
             initialYear={selectedYear}
             saving={saving || loading}
@@ -267,11 +367,83 @@ export default function App() {
         </div>
       </ErpWindow>
 
+      {personnelModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4">
+          <button
+            type="button"
+            className="absolute inset-0 bg-slate-950/25 backdrop-blur-[1px]"
+            aria-label="Κλείσιμο"
+            onClick={() => setPersonnelModalOpen(false)}
+          />
+          <div
+            ref={catalogFrameRef}
+            className={`relative flex flex-col overflow-hidden rounded-2xl border border-white/10 bg-slate-900/95 shadow-2xl backdrop-blur-md ${
+              catalogSize ? '' : 'h-fit max-h-[85vh] w-full max-w-5xl'
+            }`}
+            style={
+              catalogSize
+                ? {
+                    width: catalogSize.width,
+                    height: catalogSize.height,
+                    maxWidth: 'calc(100vw - 1.5rem)',
+                    maxHeight: 'min(85vh, calc(100vh - 1.5rem))',
+                  }
+                : undefined
+            }
+          >
+            {catalogResizeHandle('n', 'ns-resize', 'left-2 right-2 top-0 h-2')}
+            {catalogResizeHandle('s', 'ns-resize', 'left-2 right-2 bottom-0 h-2')}
+            {catalogResizeHandle('e', 'ew-resize', 'top-2 bottom-2 right-0 w-2')}
+            {catalogResizeHandle('w', 'ew-resize', 'top-2 bottom-2 left-0 w-2')}
+            {catalogResizeHandle('nw', 'nwse-resize', 'left-0 top-0 h-3 w-3')}
+            {catalogResizeHandle('ne', 'nesw-resize', 'right-0 top-0 h-3 w-3')}
+            {catalogResizeHandle('sw', 'nesw-resize', 'bottom-0 left-0 h-3 w-3')}
+            {catalogResizeHandle('se', 'nwse-resize', 'bottom-0 right-0 h-4 w-4')}
+
+            <div className="flex shrink-0 items-center justify-between border-b border-white/10 px-4 py-3">
+              <div>
+                <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-cyan-400/80">
+                  Προσωπικο DIAS
+                </p>
+                <h2 className="text-lg font-bold text-white">Κατάλογος υπαλλήλων</h2>
+              </div>
+              <button
+                type="button"
+                onClick={() => setPersonnelModalOpen(false)}
+                className="rounded-xl border border-white/10 bg-white/5 px-3 py-1.5 text-sm font-semibold text-white transition hover:bg-white/10"
+              >
+                Κλείσιμο
+              </button>
+            </div>
+            <div className="flex min-h-0 flex-1 flex-col overflow-hidden p-3">
+              <PersonnelPanel
+                variant="catalog"
+                inModal
+                personnel={personnel}
+                adminTechs={techs}
+                selectedId={selectedPerson?.id || null}
+                onSelect={setSelectedPerson}
+                onMutated={handlePersonnelMutated}
+                listFilter={listFilter}
+                onListFilterChange={setListFilter}
+                typeFilter={typeFilter}
+                onTypeFilterChange={setTypeFilter}
+              />
+            </div>
+
+            <div
+              className="pointer-events-none absolute bottom-1.5 right-1.5 z-10 h-3 w-3 border-b-2 border-r-2 border-cyan-400/50"
+              aria-hidden
+            />
+          </div>
+        </div>
+      )}
+
       {settingsOpen && (
         <div className="fixed inset-0 z-40 flex items-center justify-center p-4">
           <button
             type="button"
-            className="absolute inset-0 bg-slate-950/80 backdrop-blur-sm"
+            className="absolute inset-0 bg-slate-950/25 backdrop-blur-[1px]"
             aria-label="Κλείσιμο"
             onClick={() => setSettingsOpen(false)}
           />

@@ -1,8 +1,11 @@
-import React, { useMemo, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { diasClient, formatSupabaseError, isMissingTableError } from '../lib/supabase'
 import {
   EMPLOYMENT_TYPES,
   PAYMENT_METHODS,
+  MARITAL_STATUSES,
+  BANKS,
   buildFullName,
   emptyPersonnelForm,
   employmentLabel,
@@ -12,8 +15,33 @@ import {
 } from '../lib/personnel'
 import { splitTechName } from '../lib/payrollAnalysis'
 import { payrollTechs } from '../lib/crewPayroll'
+import { uploadPersonnelPhoto } from '../utils/uploadPhotoToR2'
+import {
+  greekCapsLabel,
+  isoDateToGreek,
+  maskGreekDateInput,
+  parseToIsoDate,
+  positionSortKey,
+} from '../lib/greekDate'
+import {
+  loadModalSize,
+  saveModalSize,
+  PERSONNEL_FORM_MODAL_SIZE_KEY,
+} from '../lib/modalSize'
+import {
+  addNewPeriod,
+  findPeriodOverlapError,
+  getLatestPeriod,
+  loadPersonnelPeriods,
+  mirrorFormDatesFromLatest,
+  savePersonnelPeriods,
+  sortPeriods,
+  syncLatestPeriodFromForm,
+} from '../lib/personnelPeriods'
 
 export default function PersonnelPanel({
+  variant = 'catalog',
+  inModal = false,
   personnel,
   adminTechs,
   selectedId,
@@ -24,19 +52,96 @@ export default function PersonnelPanel({
   typeFilter,
   onTypeFilterChange,
 }) {
+  const isSidebar = variant === 'sidebar'
   const [formOpen, setFormOpen] = useState(false)
   const [form, setForm] = useState(emptyPersonnelForm())
   const [editingId, setEditingId] = useState(null)
   const [saving, setSaving] = useState(false)
+  const [photoUploading, setPhotoUploading] = useState(false)
+  const [photoError, setPhotoError] = useState(null)
   const [error, setError] = useState(null)
   const [search, setSearch] = useState('')
+  const [editingPeriodId, setEditingPeriodId] = useState(null)
+  const photoInputRef = useRef(null)
+  const formResizeRef = useRef(null)
+  const [formSize, setFormSize] = useState(() =>
+    loadModalSize(PERSONNEL_FORM_MODAL_SIZE_KEY, defaultFormModalSize)
+  )
+
+  useEffect(() => {
+    saveModalSize(PERSONNEL_FORM_MODAL_SIZE_KEY, formSize)
+  }, [formSize])
+
+  useEffect(() => {
+    const onMove = (e) => {
+      const d = formResizeRef.current
+      if (!d) return
+      const dx = e.clientX - d.startX
+      const dy = e.clientY - d.startY
+      const vw = window.innerWidth
+      const vh = window.innerHeight
+      let { width, height } = d.orig
+      const edge = d.edge
+      if (edge.includes('e')) width = d.orig.width + dx
+      if (edge.includes('s')) height = d.orig.height + dy
+      if (edge.includes('w')) width = d.orig.width - dx
+      if (edge.includes('n')) height = d.orig.height - dy
+      width = Math.min(Math.max(width, FORM_MODAL_MIN_W), vw - 24)
+      height = Math.min(Math.max(height, FORM_MODAL_MIN_H), vh - 24)
+      setFormSize({ width, height })
+    }
+    const onUp = () => {
+      formResizeRef.current = null
+    }
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+    window.addEventListener('pointercancel', onUp)
+    return () => {
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+      window.removeEventListener('pointercancel', onUp)
+    }
+  }, [])
+
+  const startFormResize = useCallback(
+    (edge) => (e) => {
+      if (e.button !== 0) return
+      e.preventDefault()
+      e.stopPropagation()
+      formResizeRef.current = {
+        edge,
+        startX: e.clientX,
+        startY: e.clientY,
+        orig: { ...formSize },
+      }
+    },
+    [formSize]
+  )
+
+  const formResizeHandle = (edge, cursor, extra = '') => (
+    <div
+      role="presentation"
+      onPointerDown={startFormResize(edge)}
+      className={`absolute z-30 ${extra}`}
+      style={{ cursor }}
+    />
+  )
 
   const filtered = useMemo(() => {
     let list = [...(personnel || [])]
-    if (listFilter === 'active') list = list.filter((p) => p.is_active !== false)
-    if (listFilter === 'archive') list = list.filter((p) => p.is_active === false)
-    if (typeFilter && typeFilter !== 'all') {
-      list = list.filter((p) => p.employment_type === typeFilter)
+    if (isSidebar) {
+      list = list.filter((p) => p.is_active !== false && p.employment_type === 'permanent')
+    } else {
+      if (listFilter === 'active') {
+        list = list.filter((p) => p.is_active !== false && p.employment_type !== 'temporary')
+      }
+      if (listFilter === 'dismissed') list = list.filter((p) => p.is_active === false)
+      if (listFilter === 'temporary') {
+        list = list.filter((p) => p.employment_type === 'temporary' && p.is_active !== false)
+      }
+      if (listFilter === 'all' && typeFilter && typeFilter !== 'all') {
+        list = list.filter((p) => p.employment_type === typeFilter)
+      }
     }
     const q = search.trim().toLowerCase()
     if (q) {
@@ -49,21 +154,47 @@ export default function PersonnelPanel({
           String(p.code || '').includes(q)
       )
     }
-    list.sort((a, b) => String(a.tech_name).localeCompare(String(b.tech_name), 'el'))
+    list.sort((a, b) => {
+      const byPos = positionSortKey(a.position_number) - positionSortKey(b.position_number)
+      if (byPos !== 0) return byPos
+      return String(a.tech_name || '').localeCompare(String(b.tech_name || ''), 'el')
+    })
     return list
-  }, [personnel, listFilter, typeFilter, search])
+  }, [personnel, listFilter, typeFilter, search, isSidebar])
+
+  const periodsOverlapError = useMemo(
+    () => findPeriodOverlapError(form.periods),
+    [form.periods]
+  )
 
   const openCreate = () => {
     setEditingId(null)
     setForm(emptyPersonnelForm())
+    setEditingPeriodId(null)
     setError(null)
+    setPhotoError(null)
     setFormOpen(true)
   }
 
-  const openEdit = (person) => {
+  const openEdit = async (person) => {
     setEditingId(person.id)
-    setForm(personnelFromDb(person))
+    setEditingPeriodId(null)
     setError(null)
+    setPhotoError(null)
+    const base = personnelFromDb(person)
+    const periods = await loadPersonnelPeriods(
+      person.id,
+      base.hire_date,
+      base.end_date,
+      base.employment_type
+    )
+    const mirrored = mirrorFormDatesFromLatest(periods)
+    setForm({
+      ...base,
+      periods,
+      hire_date: mirrored.hire_date || base.hire_date,
+      end_date: mirrored.end_date || base.end_date,
+    })
     setFormOpen(true)
   }
 
@@ -76,7 +207,53 @@ export default function PersonnelPanel({
           field === 'first_name' ? value : next.first_name
         )
       }
+      // Auto-sync: Πρόσληψη/Λήξη ↔ τελευταία περίοδος
+      if (field === 'hire_date' || field === 'end_date' || field === 'employment_type') {
+        next.periods = syncLatestPeriodFromForm(
+          next.periods,
+          next.hire_date,
+          next.end_date,
+          next.employment_type
+        )
+      }
       return next
+    })
+  }
+
+  const patchPeriod = (periodId, field, value) => {
+    setForm((prev) => {
+      const periods = (prev.periods || []).map((p) =>
+        p.id === periodId ? { ...p, [field]: value } : p
+      )
+      const latest = getLatestPeriod(periods)
+      const mirrored =
+        latest && latest.id === periodId ? mirrorFormDatesFromLatest(periods) : null
+      return {
+        ...prev,
+        periods,
+        ...(mirrored
+          ? {
+              hire_date: mirrored.hire_date,
+              end_date: mirrored.end_date,
+              ...(field === 'employment_type' ? { employment_type: value } : {}),
+            }
+          : {}),
+      }
+    })
+  }
+
+  const handleAddPeriod = () => {
+    setForm((prev) => {
+      const periods = addNewPeriod(prev.periods, prev.employment_type)
+      const mirrored = mirrorFormDatesFromLatest(periods)
+      const latestId = getLatestPeriod(periods)?.id || null
+      queueMicrotask(() => setEditingPeriodId(latestId))
+      return {
+        ...prev,
+        periods,
+        hire_date: mirrored.hire_date,
+        end_date: mirrored.end_date,
+      }
     })
   }
 
@@ -84,6 +261,9 @@ export default function PersonnelPanel({
     setSaving(true)
     setError(null)
     try {
+      const overlap = findPeriodOverlapError(form.periods)
+      if (overlap) throw new Error(overlap)
+
       const payload = personnelToDb(form)
       if (!payload.tech_name) throw new Error('Συμπλήρωσε επώνυμο/όνομα')
 
@@ -99,13 +279,29 @@ export default function PersonnelPanel({
         result = await diasClient.from('personnel').insert(payload).select('*').single()
       }
       if (result.error) throw result.error
+
+      const personnelId = result.data?.id
+      if (personnelId && (form.periods || []).length) {
+        const periodResult = await savePersonnelPeriods(personnelId, form.periods)
+        if (periodResult?.missingTable) {
+          console.warn(
+            'personnel_periods table missing — τρέξε supabase/11_personnel_periods.sql στο DIAS'
+          )
+        }
+      }
+
+      const saved = personnelFromDb(result.data)
       setFormOpen(false)
       await onMutated?.()
-      if (result.data) onSelect?.(personnelFromDb(result.data))
+      if (saved) {
+        onSelect?.(saved)
+        if (saved.is_active === false) onListFilterChange?.('dismissed')
+        else if (saved.employment_type === 'temporary') onListFilterChange?.('temporary')
+      }
     } catch (err) {
       if (isMissingTableError(err) || String(err.message || '').includes('employment_type')) {
         setError(
-          'Λείπουν στήλες HR στο personnel. Τρέξε το SQL supabase/02_personnel_hr.sql στο DIAS.'
+          'Λείπουν στήλες καρτέλας στο personnel. Τρέξε supabase/02_personnel_hr.sql και 10_personnel_card_fields.sql στο DIAS.'
         )
       } else {
         setError(
@@ -119,9 +315,26 @@ export default function PersonnelPanel({
     }
   }
 
+  const handlePhotoPick = async (fileList) => {
+    const file = fileList?.[0]
+    if (!file) return
+    setPhotoUploading(true)
+    setPhotoError(null)
+    try {
+      const techKey = form.tech_id || form.code || form.tech_name || 'new'
+      const url = await uploadPersonnelPhoto(file, techKey, diasClient)
+      patch('photo_url', url)
+    } catch (err) {
+      setPhotoError(err?.message || 'Αποτυχία ανεβάσματος φωτογραφίας')
+    } finally {
+      setPhotoUploading(false)
+      if (photoInputRef.current) photoInputRef.current.value = ''
+    }
+  }
+
   const handleArchive = async (person) => {
     if (!person?.id) return
-    if (!window.confirm(`Αρχειοθέτηση «${person.tech_name}»; (δεν διαγράφεται οριστικά)`)) return
+    if (!window.confirm(`Απόλυση «${person.tech_name}»; (μεταφορά στους Απολυμένους)`)) return
     setSaving(true)
     setError(null)
     try {
@@ -152,6 +365,7 @@ export default function PersonnelPanel({
         .update({
           is_active: true,
           archived_at: null,
+          end_date: null,
           updated_at: new Date().toISOString(),
         })
         .eq('id', person.id)
@@ -207,47 +421,71 @@ export default function PersonnelPanel({
     }
   }
 
+  const Wrapper = isSidebar ? 'aside' : 'section'
+
   return (
-    <aside className="flex max-h-56 w-full shrink-0 flex-col overflow-hidden rounded-2xl border border-white/10 bg-slate-900/75 shadow-xl backdrop-blur-md md:max-h-none md:w-80 md:self-stretch">
-      <div className="border-b border-white/10 px-3 py-3">
-        <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-cyan-400/80">
-          Προσωπικό DIAS
-        </p>
-        <p className="mt-0.5 text-sm font-semibold text-white">Κατάλογος υπαλλήλων</p>
+    <Wrapper
+      className={
+        isSidebar
+          ? 'flex max-h-56 w-full shrink-0 flex-col overflow-hidden rounded-2xl border border-white/10 bg-slate-900/75 shadow-xl backdrop-blur-md md:max-h-none md:w-80 md:self-stretch'
+          : inModal
+            ? 'flex h-full min-h-0 flex-col overflow-hidden'
+            : 'flex w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-white/10 bg-slate-900/75 shadow-xl backdrop-blur-md'
+      }
+    >
+      <div className={`border-b border-white/10 px-3 ${isSidebar ? 'py-3' : 'pb-3 pt-2'}`}>
+        {isSidebar ? (
+          <>
+            <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-cyan-400/80">
+              Προσωπικο DIAS
+            </p>
+            <p className="mt-0.5 text-sm font-semibold text-white">Ενεργοί μόνιμοι</p>
+          </>
+        ) : null}
 
-        <div className="mt-2 flex flex-wrap gap-1">
-          {[
-            { id: 'active', label: 'Ενεργοί' },
-            { id: 'archive', label: 'Αρχείο' },
-            { id: 'all', label: 'Όλοι' },
-          ].map((f) => (
-            <button
-              key={f.id}
-              type="button"
-              onClick={() => onListFilterChange?.(f.id)}
-              className={`rounded-lg px-2 py-1 text-[10px] font-bold uppercase tracking-wide ${
-                listFilter === f.id
-                  ? 'bg-cyan-500/25 text-cyan-100'
-                  : 'bg-white/5 text-slate-400 hover:text-slate-200'
-              }`}
+        {!isSidebar && (
+          <>
+            <div className="flex flex-wrap gap-1">
+              {[
+                { id: 'active', label: 'Ενεργοί' },
+                { id: 'temporary', label: 'Έκτακτοι' },
+                { id: 'dismissed', label: 'Απολυμένοι' },
+                { id: 'all', label: 'Όλοι' },
+              ].map((f) => (
+                <button
+                  key={f.id}
+                  type="button"
+                  onClick={() => {
+                    onListFilterChange?.(f.id)
+                    if (f.id === 'temporary' || f.id === 'dismissed') onTypeFilterChange?.('all')
+                  }}
+                  className={`rounded-lg px-2 py-1 text-[10px] font-bold tracking-wide ${
+                    listFilter === f.id
+                      ? 'bg-cyan-500/25 text-cyan-100'
+                      : 'bg-white/5 text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  {greekCapsLabel(f.label)}
+                </button>
+              ))}
+            </div>
+
+            {(listFilter === 'all' || listFilter === 'active') && (
+            <select
+              value={typeFilter}
+              onChange={(e) => onTypeFilterChange?.(e.target.value)}
+              className="mt-2 w-full rounded-xl border border-white/10 bg-slate-950/60 px-2 py-1.5 text-xs text-white"
             >
-              {f.label}
-            </button>
-          ))}
-        </div>
-
-        <select
-          value={typeFilter}
-          onChange={(e) => onTypeFilterChange?.(e.target.value)}
-          className="mt-2 w-full rounded-xl border border-white/10 bg-slate-950/60 px-2 py-1.5 text-xs text-white"
-        >
-          <option value="all">Όλες οι κατηγορίες</option>
-          {EMPLOYMENT_TYPES.map((t) => (
-            <option key={t.value} value={t.value}>
-              {t.label}
-            </option>
-          ))}
-        </select>
+              <option value="all">Όλες οι κατηγορίες</option>
+              {EMPLOYMENT_TYPES.map((t) => (
+                <option key={t.value} value={t.value}>
+                  {t.label}
+                </option>
+              ))}
+            </select>
+            )}
+          </>
+        )}
 
         <input
           type="search"
@@ -257,24 +495,26 @@ export default function PersonnelPanel({
           className="mt-2 w-full rounded-xl border border-white/10 bg-slate-950/60 px-3 py-2 text-sm text-white placeholder:text-slate-500"
         />
 
-        <div className="mt-2 flex flex-wrap gap-1">
-          <button
-            type="button"
-            onClick={openCreate}
-            className="rounded-lg border border-emerald-500/40 bg-emerald-500/15 px-2 py-1 text-[11px] font-semibold text-emerald-100"
-          >
-            + Νέος
-          </button>
-          <button
-            type="button"
-            onClick={handleImportAdmin}
-            disabled={saving}
-            className="rounded-lg border border-cyan-500/40 bg-cyan-500/10 px-2 py-1 text-[11px] font-semibold text-cyan-100 disabled:opacity-50"
-            title="Φέρνει μόνο όσους υπάρχουν στο Admin για βάρδιες"
-          >
-            Από Admin
-          </button>
-        </div>
+        {!isSidebar && (
+          <div className="mt-2 flex flex-wrap gap-1">
+            <button
+              type="button"
+              onClick={openCreate}
+              className="rounded-lg border border-emerald-500/40 bg-emerald-500/15 px-2 py-1 text-[11px] font-semibold text-emerald-100"
+            >
+              + Νέος
+            </button>
+            <button
+              type="button"
+              onClick={handleImportAdmin}
+              disabled={saving}
+              className="rounded-lg border border-cyan-500/40 bg-cyan-500/10 px-2 py-1 text-[11px] font-semibold text-cyan-100 disabled:opacity-50"
+              title="Φέρνει μόνο όσους υπάρχουν στο Admin για βάρδιες"
+            >
+              Από Admin
+            </button>
+          </div>
+        )}
       </div>
 
       {error && (
@@ -283,16 +523,53 @@ export default function PersonnelPanel({
         </div>
       )}
 
-      <div className="min-h-0 flex-1 overflow-y-auto p-2">
+      <div
+        className={
+          isSidebar
+            ? 'min-h-0 flex-1 overflow-y-auto p-2'
+            : inModal
+              ? 'min-h-0 flex-1 overflow-y-auto p-2'
+              : 'max-h-[min(68vh,760px)] overflow-y-auto p-2'
+        }
+      >
         {filtered.length === 0 ? (
           <p className="px-2 py-6 text-center text-xs text-slate-500">
-            Κενό προσωπικό DIAS. Πρόσθεσε υπάλληλο ή εισήγαγε από Admin (βάρδιες).
+            {isSidebar
+              ? 'Δεν υπάρχουν ενεργοί μόνιμοι υπάλληλοι.'
+              : 'Κενό προσωπικό DIAS. Πρόσθεσε υπάλληλο ή εισήγαγε από Admin (βάρδιες).'}
           </p>
         ) : (
           filtered.map((p) => {
             const selected = selectedId === p.id
             const initials = (p.last_name || p.tech_name || '?').slice(0, 2).toUpperCase()
-            return (
+            const avatarTone = selected
+              ? 'bg-cyan-500/25 text-cyan-100'
+              : 'bg-slate-800 text-slate-300'
+            return isSidebar ? (
+              <button
+                key={p.id}
+                type="button"
+                onClick={() => onSelect?.(p)}
+                className={`mb-1 flex w-full items-center gap-2.5 rounded-xl border px-2.5 py-2 text-left transition ${
+                  selected
+                    ? 'border-cyan-500/40 bg-cyan-500/15 text-cyan-100'
+                    : 'border-transparent text-slate-300 hover:bg-white/5 hover:text-white'
+                }`}
+              >
+                <PersonAvatar
+                  photoUrl={p.photo_url}
+                  initials={initials}
+                  name={p.tech_name}
+                  className={`h-9 w-9 ${avatarTone}`}
+                />
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-sm font-semibold">{p.tech_name}</span>
+                  <span className="block truncate text-[10px] text-slate-500">
+                    #{p.code || p.tech_id}
+                  </span>
+                </span>
+              </button>
+            ) : (
               <div
                 key={p.id}
                 className={`mb-1 flex w-full items-center justify-between gap-2 rounded-xl border py-1 pl-1.5 pr-3 ${
@@ -306,20 +583,19 @@ export default function PersonnelPanel({
                   onClick={() => onSelect?.(p)}
                   className="flex min-w-0 flex-1 items-center gap-2.5 py-1.5 text-left"
                 >
-                  <span
-                    className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-xs font-bold ${
-                      selected ? 'bg-cyan-500/25 text-cyan-100' : 'bg-slate-800 text-slate-300'
-                    }`}
-                  >
-                    {initials}
-                  </span>
+                  <PersonAvatar
+                    photoUrl={p.photo_url}
+                    initials={initials}
+                    name={p.tech_name}
+                    className={`h-10 w-10 ${avatarTone}`}
+                  />
                   <span className="min-w-0 flex-1">
                     <span className="block truncate text-sm font-semibold text-white">
                       {p.tech_name}
                     </span>
                     <span className="block truncate text-[10px] text-slate-500">
-                      #{p.code || p.tech_id} · {employmentLabel(p.employment_type)}
-                      {!p.is_active ? ' · Αρχείο' : ''}
+                      #{p.code || p.tech_id} - {employmentLabel(p.employment_type)}
+                      {!p.is_active ? ' - Απολυμένος' : ''}
                     </span>
                   </span>
                 </button>
@@ -343,8 +619,8 @@ export default function PersonnelPanel({
                   {p.is_active ? (
                     <button
                       type="button"
-                      title="Αρχειοθέτηση"
-                      aria-label="Αρχειοθέτηση"
+                      title="Απόλυση"
+                      aria-label="Απόλυση"
                       onClick={() => handleArchive(p)}
                       className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-slate-300 transition hover:bg-rose-500/25 hover:text-rose-100"
                     >
@@ -391,26 +667,50 @@ export default function PersonnelPanel({
       </div>
 
       <div className="border-t border-white/10 px-3 py-2 text-[10px] text-slate-500">
-        {filtered.length} εμφανίζονται · {(personnel || []).length} σύνολο
+        {isSidebar
+          ? `${filtered.length} ενεργοί μόνιμοι`
+          : `${filtered.length} εμφανίζονται · ${(personnel || []).length} σύνολο`}
       </div>
 
-      {formOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      {!isSidebar &&
+        formOpen &&
+        createPortal(
+        <div className="fixed inset-0 z-[80] flex items-center justify-center p-4">
           <button
             type="button"
-            className="absolute inset-0 bg-slate-950/80 backdrop-blur-sm"
+            className="absolute inset-0 bg-slate-950/40 backdrop-blur-[1px]"
             aria-label="Κλείσιμο"
             onClick={() => setFormOpen(false)}
           />
-          <div className="relative max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-2xl border border-white/10 bg-slate-900 p-5 shadow-2xl">
-            <h3 className="text-lg font-bold text-white">
-              {editingId ? 'Επεξεργασία υπαλλήλου' : 'Νέος υπάλληλος'}
-            </h3>
-            <p className="mt-1 text-xs text-slate-400">
-              Αποθήκευση στο DIAS. Soft-delete → Αρχείο (όχι οριστική διαγραφή).
-            </p>
+          <div
+            className="relative flex flex-col overflow-hidden rounded-2xl border border-white/10 bg-slate-900 shadow-2xl"
+            style={{
+              width: formSize.width,
+              height: formSize.height,
+              maxWidth: 'calc(100vw - 1.5rem)',
+              maxHeight: 'calc(100vh - 1.5rem)',
+            }}
+          >
+            {formResizeHandle('n', 'ns-resize', 'left-2 right-2 top-0 h-2')}
+            {formResizeHandle('s', 'ns-resize', 'left-2 right-2 bottom-0 h-2')}
+            {formResizeHandle('e', 'ew-resize', 'top-2 bottom-2 right-0 w-2')}
+            {formResizeHandle('w', 'ew-resize', 'top-2 bottom-2 left-0 w-2')}
+            {formResizeHandle('nw', 'nwse-resize', 'left-0 top-0 h-3 w-3')}
+            {formResizeHandle('ne', 'nesw-resize', 'right-0 top-0 h-3 w-3')}
+            {formResizeHandle('sw', 'nesw-resize', 'bottom-0 left-0 h-3 w-3')}
+            {formResizeHandle('se', 'nwse-resize', 'bottom-0 right-0 h-4 w-4')}
 
-            <div className="mt-4 grid grid-cols-2 gap-3">
+            <div className="shrink-0 border-b border-white/10 px-5 py-4">
+              <h3 className="text-lg font-bold text-white">
+                {editingId ? 'Επεξεργασία υπαλλήλου' : 'Νέος υπάλληλος'}
+              </h3>
+              <p className="mt-1 text-xs text-slate-400">
+                Καρτέλα παλιού ERP. Ημερομηνία λήξης → Απολυμένοι. Γκρι πεδία: σύντομα ενεργοποίηση λογικής.
+              </p>
+            </div>
+
+            <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-4 sm:px-5">
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
               <Field label="Επώνυμο">
                 <input
                   value={form.last_name}
@@ -430,7 +730,15 @@ export default function PersonnelPanel({
                   value={form.code}
                   onChange={(e) => patch('code', e.target.value)}
                   className={inputClass}
-                  placeholder="π.χ. 423"
+                  placeholder="π.χ. 307"
+                />
+              </Field>
+              <Field label="Αρ. θέσης τεχνικού">
+                <input
+                  value={form.position_number}
+                  onChange={(e) => patch('position_number', e.target.value)}
+                  className={inputClass}
+                  placeholder="π.χ. 17"
                 />
               </Field>
               <Field label="tech_id (μοναδικό)">
@@ -468,23 +776,145 @@ export default function PersonnelPanel({
                   ))}
                 </select>
               </Field>
-              <Field label="Πρόσληψη">
+              <div className="col-span-2 grid grid-cols-2 gap-3 sm:col-span-4">
+                <Field label="Πρόσληψη">
+                  <GreekDateInput
+                    value={form.hire_date || ''}
+                    onChange={(iso) => patch('hire_date', iso)}
+                    className={inputClass}
+                  />
+                </Field>
+                <Field label="Λήξη">
+                  <GreekDateInput
+                    value={form.end_date || ''}
+                    onChange={(iso) => patch('end_date', iso)}
+                    className={inputClass}
+                  />
+                  <p className="mt-1 text-[10px] text-slate-500">
+                    Αν συμπληρωθεί, ο υπάλληλος θεωρείται Απολυμένος/Ανενεργός μετά από αυτή την
+                    ημερομηνία.
+                  </p>
+                </Field>
+              </div>
+
+              <Field label="Διεύθυνση" className="sm:col-span-2">
                 <input
-                  type="date"
-                  value={form.hire_date || ''}
-                  onChange={(e) => patch('hire_date', e.target.value)}
+                  value={form.address}
+                  onChange={(e) => patch('address', e.target.value)}
                   className={inputClass}
                 />
               </Field>
-              <Field label="Λήξη (έκτακτοι)">
+              <Field label="Αριθμός">
                 <input
-                  type="date"
-                  value={form.end_date || ''}
-                  onChange={(e) => patch('end_date', e.target.value)}
+                  value={form.address_number}
+                  onChange={(e) => patch('address_number', e.target.value)}
                   className={inputClass}
                 />
               </Field>
-              <Field label="Admin tech id (ώρες βάρδιας)" className="col-span-2">
+              <Field label="Τηλέφωνο">
+                <input
+                  value={form.phone}
+                  onChange={(e) => patch('phone', e.target.value)}
+                  className={inputClass}
+                />
+              </Field>
+              <Field label="Κινητό">
+                <input
+                  value={form.mobile}
+                  onChange={(e) => patch('mobile', e.target.value)}
+                  className={inputClass}
+                />
+              </Field>
+              <Field label="Ημ. γέννησης">
+                <GreekDateInput
+                  value={form.birth_date || ''}
+                  onChange={(iso) => patch('birth_date', iso)}
+                  className={inputClass}
+                />
+              </Field>
+              <Field label="Γιορτή">
+                <input
+                  value={form.name_day}
+                  onChange={(e) => patch('name_day', e.target.value)}
+                  className={inputClass}
+                  placeholder="π.χ. 06/12"
+                />
+              </Field>
+              <Field label="Αρ. ταυτότητας">
+                <input
+                  value={form.id_number}
+                  onChange={(e) => patch('id_number', e.target.value)}
+                  className={inputClass}
+                />
+              </Field>
+              <Field label="ΑΦΜ">
+                <input
+                  value={form.afm}
+                  onChange={(e) => patch('afm', e.target.value)}
+                  className={inputClass}
+                />
+              </Field>
+              <Field label="ΔΟΥ">
+                <input
+                  value={form.doy}
+                  onChange={(e) => patch('doy', e.target.value)}
+                  className={inputClass}
+                />
+              </Field>
+              <Field label="Οικογ. κατάσταση">
+                <select
+                  value={form.marital_status}
+                  onChange={(e) => patch('marital_status', e.target.value)}
+                  className={inputClass}
+                >
+                  {MARITAL_STATUSES.map((t) => (
+                    <option key={t.value || 'empty'} value={t.value}>
+                      {t.label}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              <Field label="Εντός γραφείου">
+                <label className="mt-1 flex h-[38px] cursor-pointer items-center gap-2 rounded-xl border border-white/10 bg-slate-950/60 px-3 text-sm text-slate-200">
+                  <input
+                    type="checkbox"
+                    checked={form.in_office === true}
+                    onChange={(e) => patch('in_office', e.target.checked)}
+                    className="h-4 w-4 rounded border-white/20"
+                  />
+                  Ναι
+                </label>
+              </Field>
+
+              <Field label="Τράπεζα">
+                <select
+                  value={form.bank_name}
+                  onChange={(e) => patch('bank_name', e.target.value)}
+                  className={inputClass}
+                >
+                  {BANKS.map((t) => (
+                    <option key={t.value || 'empty'} value={t.value}>
+                      {t.label}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              <Field label="IBAN" className="sm:col-span-2">
+                <input
+                  value={form.iban}
+                  onChange={(e) => patch('iban', e.target.value)}
+                  className={inputClass}
+                />
+              </Field>
+              <Field label="Δικαιούχος">
+                <input
+                  value={form.bank_account_holder}
+                  onChange={(e) => patch('bank_account_holder', e.target.value)}
+                  className={inputClass}
+                />
+              </Field>
+
+              <Field label="Admin tech id (ώρες βάρδιας)" className="col-span-2 sm:col-span-2">
                 <input
                   value={form.admin_tech_id}
                   onChange={(e) => patch('admin_tech_id', e.target.value)}
@@ -500,7 +930,73 @@ export default function PersonnelPanel({
                   ))}
                 </datalist>
               </Field>
-              <Field label="Σημειώσεις" className="col-span-2">
+              <Field label="Φωτογραφία προφίλ" className="col-span-2 sm:col-span-4">
+                <div className="flex flex-col gap-2">
+                  <div className="flex items-start gap-2">
+                    <input
+                      ref={photoInputRef}
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      onChange={(e) => handlePhotoPick(e.target.files)}
+                    />
+                    <button
+                      type="button"
+                      disabled={photoUploading || saving}
+                      onClick={() => photoInputRef.current?.click()}
+                      title="Κλικ για ανέβασμα φωτογραφίας"
+                      className="group relative h-20 w-20 shrink-0 overflow-hidden rounded-lg border border-white/10 bg-slate-800 transition hover:border-cyan-500/50 focus:outline-none focus:ring-2 focus:ring-cyan-500/40 disabled:cursor-wait disabled:opacity-80"
+                    >
+                      {form.photo_url ? (
+                        <img
+                          src={form.photo_url}
+                          alt="Προεπισκόπηση"
+                          className="h-full w-full object-cover"
+                        />
+                      ) : (
+                        <span className="flex h-full w-full flex-col items-center justify-center gap-0.5 px-1 text-center text-[10px] leading-tight text-slate-500 group-hover:text-cyan-200/80">
+                          <span className="text-lg leading-none">+</span>
+                          χωρίς φωτο
+                        </span>
+                      )}
+                      {photoUploading ? (
+                        <span className="absolute inset-0 flex items-center justify-center bg-slate-950/70">
+                          <span className="h-6 w-6 animate-spin rounded-full border-2 border-cyan-300/30 border-t-cyan-300" />
+                        </span>
+                      ) : (
+                        <span className="pointer-events-none absolute inset-x-0 bottom-0 bg-slate-950/70 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-cyan-100/90 opacity-0 transition group-hover:opacity-100">
+                          Αλλαγή
+                        </span>
+                      )}
+                    </button>
+                    {form.photo_url && !photoUploading ? (
+                      <button
+                        type="button"
+                        title="Αφαίρεση φωτογραφίας"
+                        aria-label="Αφαίρεση φωτογραφίας"
+                        disabled={saving}
+                        onClick={() => {
+                          patch('photo_url', '')
+                          setPhotoError(null)
+                        }}
+                        className="mt-0.5 inline-flex h-7 w-7 items-center justify-center rounded-lg border border-white/10 bg-white/5 text-slate-400 transition hover:border-rose-500/40 hover:bg-rose-500/15 hover:text-rose-100 disabled:opacity-50"
+                      >
+                        <svg viewBox="0 0 20 20" fill="currentColor" className="h-3.5 w-3.5" aria-hidden>
+                          <path d="M6.28 5.22a.75.75 0 00-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 101.06 1.06L10 11.06l3.72 3.72a.75.75 0 101.06-1.06L11.06 10l3.72-3.72a.75.75 0 00-1.06-1.06L10 8.94 6.28 5.22z" />
+                        </svg>
+                      </button>
+                    ) : null}
+                  </div>
+                  {photoError ? (
+                    <p className="text-[11px] font-medium text-rose-300">{photoError}</p>
+                  ) : (
+                    <p className="text-[10px] text-slate-500">
+                      Κλικ στο avatar για ανέβασμα. Αποθήκευση στη βάση με το κουμπί Αποθήκευση.
+                    </p>
+                  )}
+                </div>
+              </Field>
+              <Field label="Σχόλια / σημειώσεις" className="col-span-2 sm:col-span-4">
                 <textarea
                   value={form.notes}
                   onChange={(e) => patch('notes', e.target.value)}
@@ -509,50 +1005,289 @@ export default function PersonnelPanel({
               </Field>
             </div>
 
+            {/*
+              TODO: Table to log historical start/end dates for re-hired employees
+              Hybrid: form hire/end auto-sync latest period; + Νέα Περίοδος / pencil for manual history.
+              TODO: DB exclusion constraint for non-overlapping ranges (see 11_personnel_periods.sql)
+            */}
+            <div className="mt-4 rounded-xl border border-white/10 bg-slate-950/40 p-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <p className="text-[10px] font-semibold tracking-wider text-slate-400">
+                    {greekCapsLabel('Περίοδοι')} · Ιστορικό συμβάσεων
+                  </p>
+                  <p className="mt-0.5 text-[10px] text-slate-500">
+                    Η Πρόσληψη/Λήξη πάνω καθρεφτίζουν την πιο πρόσφατη περίοδο.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleAddPeriod}
+                  disabled={saving}
+                  className="rounded-lg border border-cyan-500/40 bg-cyan-500/15 px-2.5 py-1 text-[11px] font-semibold text-cyan-100 transition hover:bg-cyan-500/25 disabled:opacity-50"
+                >
+                  + Νέα Περίοδος
+                </button>
+              </div>
+
+              {periodsOverlapError ? (
+                <div className="mt-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-2.5 py-1.5 text-[11px] text-amber-100">
+                  {periodsOverlapError}
+                </div>
+              ) : null}
+
+              <div className="mt-2 overflow-hidden rounded-lg border border-white/10">
+                <table className="w-full text-left text-xs text-slate-300">
+                  <thead className="bg-slate-950/60 text-[10px] tracking-wider text-slate-500">
+                    <tr>
+                      <th className="px-3 py-2">{greekCapsLabel('Από')}</th>
+                      <th className="px-3 py-2">{greekCapsLabel('Μέχρι')}</th>
+                      <th className="px-3 py-2">{greekCapsLabel('Κατηγορία')}</th>
+                      <th className="px-2 py-2 text-right"> </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {sortPeriods(form.periods || []).length === 0 ? (
+                      <tr>
+                        <td className="px-3 py-3 text-slate-500" colSpan={4}>
+                          Δεν υπάρχουν περίοδοι ακόμα. Συμπλήρωσε Πρόσληψη ή πάτα «+ Νέα Περίοδος».
+                        </td>
+                      </tr>
+                    ) : (
+                      sortPeriods(form.periods || []).map((period) => {
+                        const isLatest = getLatestPeriod(form.periods)?.id === period.id
+                        const isEditing = editingPeriodId === period.id
+                        return (
+                          <tr
+                            key={period.id}
+                            className={`border-t border-white/5 ${
+                              isLatest ? 'bg-cyan-500/5' : ''
+                            }`}
+                          >
+                            <td className="px-2 py-1.5 align-middle">
+                              {isEditing ? (
+                                <GreekDateInput
+                                  value={period.start_date || ''}
+                                  onChange={(iso) => patchPeriod(period.id, 'start_date', iso)}
+                                  className={inputClass}
+                                />
+                              ) : (
+                                <span className="px-1 font-mono text-[11px] text-slate-200">
+                                  {period.start_date
+                                    ? isoDateToGreek(period.start_date)
+                                    : '—'}
+                                  {isLatest ? (
+                                    <span className="ml-1 text-[9px] font-sans font-semibold uppercase text-cyan-400/80">
+                                      τρέχουσα
+                                    </span>
+                                  ) : null}
+                                </span>
+                              )}
+                            </td>
+                            <td className="px-2 py-1.5 align-middle">
+                              {isEditing ? (
+                                <GreekDateInput
+                                  value={period.end_date || ''}
+                                  onChange={(iso) => patchPeriod(period.id, 'end_date', iso)}
+                                  className={inputClass}
+                                />
+                              ) : (
+                                <span className="px-1 font-mono text-[11px] text-slate-200">
+                                  {period.end_date ? isoDateToGreek(period.end_date) : '—'}
+                                </span>
+                              )}
+                            </td>
+                            <td className="px-2 py-1.5 align-middle">
+                              {isEditing ? (
+                                <select
+                                  value={period.employment_type || 'permanent'}
+                                  onChange={(e) =>
+                                    patchPeriod(period.id, 'employment_type', e.target.value)
+                                  }
+                                  className={inputClass}
+                                >
+                                  {EMPLOYMENT_TYPES.map((t) => (
+                                    <option key={t.value} value={t.value}>
+                                      {t.label}
+                                    </option>
+                                  ))}
+                                </select>
+                              ) : (
+                                <span className="px-1 text-[11px]">
+                                  {employmentLabel(period.employment_type)}
+                                </span>
+                              )}
+                            </td>
+                            <td className="px-2 py-1.5 text-right align-middle">
+                              <button
+                                type="button"
+                                title={isEditing ? 'Κλείσιμο επεξεργασίας' : 'Επεξεργασία περιόδου'}
+                                aria-label={isEditing ? 'Κλείσιμο επεξεργασίας' : 'Επεξεργασία περιόδου'}
+                                onClick={() =>
+                                  setEditingPeriodId(isEditing ? null : period.id)
+                                }
+                                className="inline-flex h-7 w-7 items-center justify-center rounded-lg text-slate-300 transition hover:bg-slate-700 hover:text-white"
+                              >
+                                {isEditing ? (
+                                  <span className="text-[11px] font-bold">✓</span>
+                                ) : (
+                                  <svg
+                                    viewBox="0 0 20 20"
+                                    fill="currentColor"
+                                    className="h-3.5 w-3.5"
+                                    aria-hidden
+                                  >
+                                    <path d="M2.695 14.763l-1.262 3.154a.5.5 0 00.65.65l3.155-1.262a4 4 0 001.343-.885L17.5 5.5a2.121 2.121 0 00-3-3L3.58 13.42a4 4 0 00-.885 1.343z" />
+                                  </svg>
+                                )}
+                              </button>
+                            </td>
+                          </tr>
+                        )
+                      })
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
             {form.payment_method && (
               <p className="mt-2 text-[11px] text-slate-500">
                 {paymentMethodLabel(form.payment_method)} · λεπτομέρειες και στις Αποδοχές
               </p>
             )}
-
-            {error && (
-              <div className="mt-3 rounded-xl border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-xs text-rose-100">
-                {error}
-              </div>
-            )}
-
-            <div className="mt-5 flex gap-2">
-              <button
-                type="button"
-                onClick={handleSave}
-                disabled={saving}
-                className="flex-1 rounded-xl border border-emerald-500/40 bg-emerald-500/20 px-4 py-2 text-sm font-bold text-emerald-100 disabled:opacity-50"
-              >
-                {saving ? 'Αποθήκευση...' : 'Αποθήκευση'}
-              </button>
-              <button
-                type="button"
-                onClick={() => setFormOpen(false)}
-                className="rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-white"
-              >
-                Άκυρο
-              </button>
             </div>
+
+            <div className="shrink-0 border-t border-white/10 bg-slate-900 px-5 py-4">
+              {error && (
+                <div className="mb-3 rounded-xl border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-xs text-rose-100">
+                  {error}
+                </div>
+              )}
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={handleSave}
+                  disabled={saving || Boolean(periodsOverlapError)}
+                  className="flex-1 rounded-xl border border-emerald-500/40 bg-emerald-500/20 px-4 py-2 text-sm font-bold text-emerald-100 disabled:opacity-50"
+                >
+                  {saving ? 'Αποθήκευση...' : 'Αποθήκευση'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setFormOpen(false)}
+                  className="rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-white"
+                >
+                  Άκυρο
+                </button>
+              </div>
+            </div>
+
+            <div
+              className="pointer-events-none absolute bottom-1.5 right-1.5 z-10 h-3 w-3 border-b-2 border-r-2 border-cyan-400/50"
+              aria-hidden
+            />
           </div>
-        </div>
+        </div>,
+        document.body
       )}
-    </aside>
+    </Wrapper>
   )
+}
+
+const FORM_MODAL_MIN_W = 420
+const FORM_MODAL_MIN_H = 360
+
+function defaultFormModalSize() {
+  const vw = typeof window !== 'undefined' ? window.innerWidth : 960
+  const vh = typeof window !== 'undefined' ? window.innerHeight : 800
+  return {
+    width: Math.min(768, Math.max(FORM_MODAL_MIN_W, vw - 32)),
+    height: Math.min(Math.round(vh * 0.85), Math.max(FORM_MODAL_MIN_H, vh - 32)),
+  }
 }
 
 function Field({ label, children, className = '' }) {
   return (
     <div className={className}>
-      <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
-        {label}
+      <label className="text-[10px] font-semibold tracking-wider text-slate-400">
+        {greekCapsLabel(label)}
       </label>
       <div className="mt-1">{children}</div>
     </div>
+  )
+}
+
+/**
+ * UI: ηη/μμ/εεεε. Form/DB value: YYYY-MM-DD (unchanged for personnelToDb).
+ */
+function GreekDateInput({ value, onChange, className = '', disabled = false }) {
+  const [text, setText] = useState(() => isoDateToGreek(value))
+
+  useEffect(() => {
+    setText(isoDateToGreek(value))
+  }, [value])
+
+  const commit = (raw) => {
+    const trimmed = String(raw || '').trim()
+    if (!trimmed) {
+      onChange('')
+      setText('')
+      return
+    }
+    const iso = parseToIsoDate(trimmed)
+    if (iso) {
+      onChange(iso)
+      setText(isoDateToGreek(iso))
+      return
+    }
+    // Invalid → keep previous ISO value / display (don't corrupt form state)
+    setText(isoDateToGreek(value))
+  }
+
+  return (
+    <input
+      type="text"
+      inputMode="numeric"
+      autoComplete="off"
+      placeholder="ηη/μμ/εεεε"
+      disabled={disabled}
+      value={text}
+      onChange={(e) => setText(maskGreekDateInput(e.target.value))}
+      onBlur={() => commit(text)}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault()
+          commit(text)
+        }
+      }}
+      className={className}
+    />
+  )
+}
+
+function PersonAvatar({ photoUrl, initials, name, className = '' }) {
+  const src = String(photoUrl || '').trim()
+  if (src) {
+    return (
+      <span className={`relative shrink-0 overflow-hidden rounded-full border border-white/10 ${className}`}>
+        <img
+          src={src}
+          alt={name || 'Φωτογραφία'}
+          className="h-full w-full object-cover"
+          loading="lazy"
+        />
+      </span>
+    )
+  }
+  return (
+    <span
+      className={`flex shrink-0 items-center justify-center overflow-hidden rounded-full text-xs font-bold ${className}`}
+      aria-hidden={!name}
+      title={name || undefined}
+    >
+      {initials}
+    </span>
   )
 }
 

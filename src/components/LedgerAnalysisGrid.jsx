@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   formatLedgerAmount,
   formatLedgerImportAt,
+  isTicketRestaurantRow,
   ledgerDescriptionForRow,
   ledgerTypeLabel,
 } from '../lib/techLedger'
@@ -155,8 +156,14 @@ export default function LedgerAnalysisGrid({
   onOpenCreateForType,
   onOpenEditRow,
 }) {
-  const showInvoice = Boolean(hasInvoice ?? monthContext?.hasInvoice)
+  // Strict: false/null/undefined → χωρίς στήλη τιμολογίου (header + cells μαζί)
+  const showInvoice = hasInvoice === true || monthContext?.hasInvoice === true
   const columnDefs = useMemo(() => getColumnDefs(showInvoice), [showInvoice])
+  /** Ticket Restaurant μόνο στη Μήτρα — όχι στον πίνακα κινήσεων μήνα. */
+  const visibleRows = useMemo(
+    () => (rows || []).filter((row) => !isTicketRestaurantRow(row)),
+    [rows]
+  )
   const [columnWidths, setColumnWidths] = useState(() => loadColumnWidths(showInvoice))
   const scrollRef = useRef(null)
   const resizeRef = useRef(null)
@@ -414,8 +421,8 @@ export default function LedgerAnalysisGrid({
           </tr>
         </thead>
         <tbody>
-          {loading && rows.length === 0
-            ? Array.from({ length: Math.max(skeletonCount, 12) }, (_, i) => (
+          {loading && visibleRows.length === 0
+            ? Array.from({ length: Math.max(skeletonCount, 6) }, (_, i) => (
                 <tr key={`loading-${i}`} className="h-9 border-b border-white/10">
                   {columnDefs.map((col) => (
                     <td key={col.id} style={cellStyle(col.id)} className="border-r border-white/10 px-1.5">
@@ -424,7 +431,19 @@ export default function LedgerAnalysisGrid({
                   ))}
                 </tr>
               ))
-            : rows.map(renderRow)}
+            : visibleRows.length === 0
+              ? (
+                <tr>
+                  <td
+                    colSpan={columnDefs.length}
+                    className="px-4 py-10 text-center text-sm text-slate-500"
+                  >
+                    Δεν υπάρχουν κινήσεις για τον επιλεγμένο μήνα. Πάτα «Εισαγωγή» για υπολογισμό από
+                    Αποδοχές / Συμφωνίες.
+                  </td>
+                </tr>
+              )
+              : visibleRows.map(renderRow)}
         </tbody>
       </table>
     </div>

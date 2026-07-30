@@ -55,7 +55,7 @@ export default function MovementModal({
 
   const applyType = (t, sideOverride) => {
     if (!t) return
-    const side = sideOverride || resolveLedgerSide(t, 0, { hasInvoice })
+    const side = sideOverride || resolveLedgerSide(t, 0, {})
     const salary = typeIsSalary(t)
     setForm((prev) => ({
       ...prev,
@@ -63,7 +63,8 @@ export default function MovementModal({
       is_salary_type: salary,
       ledger_group: t.ledger_group || (salary ? 'SALARY' : 'OTHER'),
       side,
-      post_to_invoice: Boolean(hasInvoice && salary),
+      // Μισθός ποτέ αυτόματα σε τιμολόγιο — μόνο ρητό checkbox
+      post_to_invoice: false,
     }))
   }
 
@@ -114,12 +115,11 @@ export default function MovementModal({
             presetSide ||
             base.side ||
             (bucket ? sideFromLedgerBucket(bucket) : null) ||
-            resolveLedgerSide(chosen, Number(base.amount) || 0, { hasInvoice })
+            resolveLedgerSide(chosen, Number(base.amount) || 0, {})
           const salary = typeIsSalary(chosen)
+          // Τιμολόγιο μόνο αν η αποθηκευμένη γραμμή είναι ήδη σε invoice_amount
           const postToInvoice =
-            bucket === 'invoice_amount' ||
-            base.post_to_invoice === true ||
-            (!selectedRowData && hasInvoice && salary)
+            bucket === 'invoice_amount' || base.post_to_invoice === true
           setForm({
             ...base,
             type: chosen.description,
@@ -171,11 +171,10 @@ export default function MovementModal({
     if (!selectedType) return null
     if (form.post_to_invoice) return 'invoice_amount'
     return resolveLedgerColumn(selectedType, Number(form.amount) || 0, {
-      hasInvoice,
       forceInvoice: false,
       side: form.side,
     })
-  }, [selectedType, form.side, form.amount, form.post_to_invoice, hasInvoice])
+  }, [selectedType, form.side, form.amount, form.post_to_invoice])
 
   if (!open) return null
 
@@ -186,7 +185,7 @@ export default function MovementModal({
     setSelectedTypeId(id)
     const t = types.find((x) => Number(x.id) === id)
     if (!t) return
-    applyType(t, isEdit ? form.side : resolveLedgerSide(t, 0, { hasInvoice }))
+    applyType(t, isEdit ? form.side : resolveLedgerSide(t, 0, {}))
   }
 
   const handleSave = async (e) => {
@@ -320,7 +319,7 @@ export default function MovementModal({
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <button
         type="button"
-        className="absolute inset-0 bg-slate-950/80 backdrop-blur-sm"
+        className="absolute inset-0 bg-slate-950/25 backdrop-blur-[1px]"
         aria-label="Κλείσιμο"
         onClick={onClose}
         disabled={saving}
@@ -437,7 +436,7 @@ export default function MovementModal({
               </div>
             </div>
 
-            {hasInvoice && (
+            {hasInvoice === true && (
               <label className="flex cursor-pointer items-center gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-100">
                 <input
                   type="checkbox"
