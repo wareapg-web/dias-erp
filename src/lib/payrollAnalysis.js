@@ -211,6 +211,13 @@ export function formatEuroPlain(value) {
   return n.toLocaleString('el-GR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 }
 
+/** Ticket Restaurant στη μήτρα: ποσό αν > 0, αλλιώς παύλα. */
+export function formatMatrixTicket(value) {
+  const n = Number(value) || 0
+  if (n <= 0) return '-'
+  return formatEuroPlain(n)
+}
+
 function payrollMatchesTech(payroll, tech) {
   if (!tech || !payroll) return false
   return (
@@ -257,9 +264,19 @@ function isPayrollSettled(row) {
 /**
  * Ετήσια μήτρα απολαβών όπως παλιό ERP:
  * Σ = σύνολο απολαβών μήνα, Π = πληρωμές, Υ(1)/Υ(2) = εξοφλήσεις.
- * Αν υπάρχει αποθηκευμένη μισθοδοσία στο DIAS, αυτή υπερισχύει· αλλιώς provisional από estimate.
+ * Ticket Restaurant από payrolls.ticket_restaurant (ανεξάρτητο — ΔΕΝ μπαίνει στο Σ / totals.sigma).
+ * Fallback: μόνο για τον selectedMonth χωρίς payroll row → tech_earnings.ticket_amount.
  */
-export function buildSalaryYearMatrix(tech, year, payrolls = [], estimatedByMonth = []) {
+export function buildSalaryYearMatrix(
+  tech,
+  year,
+  payrolls = [],
+  estimatedByMonth = [],
+  ticketOptions = {}
+) {
+  const selectedMonth = Number(ticketOptions?.selectedMonth) || 0
+  const earningsTicket = Math.round((Number(ticketOptions?.earningsTicketAmount) || 0) * 100) / 100
+
   const months = Array.from({ length: 12 }, (_, i) => {
     const month = i + 1
     const rows = (payrolls || []).filter((p) => {
@@ -289,6 +306,20 @@ export function buildSalaryYearMatrix(tech, year, payrolls = [], estimatedByMont
     const estimated = Number(estimatedByMonth[i]?.amount) || 0
     const sigma = sigmaSaved > 0 ? Math.round(sigmaSaved * 100) / 100 : estimated
 
+    // Ticket: ένα ποσό/μήνα — ΟΧΙ άθροισμα πολλαπλών payroll rows
+    let ticketSaved = 0
+    for (const p of rows) {
+      const t = moneyField(p, ['ticket_restaurant', 'ticket_amount'])
+      if (t > ticketSaved) ticketSaved = t
+    }
+    let ticket = 0
+    if (rows.length > 0) {
+      // Υπάρχει payroll μήνα → μόνο η τιμή από payroll (ακόμα κι αν 0 → παύλα)
+      ticket = Math.round(ticketSaved * 100) / 100
+    } else if (month === selectedMonth && earningsTicket > 0) {
+      ticket = earningsTicket
+    }
+
     if (pi <= 0 && rows.length > 0) {
       if (rows.some(isPayrollSettled)) pi = sigmaSaved
       else if (sigmaSaved > 0) pi = sigmaSaved // αποθήκευση ERP = καταγεγραμμένη πληρωμή bridge
@@ -300,6 +331,7 @@ export function buildSalaryYearMatrix(tech, year, payrolls = [], estimatedByMont
       pi: Math.round(pi * 100) / 100,
       y1: Math.round(y1 * 100) / 100,
       y2: Math.round(y2 * 100) / 100,
+      ticket,
       hasPayroll: rows.length > 0,
       provisional: sigmaSaved <= 0 && estimated > 0,
     }
@@ -311,8 +343,10 @@ export function buildSalaryYearMatrix(tech, year, payrolls = [], estimatedByMont
       pi: Math.round((acc.pi + m.pi) * 100) / 100,
       y1: Math.round((acc.y1 + m.y1) * 100) / 100,
       y2: Math.round((acc.y2 + m.y2) * 100) / 100,
+      // Σύνολο γραμμής Ticket — όχι μέσα στο sigma
+      ticket: Math.round((acc.ticket + m.ticket) * 100) / 100,
     }),
-    { sigma: 0, pi: 0, y1: 0, y2: 0 }
+    { sigma: 0, pi: 0, y1: 0, y2: 0, ticket: 0 }
   )
 
   const monthsWithPay = months.filter((m) => m.sigma > 0)

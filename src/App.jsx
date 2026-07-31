@@ -256,10 +256,33 @@ export default function App() {
         const month = payrollRecord.month ?? selectedMonth
         const year = payrollRecord.year ?? selectedYear
         const { month: _m, year: _y, ...rest } = payrollRecord
+        const period = formatPeriod(year, month)
+        const techId = rest.tech_id != null ? String(rest.tech_id) : null
+
+        // Ένα record ανά υπάλληλο + μήνα: σβήσε παλιές εγγραφές, μετά insert
+        if (techId) {
+          const { error: deleteError } = await diasClient
+            .from('payrolls')
+            .delete()
+            .eq('tech_id', techId)
+            .eq('period', period)
+          if (deleteError) {
+            const message = formatSupabaseError(deleteError, {
+              table: 'payrolls',
+              clientLabel: 'DIAS ERP',
+            })
+            if (isMissingTableError(deleteError)) setPayrollsMissing(true)
+            setError(message)
+            throw deleteError
+          }
+        }
 
         const { error: saveError } = await diasClient.from('payrolls').insert({
           ...rest,
-          period: formatPeriod(year, month),
+          tech_id: techId,
+          period,
+          year: Number(year),
+          month: Number(month),
         })
 
         if (saveError) {
