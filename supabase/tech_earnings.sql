@@ -45,6 +45,8 @@ create table if not exists public.tech_earnings (
 
   accountant_amount numeric(12, 2) not null default 0,
 
+  driver_allowance numeric(12, 2) not null default 0,
+
   bank_account text,
   bank_name text,
   issues_invoice boolean not null default false,

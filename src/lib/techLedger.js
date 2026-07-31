@@ -1,5 +1,7 @@
 /** tech_ledger_view helpers — Μηνιαία Ανάλυση καρτέλας */
 
+import { formatElNumber, parseElNumber } from './numberFormat'
+
 export function monthDateRange(year, month) {
   const y = Number(year)
   const m = Number(month)
@@ -34,16 +36,13 @@ export function ledgerTypeLabel(type) {
 export function formatLedgerAmount(value) {
   const n = Number(value)
   if (!Number.isFinite(n) || n === 0) return ''
-  return new Intl.NumberFormat('el-GR', {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(n)
+  return formatElNumber(n)
 }
 
 function fmtLedgerNum(value, digits = 2) {
   const n = Number(value)
-  if (!Number.isFinite(n)) return '0,00'
-  return n.toLocaleString('el-GR', {
+  if (!Number.isFinite(n)) return digits === 0 ? '0' : '0,00'
+  return formatElNumber(n, {
     minimumFractionDigits: digits,
     maximumFractionDigits: digits,
   })
@@ -255,8 +254,8 @@ export function movementFormFromRow(row) {
 
 export function parseMovementAmount(value) {
   if (value === '' || value == null) throw new Error('Συμπλήρωσε ποσό')
-  const n = Number(String(value).replace(',', '.'))
-  if (!Number.isFinite(n)) throw new Error('Μη έγκυρο ποσό')
+  const n = parseElNumber(value)
+  if (n == null || !Number.isFinite(n)) throw new Error('Μη έγκυρο ποσό')
   return n
 }
 

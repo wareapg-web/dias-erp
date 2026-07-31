@@ -6,6 +6,7 @@
 import { diasClient } from './supabase'
 import { monthDateRange } from './techLedger'
 import { personnelIssuesInvoice } from './personnel'
+import { parseElNumber } from './numberFormat'
 import {
   isSalaryLedgerGroup,
   payrollTypeCodeFromDescription,
@@ -17,8 +18,7 @@ function round2(n) {
 
 function parseAmount(value) {
   if (value === '' || value == null) return 0
-  const n = Number(String(value).replace(',', '.'))
-  return Number.isFinite(n) ? n : 0
+  return parseElNumber(value) ?? 0
 }
 
 function earningsAmount(form, key) {
@@ -73,8 +73,8 @@ export const MONTH_IMPORT_SPECS = [
     // Μόνο με payment_method === 'invoice' (gate στο resolveMonthImportLines).
     // Πηγή: accountant_amount στις Αποδοχές, αλλιώς συμφωνία ACCOUNTANT / legacy extra.
     fromEarnings: (e) => {
-      const fromField = Number(String(e?.accountant_amount ?? '').replace(',', '.'))
-      if (Number.isFinite(fromField) && fromField > 0) return fromField
+      const fromField = parseAmount(e?.accountant_amount)
+      if (fromField > 0) return fromField
       // Legacy: αριθμητικό extra στις Αποδοχές
       const extra = String(e?.extra || '').trim()
       if (/^[\d.,]+$/.test(extra)) return parseAmount(extra)
