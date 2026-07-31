@@ -1,5 +1,7 @@
 /** payment_entries — Πληρωμές τεχνικού */
 
+import { parseElNumber } from './numberFormat'
+
 export const PAYMENT_TYPES = [
   { value: 'ADVANCE', label: 'Έναντι' },
   { value: 'SETTLEMENT', label: 'Εξόφληση' },
@@ -24,8 +26,8 @@ export function emptyPaymentForm() {
 
 function toNumberRequired(value) {
   if (value === '' || value == null) throw new Error('Συμπλήρωσε ποσό')
-  const n = Number(String(value).replace(',', '.'))
-  if (!Number.isFinite(n)) throw new Error('Μη έγκυρο ποσό')
+  const n = parseElNumber(value)
+  if (n == null) throw new Error('Μη έγκυρο ποσό')
   return n
 }
 
@@ -53,8 +55,8 @@ export function paymentToDb(form, tech) {
 }
 
 export function formatPaymentAmount(value) {
-  const n = Number(value)
-  if (!Number.isFinite(n)) return '—'
+  const n = parseElNumber(value)
+  if (n == null) return '—'
   return new Intl.NumberFormat('el-GR', {
     style: 'currency',
     currency: 'EUR',

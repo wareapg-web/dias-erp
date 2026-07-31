@@ -12,6 +12,7 @@ import {
   paymentMethodLabel,
   personnelFromDb,
   personnelToDb,
+  shiftPersonnelPositionsFrom,
 } from '../lib/personnel'
 import { splitTechName } from '../lib/payrollAnalysis'
 import { payrollTechs } from '../lib/crewPayroll'
@@ -266,6 +267,14 @@ export default function PersonnelPanel({
 
       const payload = personnelToDb(form)
       if (!payload.tech_name) throw new Error('Συμπλήρωσε επώνυμο/όνομα')
+
+      // Ίδια θέση με άλλον → σπρώξιμο θέσεων ≥ N προς τα κάτω
+      await shiftPersonnelPositionsFrom({
+        personnel,
+        targetPosition: form.position_number,
+        excludeId: editingId,
+        client: diasClient,
+      })
 
       let result
       if (editingId) {
@@ -797,20 +806,38 @@ export default function PersonnelPanel({
                 </Field>
               </div>
 
-              <Field label="Διεύθυνση" className="sm:col-span-2">
-                <input
-                  value={form.address}
-                  onChange={(e) => patch('address', e.target.value)}
-                  className={inputClass}
-                />
-              </Field>
-              <Field label="Αριθμός">
-                <input
-                  value={form.address_number}
-                  onChange={(e) => patch('address_number', e.target.value)}
-                  className={inputClass}
-                />
-              </Field>
+              <div className="col-span-2 grid grid-cols-2 gap-3 sm:col-span-4 sm:grid-cols-6">
+                <Field label="Διεύθυνση" className="sm:col-span-2">
+                  <input
+                    value={form.address}
+                    onChange={(e) => patch('address', e.target.value)}
+                    className={inputClass}
+                  />
+                </Field>
+                <Field label="Αριθμός">
+                  <input
+                    value={form.address_number}
+                    onChange={(e) => patch('address_number', e.target.value)}
+                    className={inputClass}
+                  />
+                </Field>
+                <Field label="Περιοχή" className="sm:col-span-2">
+                  <input
+                    value={form.area}
+                    onChange={(e) => patch('area', e.target.value)}
+                    className={inputClass}
+                  />
+                </Field>
+                <Field label="Τ.Κ.">
+                  <input
+                    value={form.zipcode}
+                    onChange={(e) => patch('zipcode', e.target.value)}
+                    className={inputClass}
+                    inputMode="numeric"
+                    autoComplete="postal-code"
+                  />
+                </Field>
+              </div>
               <Field label="Τηλέφωνο">
                 <input
                   value={form.phone}
@@ -879,7 +906,14 @@ export default function PersonnelPanel({
                   <input
                     type="checkbox"
                     checked={form.in_office === true}
-                    onChange={(e) => patch('in_office', e.target.checked)}
+                    onChange={(e) => {
+                      const checked = e.target.checked
+                      setForm((prev) => ({
+                        ...prev,
+                        in_office: checked,
+                        ...(checked ? { admin_tech_id: '' } : {}),
+                      }))
+                    }}
                     className="h-4 w-4 rounded border-white/20"
                   />
                   Ναι
@@ -914,22 +948,24 @@ export default function PersonnelPanel({
                 />
               </Field>
 
-              <Field label="Admin tech id (ώρες βάρδιας)" className="col-span-2 sm:col-span-2">
-                <input
-                  value={form.admin_tech_id}
-                  onChange={(e) => patch('admin_tech_id', e.target.value)}
-                  className={inputClass}
-                  placeholder="κενό = χωρίς ώρες από Admin"
-                  list="admin-tech-ids"
-                />
-                <datalist id="admin-tech-ids">
-                  {(adminTechs || []).map((t) => (
-                    <option key={t.id} value={String(t.id)}>
-                      {t.name}
-                    </option>
-                  ))}
-                </datalist>
-              </Field>
+              {!form.in_office ? (
+                <Field label="Admin tech id (ώρες βάρδιας)" className="col-span-2 sm:col-span-2">
+                  <input
+                    value={form.admin_tech_id}
+                    onChange={(e) => patch('admin_tech_id', e.target.value)}
+                    className={inputClass}
+                    placeholder="κενό = χωρίς ώρες από Admin"
+                    list="admin-tech-ids"
+                  />
+                  <datalist id="admin-tech-ids">
+                    {(adminTechs || []).map((t) => (
+                      <option key={t.id} value={String(t.id)}>
+                        {t.name}
+                      </option>
+                    ))}
+                  </datalist>
+                </Field>
+              ) : null}
               <Field label="Φωτογραφία προφίλ" className="col-span-2 sm:col-span-4">
                 <div className="flex flex-col gap-2">
                   <div className="flex items-start gap-2">

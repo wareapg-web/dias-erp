@@ -1,5 +1,7 @@
 /** Αποδοχές τεχνικού — map UI ↔ DIAS table `tech_earnings`. */
 
+import { parseElNumber } from './numberFormat'
+
 export const EARNINGS_ROW_DEFS = [
   { key: 'salary', label: 'Μισθός' },
   { key: 'bonus', label: 'Bonus' },
@@ -12,10 +14,20 @@ export const EARNINGS_ROW_DEFS = [
   { key: 'bonus_plus', label: 'Bonus +' },
 ]
 
-/** Γραμμές με μόνο στήλη Ποσό (κενά > από / Ελάχιστο). Conditional στο UI. */
+/**
+ * Γραμμές με μόνο στήλη Ποσό (κενά > από / Ελάχιστο).
+ * dbColumn: αν οριστεί, form key + DB column = dbColumn (π.χ. driver_allowance).
+ * αλλιώς form/DB = `${key}_amount` (π.χ. accountant_amount).
+ */
 export const EARNINGS_AMOUNT_ONLY_DEFS = [
+  { key: 'driver_allowance', label: 'Επίδομα οδηγού', dbColumn: 'driver_allowance' },
   { key: 'accountant', label: 'Λογιστής', invoiceOnly: true },
 ]
+
+/** Form / DB field name για amount-only γραμμή. */
+export function amountOnlyField(def) {
+  return def.dbColumn || `${def.key}_amount`
+}
 
 export function emptyEarningsForm() {
   const form = {
@@ -30,7 +42,7 @@ export function emptyEarningsForm() {
     form[`${row.key}_min`] = ''
   }
   for (const row of EARNINGS_AMOUNT_ONLY_DEFS) {
-    form[`${row.key}_amount`] = ''
+    form[amountOnlyField(row)] = ''
   }
   return form
 }
@@ -54,15 +66,16 @@ export function earningsFromDb(row) {
     form[`${def.key}_min`] = numOrEmpty(row[`${def.key}_min`])
   }
   for (const def of EARNINGS_AMOUNT_ONLY_DEFS) {
-    form[`${def.key}_amount`] = numOrEmpty(row[`${def.key}_amount`])
+    const field = amountOnlyField(def)
+    form[field] = numOrEmpty(row[field])
   }
   return form
 }
 
 function toNumber(value, fallback = 0) {
   if (value === '' || value == null) return fallback
-  const n = Number(String(value).replace(',', '.'))
-  return Number.isFinite(n) ? n : fallback
+  const n = parseElNumber(value)
+  return n != null ? n : fallback
 }
 
 /** Payload για upsert στο DIAS `tech_earnings`. */
@@ -82,14 +95,18 @@ export function earningsToDb(form, tech) {
     payload[`${def.key}_min`] = toNumber(form[`${def.key}_min`])
   }
   for (const def of EARNINGS_AMOUNT_ONLY_DEFS) {
-    payload[`${def.key}_amount`] = toNumber(form[`${def.key}_amount`])
+    const field = amountOnlyField(def)
+    payload[field] = toNumber(form[field])
   }
   return payload
 }
 
-/** Σύνολο ποσών (στήλη Ποσό) — όπως παλιό ERP + Λογιστής (accountant_amount). */
+/** Σύνολο ποσών (στήλη Ποσό) — βασικές γραμμές + amount-only (οδηγού, λογιστής, …). */
 export function earningsTotal(form) {
   const base = EARNINGS_ROW_DEFS.reduce((s, def) => s + toNumber(form[`${def.key}_amount`]), 0)
-  const accountant = Number(form?.accountant_amount) || 0
-  return base + accountant
+  const extras = EARNINGS_AMOUNT_ONLY_DEFS.reduce(
+    (s, def) => s + toNumber(form[amountOnlyField(def)]),
+    0
+  )
+  return base + extras
 }

@@ -1,3 +1,5 @@
+import { formatElNumber } from './numberFormat'
+
 const MONTH_SHORT = [
   'Ιαν',
   'Φεβ',
@@ -208,7 +210,7 @@ export function formatEuro(value) {
 export function formatEuroPlain(value) {
   const n = Number(value) || 0
   if (!n) return ''
-  return n.toLocaleString('el-GR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+  return formatElNumber(n)
 }
 
 /** Ticket Restaurant στη μήτρα: ποσό αν > 0, αλλιώς παύλα. */

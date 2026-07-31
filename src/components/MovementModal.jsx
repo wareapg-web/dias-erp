@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { diasClient, formatSupabaseError } from '../lib/supabase'
 import { movementFormFromRow, parseMovementAmount, extractLedgerAmount, isBareEuroText } from '../lib/techLedger'
+import { fromElInputValue, toElInputDisplay } from '../lib/numberFormat'
 import {
   resolveLedgerColumn,
   resolveLedgerSide,
@@ -473,11 +474,12 @@ export default function MovementModal({
                 Ποσό (€)
               </label>
               <input
-                type="number"
-                step="0.01"
+                type="text"
+                inputMode="decimal"
+                autoComplete="off"
                 required
-                value={form.amount}
-                onChange={(e) => patch('amount', e.target.value)}
+                value={toElInputDisplay(form.amount)}
+                onChange={(e) => patch('amount', fromElInputValue(e.target.value))}
                 className="mt-1 w-full rounded-xl border border-white/10 bg-slate-950/60 px-3 py-2 font-mono text-sm text-white"
               />
             </div>

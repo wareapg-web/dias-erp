@@ -1,5 +1,7 @@
 /** tech_agreements — normalized rates (APG EMPLOEE_MISTO mirror) */
 
+import { formatElNumber, parseElNumber } from './numberFormat'
+
 export const AGREEMENT_TYPES = [
   { value: 'BASE_SALARY', label: 'Base / Μισθός' },
   { value: 'HOURLY_RATE', label: 'Hourly / Ωρομίσθιο' },
@@ -29,8 +31,7 @@ export function emptyAgreementForm() {
 
 function toNumberOrNull(value) {
   if (value === '' || value == null) return null
-  const n = Number(String(value).replace(',', '.'))
-  return Number.isFinite(n) ? n : null
+  return parseElNumber(value)
 }
 
 function toNumberRequired(value) {
@@ -52,8 +53,8 @@ export function agreementRpcArgs(form, techId) {
 }
 
 export function formatAgreementAmount(value) {
-  const n = Number(value)
-  if (!Number.isFinite(n)) return '—'
+  const n = parseElNumber(value)
+  if (n == null) return '—'
   return new Intl.NumberFormat('el-GR', {
     style: 'currency',
     currency: 'EUR',

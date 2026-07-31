@@ -21,11 +21,21 @@ import {
 import {
   EARNINGS_ROW_DEFS,
   EARNINGS_AMOUNT_ONLY_DEFS,
+  amountOnlyField,
   emptyEarningsForm,
   earningsFromDb,
   earningsToDb,
   earningsTotal,
 } from '../lib/techEarnings'
+import { fromElInputValue, parseElNumber, toElInputDisplay, formatElNumber } from '../lib/numberFormat'
+import {
+  calcOfficeWorkedHours,
+  emptyManualDay,
+  loadWorkHours,
+  maskTimeInput,
+  monthDateList,
+  upsertWorkHours,
+} from '../lib/workHours'
 import {
   AGREEMENT_TYPES,
   agreementRpcArgs,
@@ -117,6 +127,12 @@ export default function TechAnalysisModal({
   const [monthImportSaving, setMonthImportSaving] = useState(false)
   const [monthImportMessage, setMonthImportMessage] = useState(null)
   const [hoursTransferSaving, setHoursTransferSaving] = useState(false)
+  const [manualHours, setManualHours] = useState({})
+  const [workHoursDirty, setWorkHoursDirty] = useState(false)
+  const [workHoursLoading, setWorkHoursLoading] = useState(false)
+  const [workHoursSaving, setWorkHoursSaving] = useState(false)
+  const [workHoursError, setWorkHoursError] = useState(null)
+  const [workHoursMissing, setWorkHoursMissing] = useState(false)
   const [movementOpen, setMovementOpen] = useState(false)
   const [selectedRowData, setSelectedRowData] = useState(null)
   const [selectedLedgerRowKey, setSelectedLedgerRowKey] = useState(null)
@@ -419,6 +435,46 @@ export default function TechAnalysisModal({
     }
   }, [tech?.id, analysisYear, selectedMonth, payments.length, ledgerTick])
 
+  // Ώρες γραφείου (work_hours) — μόνο όταν in_office
+  useEffect(() => {
+    if (!tech?.id || tech.in_office !== true) {
+      setManualHours({})
+      setWorkHoursDirty(false)
+      setWorkHoursError(null)
+      setWorkHoursMissing(false)
+      return
+    }
+
+    let cancelled = false
+    async function load() {
+      setWorkHoursLoading(true)
+      setWorkHoursError(null)
+      try {
+        const result = await loadWorkHours({
+          techId: tech.id,
+          year: analysisYear,
+          month: selectedMonth,
+        })
+        if (cancelled) return
+        setWorkHoursMissing(result.missingTable)
+        setWorkHoursError(result.error)
+        setManualHours(result.byDate || {})
+        setWorkHoursDirty(false)
+      } catch (err) {
+        if (!cancelled) {
+          setWorkHoursError(err?.message || String(err))
+          setManualHours({})
+        }
+      } finally {
+        if (!cancelled) setWorkHoursLoading(false)
+      }
+    }
+    load()
+    return () => {
+      cancelled = true
+    }
+  }, [tech?.id, tech?.in_office, analysisYear, selectedMonth])
+
   useEffect(() => {
     setSelectedLedgerRowKey(null)
   }, [tech?.id, analysisYear, selectedMonth])
@@ -597,6 +653,12 @@ export default function TechAnalysisModal({
   const selectedSalary = salaryMatrix.months[selectedMonth - 1]
   const monthSettled = salaryMatrix.selectedSettled?.(selectedMonth)
 
+  const isOfficeEmployee = tech?.in_office === true
+  const officeDayList = useMemo(
+    () => (isOfficeEmployee ? monthDateList(analysisYear, selectedMonth) : []),
+    [isOfficeEmployee, analysisYear, selectedMonth]
+  )
+
   const handleTransferHours = async () => {
     if (!tech?.id || hoursTransferSaving) return
     setHoursTransferSaving(true)
@@ -673,13 +735,40 @@ export default function TechAnalysisModal({
   const hasAdminHours = Boolean(tech?._adminTech || tech?.admin_tech_id)
   const issuesInvoice = personnelIssuesInvoice(tech)
 
+  const patchManualTime = (dateIso, field, value) => {
+    const masked = maskTimeInput(value)
+    setManualHours((prev) => {
+      const cur = { ...emptyManualDay(), ...(prev[dateIso] || {}), [field]: masked }
+      const calc = calcOfficeWorkedHours(cur.time_start, cur.time_end)
+      cur.worked_hours = calc?.hours ?? 0
+      return { ...prev, [dateIso]: cur }
+    })
+    setWorkHoursDirty(true)
+  }
+
+  const handleSaveWorkHours = async () => {
+    if (!tech?.id || !isOfficeEmployee || workHoursSaving) return
+    setWorkHoursSaving(true)
+    setWorkHoursError(null)
+    try {
+      await upsertWorkHours({ techId: tech.id, days: manualHours })
+      setWorkHoursDirty(false)
+      setWorkHoursMissing(false)
+    } catch (err) {
+      setWorkHoursMissing(Boolean(err?.missingTable))
+      setWorkHoursError(err?.message || String(err))
+    } finally {
+      setWorkHoursSaving(false)
+    }
+  }
+
   const handleSave = () => {
     if (!tech) return
     const amount =
       selectedSalary?.sigma ||
       estimateAmount(tech, selectedSummary?.workDays ?? 0, selectedSummary?.totalHours ?? 0)
-    const ticketRaw = Number(String(earningsForm?.ticket_amount ?? '').replace(',', '.'))
-    const ticket_restaurant = Number.isFinite(ticketRaw) && ticketRaw > 0 ? ticketRaw : 0
+    const ticket_restaurant = parseElNumber(earningsForm?.ticket_amount) || 0
+    const driver_allowance = parseElNumber(earningsForm?.driver_allowance) || 0
     onSaveToErp?.({
       tech_id: tech.id,
       tech_name: displayName || tech.name,
@@ -696,6 +785,7 @@ export default function TechAnalysisModal({
       sick_days: selectedSummary?.sickDays ?? 0,
       amount,
       ticket_restaurant,
+      driver_allowance,
       year: analysisYear,
       month: selectedMonth,
     })
@@ -1320,10 +1410,13 @@ export default function TechAnalysisModal({
                               return (
                                 <td key={field} className="px-2 py-1">
                                   <input
-                                    type="number"
-                                    step="0.01"
-                                    value={earningsForm[field] ?? ''}
-                                    onChange={(e) => patchEarnings(field, e.target.value)}
+                                    type="text"
+                                    inputMode="decimal"
+                                    autoComplete="off"
+                                    value={toElInputDisplay(earningsForm[field] ?? '')}
+                                    onChange={(e) =>
+                                      patchEarnings(field, fromElInputValue(e.target.value))
+                                    }
                                     disabled={earningsMissing}
                                     className="w-full rounded-lg border border-white/10 bg-slate-950/60 px-2 py-1.5 text-right font-mono text-sm text-white disabled:opacity-50"
                                   />
@@ -1332,28 +1425,34 @@ export default function TechAnalysisModal({
                             })}
                           </tr>
                         ))}
-                        {issuesInvoice
-                          ? EARNINGS_AMOUNT_ONLY_DEFS.map((def, idx) => (
-                              <tr
-                                key={def.key}
-                                className={`border-b border-white/5 ${(EARNINGS_ROW_DEFS.length + idx) % 2 === 0 ? 'bg-white/[0.02]' : ''}`}
-                              >
-                                <td className="px-4 py-1.5 font-medium text-white">{def.label}</td>
-                                <td className="px-2 py-1">
-                                  <input
-                                    type="number"
-                                    step="0.01"
-                                    value={earningsForm[`${def.key}_amount`] ?? ''}
-                                    onChange={(e) => patchEarnings(`${def.key}_amount`, e.target.value)}
-                                    disabled={earningsMissing}
-                                    className="w-full rounded-lg border border-white/10 bg-slate-950/60 px-2 py-1.5 text-right font-mono text-sm text-white disabled:opacity-50"
-                                  />
-                                </td>
-                                <td className="px-2 py-1" />
-                                <td className="px-2 py-1" />
-                              </tr>
-                            ))
-                          : null}
+                        {EARNINGS_AMOUNT_ONLY_DEFS.filter(
+                          (def) => !def.invoiceOnly || issuesInvoice
+                        ).map((def, idx) => {
+                          const field = amountOnlyField(def)
+                          return (
+                            <tr
+                              key={def.key}
+                              className={`border-b border-white/5 ${(EARNINGS_ROW_DEFS.length + idx) % 2 === 0 ? 'bg-white/[0.02]' : ''}`}
+                            >
+                              <td className="px-4 py-1.5 font-medium text-white">{def.label}</td>
+                              <td className="px-2 py-1">
+                                <input
+                                  type="text"
+                                  inputMode="decimal"
+                                  autoComplete="off"
+                                  value={toElInputDisplay(earningsForm[field] ?? '')}
+                                  onChange={(e) =>
+                                    patchEarnings(field, fromElInputValue(e.target.value))
+                                  }
+                                  disabled={earningsMissing}
+                                  className="w-full rounded-lg border border-white/10 bg-slate-950/60 px-2 py-1.5 text-right font-mono text-sm text-white disabled:opacity-50"
+                                />
+                              </td>
+                              <td className="px-2 py-1" />
+                              <td className="px-2 py-1" />
+                            </tr>
+                          )
+                        })}
                       </tbody>
                       <tfoot>
                         <tr className="border-t border-white/10 bg-slate-950/70">
@@ -1595,11 +1694,12 @@ export default function TechAnalysisModal({
                     Ποσό (€)
                   </label>
                   <input
-                    type="number"
-                    step="0.01"
+                    type="text"
+                    inputMode="decimal"
+                    autoComplete="off"
                     required
-                    value={agreementForm.amount}
-                    onChange={(e) => patchAgreement('amount', e.target.value)}
+                    value={toElInputDisplay(agreementForm.amount)}
+                    onChange={(e) => patchAgreement('amount', fromElInputValue(e.target.value))}
                     disabled={agreementsMissing || agreementsSaving}
                     className="mt-1 w-full rounded-xl border border-white/10 bg-slate-950/60 px-3 py-2 font-mono text-sm text-white disabled:opacity-50"
                   />
@@ -1611,10 +1711,11 @@ export default function TechAnalysisModal({
                       Από (up_from)
                     </label>
                     <input
-                      type="number"
-                      step="0.01"
-                      value={agreementForm.up_from}
-                      onChange={(e) => patchAgreement('up_from', e.target.value)}
+                      type="text"
+                      inputMode="decimal"
+                      autoComplete="off"
+                      value={toElInputDisplay(agreementForm.up_from)}
+                      onChange={(e) => patchAgreement('up_from', fromElInputValue(e.target.value))}
                       disabled={agreementsMissing || agreementsSaving}
                       placeholder="π.χ. 8"
                       className="mt-1 w-full rounded-xl border border-white/10 bg-slate-950/60 px-3 py-2 font-mono text-sm text-white placeholder:text-slate-600 disabled:opacity-50"
@@ -1625,10 +1726,11 @@ export default function TechAnalysisModal({
                       Ελάχιστο
                     </label>
                     <input
-                      type="number"
-                      step="0.01"
-                      value={agreementForm.minimum}
-                      onChange={(e) => patchAgreement('minimum', e.target.value)}
+                      type="text"
+                      inputMode="decimal"
+                      autoComplete="off"
+                      value={toElInputDisplay(agreementForm.minimum)}
+                      onChange={(e) => patchAgreement('minimum', fromElInputValue(e.target.value))}
                       disabled={agreementsMissing || agreementsSaving}
                       className="mt-1 w-full rounded-xl border border-white/10 bg-slate-950/60 px-3 py-2 font-mono text-sm text-white disabled:opacity-50"
                     />
@@ -1696,11 +1798,12 @@ export default function TechAnalysisModal({
                   Ποσό (€)
                 </label>
                 <input
-                  type="number"
-                  step="0.01"
+                  type="text"
+                  inputMode="decimal"
+                  autoComplete="off"
                   required
-                  value={paymentForm.amount}
-                  onChange={(e) => patchPayment('amount', e.target.value)}
+                  value={toElInputDisplay(paymentForm.amount)}
+                  onChange={(e) => patchPayment('amount', fromElInputValue(e.target.value))}
                   disabled={paymentsMissing || paymentsSaving}
                   className="mt-1 w-full rounded-xl border border-white/10 bg-slate-950/60 px-3 py-2 font-mono text-sm text-white disabled:opacity-50"
                 />
@@ -1811,69 +1914,186 @@ export default function TechAnalysisModal({
         )}
 
         {showMovements && (
-              <div className="overflow-hidden rounded-2xl border border-white/10 bg-slate-900/75 shadow-2xl backdrop-blur-md">
-                <div className="border-b border-white/10 px-4 py-3">
-                  <h3 className="text-sm font-semibold text-white">
-                    Αναλυτικές Κινήσεις · {MONTH_LABELS[selectedMonth - 1]} {analysisYear}
-                  </h3>
-                  <p className="mt-0.5 text-xs text-slate-400">
-                    Ημερήσια λίστα για {tech.name}
-                  </p>
-                </div>
-                <div className="overflow-x-auto">
-                  <table className="w-full min-w-[900px] border-collapse text-left text-sm">
-                    <thead>
-                      <tr className="border-b border-white/10 bg-slate-950/60 text-xs uppercase tracking-wider text-slate-400">
-                        <th className="px-4 py-3 font-semibold">Ημερομηνία</th>
-                        <th className="px-4 py-3 font-semibold">Έργο / Κατάσταση</th>
-                        <th className="px-4 py-3 font-semibold">Φάση</th>
-                        <th className="px-4 py-3 font-semibold">Ώρες</th>
-                        <th className="px-4 py-3 text-right font-semibold">Σύνολο</th>
-                        <th className="px-4 py-3 text-right font-semibold">Υπερ.</th>
-                        <th className="px-4 py-3 text-right font-semibold">Νυχτ.</th>
-                        <th className="px-4 py-3 text-right font-semibold">Αργίες</th>
+          <div className="overflow-hidden rounded-2xl border border-white/10 bg-slate-900/75 shadow-2xl backdrop-blur-md">
+            <div className="flex flex-wrap items-start justify-between gap-3 border-b border-white/10 px-4 py-3">
+              <div>
+                <h3 className="text-sm font-semibold text-white">
+                  Αναλυτικές Κινήσεις · {MONTH_LABELS[selectedMonth - 1]} {analysisYear}
+                </h3>
+                <p className="mt-0.5 text-xs text-slate-400">
+                  {isOfficeEmployee
+                    ? `Ώρες γραφείου · ΕΤΑΙΡΙΑ · ${displayName || tech.name}`
+                    : `Ημερήσια λίστα για ${tech.name}`}
+                </p>
+              </div>
+              {isOfficeEmployee ? (
+                <button
+                  type="button"
+                  onClick={handleSaveWorkHours}
+                  disabled={workHoursSaving || workHoursLoading || workHoursMissing}
+                  className="rounded-xl border border-emerald-500/40 bg-emerald-500/20 px-4 py-2 text-xs font-bold text-emerald-100 transition hover:bg-emerald-500/30 disabled:opacity-50"
+                >
+                  {workHoursSaving
+                    ? 'Αποθήκευση...'
+                    : workHoursDirty
+                      ? 'Αποθήκευση Ωρών *'
+                      : 'Αποθήκευση Ωρών'}
+                </button>
+              ) : null}
+            </div>
+
+            {isOfficeEmployee && workHoursMissing ? (
+              <div className="border-b border-amber-500/30 bg-amber-500/10 px-4 py-2 text-xs text-amber-100">
+                Λείπει ο πίνακας <code className="rounded bg-black/30 px-1">work_hours</code>. Τρέξε{' '}
+                <code className="rounded bg-black/30 px-1">supabase/19_work_hours.sql</code> στο DIAS.
+              </div>
+            ) : null}
+            {isOfficeEmployee && workHoursError && !workHoursMissing ? (
+              <div className="border-b border-rose-500/30 bg-rose-500/10 px-4 py-2 text-xs text-rose-200">
+                {workHoursError}
+              </div>
+            ) : null}
+
+            <div className="overflow-x-auto">
+              {isOfficeEmployee ? (
+                <table className="w-full min-w-[720px] border-collapse text-left text-sm">
+                  <thead>
+                    <tr className="border-b border-white/10 bg-slate-950/60 text-xs uppercase tracking-wider text-slate-400">
+                      <th className="px-4 py-3 font-semibold">Ημερομηνία</th>
+                      <th className="px-4 py-3 font-semibold">Έργο / Κατάσταση</th>
+                      <th className="px-4 py-3 font-semibold">Ώρες</th>
+                      <th className="px-4 py-3 text-right font-semibold">Σύνολο</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {workHoursLoading ? (
+                      <tr>
+                        <td colSpan={4} className="px-4 py-12 text-center text-slate-500">
+                          Φόρτωση ωρών γραφείου...
+                        </td>
                       </tr>
-                    </thead>
-                    <tbody>
-                      {loading ? (
-                        <tr>
-                          <td colSpan={8} className="px-4 py-12 text-center text-slate-500">
-                            Φόρτωση κινήσεων...
-                          </td>
-                        </tr>
-                      ) : movements.length === 0 ? (
-                        <tr>
-                          <td colSpan={8} className="px-4 py-12 text-center text-slate-500">
-                            Δεν βρέθηκαν κινήσεις για τον επιλεγμένο μήνα.
-                          </td>
-                        </tr>
-                      ) : (
-                        movements.map((row, idx) => (
+                    ) : (
+                      officeDayList.map((dateIso) => {
+                        const day = manualHours[dateIso] || emptyManualDay()
+                        return (
                           <tr
-                            key={`${row.dateIso}-${row.jobOrStatus}-${row.timeStart}-${idx}`}
+                            key={dateIso}
                             className="border-b border-white/5 transition hover:bg-white/5"
                           >
-                            <td className="px-4 py-2.5 font-mono text-xs text-cyan-100/90">{row.dateIso}</td>
-                            <td className="max-w-[240px] truncate px-4 py-2.5 text-white">{row.jobOrStatus}</td>
-                            <td className="px-4 py-2.5 text-slate-400">{row.phase}</td>
-                            <td className="px-4 py-2.5 text-slate-300">
-                              {row.timeStart && row.timeEnd && row.timeStart !== '-'
-                                ? `${row.timeStart} – ${row.timeEnd}`
+                            <td className="px-4 py-2.5 font-mono text-xs text-cyan-100/90">
+                              {dateIso}
+                            </td>
+                            <td className="px-4 py-2.5 text-white">ΕΤΑΙΡΙΑ</td>
+                            <td className="px-4 py-2.5">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <input
+                                  type="text"
+                                  inputMode="numeric"
+                                  placeholder="00:00"
+                                  maxLength={5}
+                                  autoComplete="off"
+                                  value={day.time_start || ''}
+                                  onChange={(e) =>
+                                    patchManualTime(dateIso, 'time_start', e.target.value)
+                                  }
+                                  disabled={workHoursMissing}
+                                  className="w-[4.5rem] rounded-lg border border-white/10 bg-slate-950/60 px-2 py-1.5 text-center font-mono text-xs text-white disabled:opacity-50"
+                                />
+                                <span className="text-slate-500">–</span>
+                                <input
+                                  type="text"
+                                  inputMode="numeric"
+                                  placeholder="00:00"
+                                  maxLength={5}
+                                  autoComplete="off"
+                                  value={day.time_end || ''}
+                                  onChange={(e) =>
+                                    patchManualTime(dateIso, 'time_end', e.target.value)
+                                  }
+                                  disabled={workHoursMissing}
+                                  className="w-[4.5rem] rounded-lg border border-white/10 bg-slate-950/60 px-2 py-1.5 text-center font-mono text-xs text-white disabled:opacity-50"
+                                />
+                              </div>
+                            </td>
+                            <td className="px-4 py-2.5 text-right font-mono text-slate-200">
+                              {day.worked_hours > 0
+                                ? formatElNumber(day.worked_hours, {
+                                    minimumFractionDigits: 1,
+                                    maximumFractionDigits: 1,
+                                  })
                                 : '—'}
                             </td>
-                            <td className="px-4 py-2.5 text-right text-slate-200">{row.workedHours || '—'}</td>
-                            <td className="px-4 py-2.5 text-right text-amber-200/90">{row.overtime || '—'}</td>
-                            <td className="px-4 py-2.5 text-right text-violet-200/90">{row.nightHours || '—'}</td>
-                            <td className="px-4 py-2.5 text-right text-emerald-200/90">
-                              {row.weekendHolidayHours || '—'}
-                            </td>
                           </tr>
-                        ))
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
+                        )
+                      })
+                    )}
+                  </tbody>
+                </table>
+              ) : (
+                <table className="w-full min-w-[900px] border-collapse text-left text-sm">
+                  <thead>
+                    <tr className="border-b border-white/10 bg-slate-950/60 text-xs uppercase tracking-wider text-slate-400">
+                      <th className="px-4 py-3 font-semibold">Ημερομηνία</th>
+                      <th className="px-4 py-3 font-semibold">Έργο / Κατάσταση</th>
+                      <th className="px-4 py-3 font-semibold">Φάση</th>
+                      <th className="px-4 py-3 font-semibold">Ώρες</th>
+                      <th className="px-4 py-3 text-right font-semibold">Σύνολο</th>
+                      <th className="px-4 py-3 text-right font-semibold">Υπερ.</th>
+                      <th className="px-4 py-3 text-right font-semibold">Νυχτ.</th>
+                      <th className="px-4 py-3 text-right font-semibold">Αργίες</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {loading ? (
+                      <tr>
+                        <td colSpan={8} className="px-4 py-12 text-center text-slate-500">
+                          Φόρτωση κινήσεων...
+                        </td>
+                      </tr>
+                    ) : movements.length === 0 ? (
+                      <tr>
+                        <td colSpan={8} className="px-4 py-12 text-center text-slate-500">
+                          Δεν βρέθηκαν κινήσεις για τον επιλεγμένο μήνα.
+                        </td>
+                      </tr>
+                    ) : (
+                      movements.map((row, idx) => (
+                        <tr
+                          key={`${row.dateIso}-${row.jobOrStatus}-${row.timeStart}-${idx}`}
+                          className="border-b border-white/5 transition hover:bg-white/5"
+                        >
+                          <td className="px-4 py-2.5 font-mono text-xs text-cyan-100/90">
+                            {row.dateIso}
+                          </td>
+                          <td className="max-w-[240px] truncate px-4 py-2.5 text-white">
+                            {row.jobOrStatus}
+                          </td>
+                          <td className="px-4 py-2.5 text-slate-400">{row.phase}</td>
+                          <td className="px-4 py-2.5 text-slate-300">
+                            {row.timeStart && row.timeEnd && row.timeStart !== '-'
+                              ? `${row.timeStart} – ${row.timeEnd}`
+                              : '—'}
+                          </td>
+                          <td className="px-4 py-2.5 text-right text-slate-200">
+                            {row.workedHours || '—'}
+                          </td>
+                          <td className="px-4 py-2.5 text-right text-amber-200/90">
+                            {row.overtime || '—'}
+                          </td>
+                          <td className="px-4 py-2.5 text-right text-violet-200/90">
+                            {row.nightHours || '—'}
+                          </td>
+                          <td className="px-4 py-2.5 text-right text-emerald-200/90">
+                            {row.weekendHolidayHours || '—'}
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          </div>
         )}
       </div>
 

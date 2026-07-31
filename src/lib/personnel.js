@@ -1,5 +1,7 @@
 /** DIAS personnel (HR master) — mapping & helpers */
 
+import { positionSortKey } from './greekDate'
+
 export const EMPLOYMENT_TYPES = [
   { value: 'permanent', label: 'Μόνιμος' },
   { value: 'temporary', label: 'Έκτακτος' },
@@ -54,6 +56,8 @@ export function emptyPersonnelForm() {
     position_number: '',
     address: '',
     address_number: '',
+    area: '',
+    zipcode: '',
     phone: '',
     mobile: '',
     birth_date: '',
@@ -106,6 +110,8 @@ export function personnelFromDb(row) {
     position_number: str(row.position_number),
     address: str(row.address),
     address_number: str(row.address_number),
+    area: str(row.area),
+    zipcode: str(row.zipcode),
     phone: str(row.phone),
     mobile: str(row.mobile),
     birth_date: dateOnly(row.birth_date),
@@ -157,6 +163,8 @@ export function personnelToDb(form) {
     position_number: emptyToNull(form.position_number),
     address: emptyToNull(form.address),
     address_number: emptyToNull(form.address_number),
+    area: emptyToNull(form.area),
+    zipcode: emptyToNull(form.zipcode),
     phone: emptyToNull(form.phone),
     mobile: emptyToNull(form.mobile),
     birth_date: form.birth_date || null,
@@ -175,13 +183,15 @@ export function personnelToDb(form) {
 /** Shape συμβατό με TechAnalysisModal / crewPayroll (id + name). */
 export function personnelAsTech(person, adminTechs = []) {
   if (!person) return null
-  const adminId = person.admin_tech_id || person.tech_id
-  const adminTech =
-    (adminTechs || []).find((t) => String(t.id) === String(adminId)) ||
-    (adminTechs || []).find(
-      (t) => String(t.name).toLowerCase() === String(person.tech_name).toLowerCase()
-    ) ||
-    null
+  const isOffice = person.in_office === true
+  const adminId = isOffice ? null : person.admin_tech_id || person.tech_id
+  const adminTech = isOffice
+    ? null
+    : (adminTechs || []).find((t) => String(t.id) === String(adminId)) ||
+      (adminTechs || []).find(
+        (t) => String(t.name).toLowerCase() === String(person.tech_name).toLowerCase()
+      ) ||
+      null
 
   return {
     /** DIAS tech_id — κλειδί για tech_earnings / payrolls */
@@ -199,7 +209,8 @@ export function personnelAsTech(person, adminTechs = []) {
     end_date: person.end_date,
     employment_type: person.employment_type,
     payment_method: person.payment_method,
-    admin_tech_id: person.admin_tech_id || (adminTech ? String(adminTech.id) : null),
+    admin_tech_id: isOffice ? null : person.admin_tech_id || (adminTech ? String(adminTech.id) : null),
+    in_office: isOffice,
     photo_url: person.photo_url || adminTech?.photo_url,
     is_active: person.is_active,
     notes: person.notes,
@@ -221,4 +232,47 @@ export function buildFullName(lastName, firstName) {
   return [String(lastName || '').trim(), String(firstName || '').trim()]
     .filter(Boolean)
     .join(' ')
+}
+
+/** Αριθμητική θέση· null αν κενή/μη αριθμητική. */
+export function parsePositionNumber(value) {
+  const key = positionSortKey(value)
+  if (!Number.isFinite(key) || key === Number.POSITIVE_INFINITY) return null
+  return key
+}
+
+/**
+ * Αν υπάρχει ήδη άλλος υπάλληλος στη θέση N, αύξησε κατά +1 όλες τις θέσεις ≥ N
+ * (εκτός του τρέχοντος). Ενημερώσεις από υψηλή → χαμηλή θέση.
+ */
+export async function shiftPersonnelPositionsFrom({
+  personnel = [],
+  targetPosition,
+  excludeId = null,
+  client,
+}) {
+  const N = parsePositionNumber(targetPosition)
+  if (N == null || !client) return 0
+
+  const others = (personnel || []).filter((p) => p?.id && String(p.id) !== String(excludeId || ''))
+  const conflict = others.some((p) => parsePositionNumber(p.position_number) === N)
+  if (!conflict) return 0
+
+  const toShift = others
+    .map((p) => ({ id: p.id, pos: parsePositionNumber(p.position_number) }))
+    .filter((p) => p.pos != null && p.pos >= N)
+    .sort((a, b) => b.pos - a.pos)
+
+  const now = new Date().toISOString()
+  for (const row of toShift) {
+    const { error } = await client
+      .from('personnel')
+      .update({
+        position_number: String(row.pos + 1),
+        updated_at: now,
+      })
+      .eq('id', row.id)
+    if (error) throw error
+  }
+  return toShift.length
 }

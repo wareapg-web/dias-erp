@@ -37,7 +37,10 @@
 - `supabase/12_update_agreements_constraint.sql` (ACCOUNTANT στις συμφωνές · χωρίς contractor στο employment_type)
 - `supabase/13_payrolls_ticket_restaurant.sql` (ticket_restaurant στο payrolls · μήτρα Ticket)
 - `supabase/14_tech_earnings_accountant.sql` (accountant_amount στις Αποδοχές · γραμμή Λογιστής)
-- `supabase/15_payrolls_tech_period_unique.sql` (unique tech_id+period στο payrolls)
+- `supabase/16_payrolls_dedupe_and_unique.sql` (cleanup διπλών + unique tech_id+period)
+- `supabase/17_personnel_area_zipcode.sql` (περιοχή + Τ.Κ. στην καρτέλα υπαλλήλου)
+- `supabase/18_add_driver_allowance.sql` (Επίδομα οδηγού · tech_earnings + payrolls)
+- `supabase/19_work_hours.sql` (ώρες γραφείου · Εντός γραφείου)
 
 ### Φωτογραφίες προφίλ (Cloudflare R2 μέσω Edge Function)
 
