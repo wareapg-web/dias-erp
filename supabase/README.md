@@ -34,7 +34,10 @@
 - `supabase/09_ledger_invoice_column.sql` (στήλη invoice_amount · Τιμολόγιο Χρ.-Πιστ.)
 - `supabase/10_personnel_card_fields.sql` (διεύθυνση, ΑΦΜ, κινητό, τράπεζα, κ.λπ. καρτέλας παλιού ERP)
 - `supabase/11_personnel_periods.sql` (ιστορικό συμβάσεων / περίοδοι απασχόλησης)
-- `supabase/12_update_agreements_constraint.sql` (ACCOUNTANT στις συμφωνίες · χωρίς contractor στο employment_type)
+- `supabase/12_update_agreements_constraint.sql` (ACCOUNTANT στις συμφωνές · χωρίς contractor στο employment_type)
+- `supabase/13_payrolls_ticket_restaurant.sql` (ticket_restaurant στο payrolls · μήτρα Ticket)
+- `supabase/14_tech_earnings_accountant.sql` (accountant_amount στις Αποδοχές · γραμμή Λογιστής)
+- `supabase/15_payrolls_tech_period_unique.sql` (unique tech_id+period στο payrolls)
 
 ### Φωτογραφίες προφίλ (Cloudflare R2 μέσω Edge Function)
 

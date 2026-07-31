@@ -265,8 +265,33 @@ export function isTicketRestaurantRow(row) {
   if (!row) return false
   const id = Number(row.ept_id ?? row.__type?.id)
   if (id === 24) return true
-  const label = `${row.type || ''} ${row.__type?.description || ''}`.toLowerCase()
+  const label = `${row.type || ''} ${row.__type?.description || ''} ${row.description || ''}`.toLowerCase()
   return label.includes('ticket')
+}
+
+/** Ποσό γραμμής Ticket από τις στήλες ledger (μία μη-μηδενική στήλη συνήθως). */
+export function ticketRestaurantAmountFromRow(row) {
+  if (!row) return 0
+  const { amount } = extractLedgerAmount(row)
+  return Math.round((Number(amount) || 0) * 100) / 100
+}
+
+/**
+ * Άθροισμα Ticket Restaurant ανά μήνα για ένα έτος (12 θέσεις, 0-based).
+ * Δεν συμμετέχει σε Σ/Π/Υ — μόνο για τη γραμμή μήτρας.
+ */
+export function aggregateTicketRestaurantByMonth(ledgerRows = [], year) {
+  const byMonth = Array.from({ length: 12 }, () => 0)
+  const y = Number(year)
+  for (const row of ledgerRows || []) {
+    if (!isTicketRestaurantRow(row)) continue
+    const dateStr = String(row.entry_date || row.reference_date || '')
+    if (!/^\d{4}-\d{2}/.test(dateStr)) continue
+    const [yy, mm] = dateStr.split('-').map(Number)
+    if (yy !== y || mm < 1 || mm > 12) continue
+    byMonth[mm - 1] = Math.round((byMonth[mm - 1] + ticketRestaurantAmountFromRow(row)) * 100) / 100
+  }
+  return byMonth
 }
 
 /**

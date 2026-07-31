@@ -71,6 +71,8 @@ create table if not exists public.tech_earnings (
   bonus_plus_from numeric(12, 2) not null default 0,
   bonus_plus_min numeric(12, 2) not null default 0,
 
+  accountant_amount numeric(12, 2) not null default 0,
+
   bank_account text,
   bank_name text,
   issues_invoice boolean not null default false,
@@ -107,6 +109,7 @@ create table if not exists public.payrolls (
   paid_amount numeric(12, 2),
   settlement_1 numeric(12, 2) default 0,
   settlement_2 numeric(12, 2) default 0,
+  ticket_restaurant numeric(12, 2) not null default 0,
   status text,
   notes text,
   created_at timestamptz not null default now(),

@@ -16,9 +16,11 @@ import {
   estimateAmount,
   formatEuro,
   formatEuroPlain,
+  formatMatrixTicket,
 } from '../lib/payrollAnalysis'
 import {
   EARNINGS_ROW_DEFS,
+  EARNINGS_AMOUNT_ONLY_DEFS,
   emptyEarningsForm,
   earningsFromDb,
   earningsToDb,
@@ -572,15 +574,22 @@ export default function TechAnalysisModal({
           pi: 0,
           y1: 0,
           y2: 0,
+          ticket: 0,
         })),
-        totals: { sigma: 0, pi: 0, y1: 0, y2: 0 },
+        totals: { sigma: 0, pi: 0, y1: 0, y2: 0, ticket: 0 },
         avg: 0,
         selectedSettled: () => false,
         yearSettled: false,
       }
     }
-    return buildSalaryYearMatrix(tech, analysisYear, payrolls, estimatedByMonth)
-  }, [tech, analysisYear, payrolls, estimatedByMonth])
+    const earningsTicketAmount = Number(
+      String(earningsForm?.ticket_amount ?? '').replace(',', '.')
+    )
+    return buildSalaryYearMatrix(tech, analysisYear, payrolls, estimatedByMonth, {
+      selectedMonth,
+      earningsTicketAmount: Number.isFinite(earningsTicketAmount) ? earningsTicketAmount : 0,
+    })
+  }, [tech, analysisYear, payrolls, estimatedByMonth, selectedMonth, earningsForm?.ticket_amount])
 
   const selectedPayroll = monthlyPayrolls[selectedMonth - 1]
   const movements = selectedPayroll?.rows || []
@@ -669,6 +678,8 @@ export default function TechAnalysisModal({
     const amount =
       selectedSalary?.sigma ||
       estimateAmount(tech, selectedSummary?.workDays ?? 0, selectedSummary?.totalHours ?? 0)
+    const ticketRaw = Number(String(earningsForm?.ticket_amount ?? '').replace(',', '.'))
+    const ticket_restaurant = Number.isFinite(ticketRaw) && ticketRaw > 0 ? ticketRaw : 0
     onSaveToErp?.({
       tech_id: tech.id,
       tech_name: displayName || tech.name,
@@ -684,6 +695,7 @@ export default function TechAnalysisModal({
       leave_days: selectedSummary?.leaveDays ?? 0,
       sick_days: selectedSummary?.sickDays ?? 0,
       amount,
+      ticket_restaurant,
       year: analysisYear,
       month: selectedMonth,
     })
@@ -1121,8 +1133,8 @@ export default function TechAnalysisModal({
                         hint=""
                         selectedMonth={selectedMonth}
                         onSelectMonth={setSelectedMonth}
-                        values={Array.from({ length: 12 }, () => '-')}
-                        total="-"
+                        values={salaryMatrix.months.map((m) => formatMatrixTicket(m.ticket))}
+                        total={formatMatrixTicket(salaryMatrix.totals.ticket)}
                       />
                     </tbody>
                   </table>
@@ -1320,6 +1332,28 @@ export default function TechAnalysisModal({
                             })}
                           </tr>
                         ))}
+                        {issuesInvoice
+                          ? EARNINGS_AMOUNT_ONLY_DEFS.map((def, idx) => (
+                              <tr
+                                key={def.key}
+                                className={`border-b border-white/5 ${(EARNINGS_ROW_DEFS.length + idx) % 2 === 0 ? 'bg-white/[0.02]' : ''}`}
+                              >
+                                <td className="px-4 py-1.5 font-medium text-white">{def.label}</td>
+                                <td className="px-2 py-1">
+                                  <input
+                                    type="number"
+                                    step="0.01"
+                                    value={earningsForm[`${def.key}_amount`] ?? ''}
+                                    onChange={(e) => patchEarnings(`${def.key}_amount`, e.target.value)}
+                                    disabled={earningsMissing}
+                                    className="w-full rounded-lg border border-white/10 bg-slate-950/60 px-2 py-1.5 text-right font-mono text-sm text-white disabled:opacity-50"
+                                  />
+                                </td>
+                                <td className="px-2 py-1" />
+                                <td className="px-2 py-1" />
+                              </tr>
+                            ))
+                          : null}
                       </tbody>
                       <tfoot>
                         <tr className="border-t border-white/10 bg-slate-950/70">

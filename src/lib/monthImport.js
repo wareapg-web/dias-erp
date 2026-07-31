@@ -71,8 +71,11 @@ export const MONTH_IMPORT_SPECS = [
     typeId: 23,
     label: 'Λογιστής',
     // Μόνο με payment_method === 'invoice' (gate στο resolveMonthImportLines).
-    // Πηγή: συμφωνία ACCOUNTANT ή αριθμητικό extra στις Αποδοχές.
+    // Πηγή: accountant_amount στις Αποδοχές, αλλιώς συμφωνία ACCOUNTANT / legacy extra.
     fromEarnings: (e) => {
+      const fromField = Number(String(e?.accountant_amount ?? '').replace(',', '.'))
+      if (Number.isFinite(fromField) && fromField > 0) return fromField
+      // Legacy: αριθμητικό extra στις Αποδοχές
       const extra = String(e?.extra || '').trim()
       if (/^[\d.,]+$/.test(extra)) return parseAmount(extra)
       return 0

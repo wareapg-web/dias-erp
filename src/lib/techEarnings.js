@@ -12,6 +12,11 @@ export const EARNINGS_ROW_DEFS = [
   { key: 'bonus_plus', label: 'Bonus +' },
 ]
 
+/** Γραμμές με μόνο στήλη Ποσό (κενά > από / Ελάχιστο). Conditional στο UI. */
+export const EARNINGS_AMOUNT_ONLY_DEFS = [
+  { key: 'accountant', label: 'Λογιστής', invoiceOnly: true },
+]
+
 export function emptyEarningsForm() {
   const form = {
     bank_account: '',
@@ -23,6 +28,9 @@ export function emptyEarningsForm() {
     form[`${row.key}_amount`] = ''
     form[`${row.key}_from`] = row.key === 'overtime' ? '8' : ''
     form[`${row.key}_min`] = ''
+  }
+  for (const row of EARNINGS_AMOUNT_ONLY_DEFS) {
+    form[`${row.key}_amount`] = ''
   }
   return form
 }
@@ -44,6 +52,9 @@ export function earningsFromDb(row) {
     form[`${def.key}_amount`] = numOrEmpty(row[`${def.key}_amount`])
     form[`${def.key}_from`] = numOrEmpty(row[`${def.key}_from`])
     form[`${def.key}_min`] = numOrEmpty(row[`${def.key}_min`])
+  }
+  for (const def of EARNINGS_AMOUNT_ONLY_DEFS) {
+    form[`${def.key}_amount`] = numOrEmpty(row[`${def.key}_amount`])
   }
   return form
 }
@@ -70,10 +81,15 @@ export function earningsToDb(form, tech) {
     payload[`${def.key}_from`] = toNumber(form[`${def.key}_from`])
     payload[`${def.key}_min`] = toNumber(form[`${def.key}_min`])
   }
+  for (const def of EARNINGS_AMOUNT_ONLY_DEFS) {
+    payload[`${def.key}_amount`] = toNumber(form[`${def.key}_amount`])
+  }
   return payload
 }
 
-/** Σύνολο ποσών (στήλη Ποσό) — όπως παλιό ERP. */
+/** Σύνολο ποσών (στήλη Ποσό) — όπως παλιό ERP + Λογιστής (accountant_amount). */
 export function earningsTotal(form) {
-  return EARNINGS_ROW_DEFS.reduce((sum, def) => sum + toNumber(form[`${def.key}_amount`]), 0)
+  const base = EARNINGS_ROW_DEFS.reduce((s, def) => s + toNumber(form[`${def.key}_amount`]), 0)
+  const accountant = Number(form?.accountant_amount) || 0
+  return base + accountant
 }
