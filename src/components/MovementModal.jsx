@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react'
+import toast from 'react-hot-toast'
 import { diasClient, formatSupabaseError } from '../lib/supabase'
 import { movementFormFromRow, parseMovementAmount, extractLedgerAmount, isBareEuroText } from '../lib/techLedger'
 import { fromElInputValue, toElInputDisplay } from '../lib/numberFormat'
@@ -18,6 +19,7 @@ import {
   shouldPostAsPayment,
   sideFromLedgerBucket,
 } from '../lib/transactionTypes'
+import DarkSelect from './DarkSelect'
 
 /**
  * Κίνηση modal — data-driven από transaction_types.
@@ -194,11 +196,15 @@ export default function MovementModal({
     setSaveError(null)
 
     if (typesLoading || !selectedType) {
-      setSaveError(typesLoading ? 'Περίμενε φόρτωση τύπων...' : 'Επίλεξε τύπο κίνησης')
+      const msg = typesLoading ? 'Περίμενε φόρτωση τύπων...' : 'Επίλεξε τύπο κίνησης'
+      setSaveError(msg)
+      toast.error(msg)
       return
     }
     if (!tech?.id) {
-      setSaveError('Δεν έχει επιλεγεί υπάλληλος')
+      const msg = 'Δεν έχει επιλεγεί υπάλληλος'
+      setSaveError(msg)
+      toast.error(msg)
       return
     }
 
@@ -206,7 +212,9 @@ export default function MovementModal({
     try {
       amount = parseMovementAmount(form.amount)
     } catch (err) {
-      setSaveError(err.message || String(err))
+      const msg = err.message || String(err)
+      setSaveError(msg)
+      toast.error(msg)
       return
     }
 
@@ -293,6 +301,7 @@ export default function MovementModal({
       onSaved?.({
         wasPayment: isEdit ? rowSource === 'PAYMENT' : postAsPayment,
       })
+      toast.success(isEdit ? 'Η κίνηση ενημερώθηκε.' : 'Η κίνηση αποθηκεύτηκε.')
       onClose?.()
     } catch (err) {
       const table =
@@ -303,11 +312,12 @@ export default function MovementModal({
           : postAsPayment
             ? 'payment_entries'
             : 'payroll_entries'
-      setSaveError(
+      const msg =
         formatSupabaseError(err, { table, clientLabel: 'DIAS ERP' }) ||
-          err.message ||
-          String(err)
-      )
+        err.message ||
+        String(err)
+      setSaveError(msg)
+      toast.error(msg)
     } finally {
       setSaving(false)
     }
@@ -389,21 +399,19 @@ export default function MovementModal({
                 <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
                   Τύπος
                 </label>
-                <select
+                <DarkSelect
                   value={selectedTypeId ?? ''}
-                  onChange={(e) => handleTypeChange(e.target.value)}
-                  className="mt-1 w-full rounded-xl border border-white/10 bg-slate-950/60 px-3 py-2 text-sm text-white"
-                >
-                  {types.length === 0 ? (
-                    <option value="">—</option>
-                  ) : (
-                    types.map((t) => (
-                      <option key={t.id} value={t.id}>
-                        {t.description} · {ledgerGroupLabel(t.ledger_group)}
-                      </option>
-                    ))
-                  )}
-                </select>
+                  onChange={(v) => handleTypeChange(v)}
+                  className="mt-1 w-full"
+                  options={
+                    types.length === 0
+                      ? [{ value: '', label: '—' }]
+                      : types.map((t) => ({
+                          value: t.id,
+                          label: `${t.description} · ${ledgerGroupLabel(t.ledger_group)}`,
+                        }))
+                  }
+                />
               </div>
             </div>
 
@@ -426,14 +434,15 @@ export default function MovementModal({
                 <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
                   Χρέωση / Πίστωση
                 </label>
-                <select
+                <DarkSelect
                   value={form.side || 'DEBIT'}
-                  onChange={(e) => patch('side', e.target.value)}
-                  className="mt-1 w-full rounded-xl border border-white/10 bg-slate-950/60 px-3 py-2 text-sm text-white"
-                >
-                  <option value="DEBIT">Χρέωση (Δεδουλευμένα)</option>
-                  <option value="CREDIT">Πίστωση (Πληρωμή)</option>
-                </select>
+                  onChange={(v) => patch('side', v)}
+                  className="mt-1 w-full"
+                  options={[
+                    { value: 'DEBIT', label: 'Χρέωση (Δεδουλευμένα)' },
+                    { value: 'CREDIT', label: 'Πίστωση (Πληρωμή)' },
+                  ]}
+                />
               </div>
             </div>
 
