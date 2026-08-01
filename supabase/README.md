@@ -41,6 +41,7 @@
 - `supabase/17_personnel_area_zipcode.sql` (περιοχή + Τ.Κ. στην καρτέλα υπαλλήλου)
 - `supabase/18_add_driver_allowance.sql` (Επίδομα οδηγού · tech_earnings + payrolls)
 - `supabase/19_work_hours.sql` (ώρες γραφείου · Εντός γραφείου)
+- `supabase/20_auto_transfer_settings.sql` (JSONB checkboxes Αποδοχές → Δημιουργία)
 
 ### Φωτογραφίες προφίλ (Cloudflare R2 μέσω Edge Function)
 

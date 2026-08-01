@@ -18,6 +18,8 @@ export default function DarkSelect({
   const rootRef = useRef(null)
   const triggerRef = useRef(null)
   const menuRef = useRef(null)
+  const activeItemRef = useRef(null)
+  const hasScrolledRef = useRef(false)
   const autoId = useId()
   const triggerId = id || autoId
 
@@ -41,11 +43,16 @@ export default function DarkSelect({
 
   useLayoutEffect(() => {
     if (!isOpen) {
+      hasScrolledRef.current = false
       setCoords(null)
       return
     }
     updateCoords()
-    const onReposition = () => updateCoords()
+    const onReposition = (e) => {
+      // Μην ξαναϋπολογίζεις θέση όταν σκρολάρει το ίδιο το menu
+      if (menuRef.current && e?.target && menuRef.current.contains(e.target)) return
+      updateCoords()
+    }
     window.addEventListener('resize', onReposition)
     window.addEventListener('scroll', onReposition, true)
     return () => {
@@ -53,6 +60,24 @@ export default function DarkSelect({
       window.removeEventListener('scroll', onReposition, true)
     }
   }, [isOpen])
+
+  // Scroll στο επιλεγμένο item ΜΟΝΟ μία φορά ανά άνοιγμα
+  useLayoutEffect(() => {
+    if (!isOpen) {
+      hasScrolledRef.current = false
+      return
+    }
+    if (hasScrolledRef.current) return
+    if (!coords) return
+    const el = activeItemRef.current
+    if (!el) return
+    hasScrolledRef.current = true
+    try {
+      el.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' })
+    } catch {
+      el.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'auto' })
+    }
+  }, [isOpen, coords])
 
   useEffect(() => {
     if (!isOpen) return
@@ -91,7 +116,7 @@ export default function DarkSelect({
             ref={menuRef}
             role="listbox"
             aria-labelledby={triggerId}
-            className="dark-select-menu fixed z-[100] overflow-y-auto rounded-xl border border-slate-600 bg-[#1e293b] py-1.5 shadow-2xl shadow-black/50"
+            className="dark-select-menu fixed z-[100] max-h-60 overflow-y-auto rounded-xl border border-slate-600 bg-[#1e293b] py-1.5 shadow-2xl shadow-black/50"
             style={{
               left: coords.left,
               width: coords.width,
@@ -111,7 +136,11 @@ export default function DarkSelect({
               options.map((opt) => {
                 const active = String(opt.value) === String(value)
                 return (
-                  <li key={String(opt.value)}>
+                  <li
+                    key={String(opt.value)}
+                    ref={active ? activeItemRef : null}
+                    id={active ? `${triggerId}-active-item` : undefined}
+                  >
                     <button
                       type="button"
                       role="option"

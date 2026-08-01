@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import toast from 'react-hot-toast'
 import { diasClient, formatSupabaseError } from '../lib/supabase'
-import { movementFormFromRow, parseMovementAmount, extractLedgerAmount, isBareEuroText } from '../lib/techLedger'
+import { movementFormFromRow, parseMovementAmount, extractLedgerAmount, isBareEuroText, normalizeEntryDate } from '../lib/techLedger'
 import { fromElInputValue, toElInputDisplay } from '../lib/numberFormat'
 import {
   resolveLedgerColumn,
@@ -20,6 +20,8 @@ import {
   sideFromLedgerBucket,
 } from '../lib/transactionTypes'
 import DarkSelect from './DarkSelect'
+import GreekDateInput from './GreekDateInput'
+import { parseToIsoDate } from '../lib/greekDate'
 
 /**
  * Κίνηση modal — data-driven από transaction_types.
@@ -227,6 +229,14 @@ export default function MovementModal({
     const description =
       rawDescription && !isBareEuroText(rawDescription) ? rawDescription : null
     const notes = form.notes?.trim() || null
+    const entryDateIso =
+      parseToIsoDate(form.entry_date) || normalizeEntryDate(form.entry_date)
+    if (!entryDateIso || !/^\d{4}-\d{2}-\d{2}$/.test(entryDateIso)) {
+      const msg = 'Μη έγκυρη ημερομηνία. Χρησιμοποίησε μορφή ηη/μμ/εεεε.'
+      setSaveError(msg)
+      toast.error(msg)
+      return
+    }
 
     setSaving(true)
     try {
@@ -239,12 +249,12 @@ export default function MovementModal({
           const { error } = await diasClient
             .from('payment_entries')
             .update({
-              payment_date: form.entry_date,
+              payment_date: entryDateIso,
               payment_type: paymentType,
               amount,
               invoice_amount: invoiceAmount,
               notes,
-              entry_date: form.entry_date,
+              entry_date: entryDateIso,
               entry_type: paymentType,
               description,
               tech_name: tech.displayName || tech.name || null,
@@ -255,7 +265,7 @@ export default function MovementModal({
           const { error } = await diasClient
             .from('payroll_entries')
             .update({
-              reference_date: form.entry_date,
+              reference_date: entryDateIso,
               type_code: payrollTypeCodeFromDescription(selectedType.description),
               description,
               notes,
@@ -274,12 +284,12 @@ export default function MovementModal({
         const { error } = await diasClient.from('payment_entries').insert({
           tech_id: String(tech.id),
           tech_name: tech.displayName || tech.name || null,
-          payment_date: form.entry_date,
+          payment_date: entryDateIso,
           payment_type: paymentType,
           amount,
           invoice_amount: invoiceAmount,
           notes,
-          entry_date: form.entry_date,
+          entry_date: entryDateIso,
           entry_type: paymentType,
           description,
         })
@@ -287,7 +297,7 @@ export default function MovementModal({
       } else {
         const { error } = await diasClient.from('payroll_entries').insert({
           tech_id: String(tech.id),
-          reference_date: form.entry_date,
+          reference_date: entryDateIso,
           type_code: payrollTypeCodeFromDescription(selectedType.description),
           description,
           notes,
@@ -388,10 +398,9 @@ export default function MovementModal({
                 <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
                   Ημερομηνία
                 </label>
-                <input
-                  type="date"
+                <GreekDateInput
                   value={form.entry_date || ''}
-                  onChange={(e) => patch('entry_date', e.target.value)}
+                  onChange={(iso) => patch('entry_date', iso)}
                   className="mt-1 w-full rounded-xl border border-white/10 bg-slate-950/60 px-3 py-2 text-sm text-white"
                 />
               </div>
