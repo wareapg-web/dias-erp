@@ -22,13 +22,16 @@ import {
   formatMatrixTicket,
 } from '../lib/payrollAnalysis'
 import {
-  EARNINGS_ROW_DEFS,
   EARNINGS_AMOUNT_ONLY_DEFS,
   amountOnlyField,
+  autoTransferKeyForRow,
   emptyEarningsForm,
   earningsFromDb,
+  earningsRateRowDefs,
+  earningsRowHasAutoTransfer,
   earningsToDb,
   earningsTotal,
+  earningsTransferRowDefs,
 } from '../lib/techEarnings'
 import { fromElInputValue, parseElNumber, toElInputDisplay, formatElNumber } from '../lib/numberFormat'
 import {
@@ -558,8 +561,9 @@ export default function TechAnalysisModal({
     setMovementOpen(true)
   }
 
-  const openMovementViewSelected = () => {
-    const row = ledgerDisplayRows.find((r) => ledgerRowKey(r) === selectedLedgerRowKey)
+  const openMovementViewSelected = (rowArg) => {
+    const row =
+      rowArg || ledgerDisplayRows.find((r) => ledgerRowKey(r) === selectedLedgerRowKey)
     if (!row) return
     if (row.__template && row.__type) {
       openMovementCreate({
@@ -632,7 +636,6 @@ export default function TechAnalysisModal({
     () => [
       { label: 'Εξόφληση (1)', typeId: 91, side: 'CREDIT' },
       { label: 'Εξόφληση (2)', typeId: 92, side: 'CREDIT' },
-      { label: 'Bonus', typeId: 4, side: 'DEBIT' },
       { label: 'Πληρωμή', tab: 'payments' },
     ],
     []
@@ -902,6 +905,18 @@ export default function TechAnalysisModal({
 
   const patchEarnings = (field, value) => {
     setEarningsForm((prev) => ({ ...prev, [field]: value }))
+    setEarningsDirty(true)
+  }
+
+  const patchAutoTransfer = (transferKey, checked) => {
+    if (!transferKey) return
+    setEarningsForm((prev) => ({
+      ...prev,
+      auto_transfer_settings: {
+        ...(prev.auto_transfer_settings || {}),
+        [transferKey]: Boolean(checked),
+      },
+    }))
     setEarningsDirty(true)
   }
 
@@ -1400,7 +1415,7 @@ export default function TechAnalysisModal({
                   hasInvoice={ledgerMonthContext.hasInvoice}
                   onSelectRow={selectLedgerRow}
                   onOpenCreateForType={openMovementCreate}
-                  onOpenEditRow={openMovementEdit}
+                  onOpenEditRow={openMovementViewSelected}
                 />
 
                 <div className="flex flex-wrap gap-3 border-t border-white/10 bg-slate-950/50 px-3 py-2.5">
@@ -1417,7 +1432,7 @@ export default function TechAnalysisModal({
                   type="button"
                   onClick={handleMonthImport}
                   disabled={monthImportSaving || ledgerLoading || !tech}
-                  title="Υπολογισμός μήνα από Αποδοχές / Συμφωνίες (Μισθός, Bonus, Λογιστής)"
+                  title="Εισαγωγή στο ledger μόνο για Αποδοχές με τικ (ποσό > 0)"
                   className="shrink-0 rounded-xl border border-cyan-500/40 bg-cyan-500/15 px-3 py-2.5 text-left text-xs font-semibold text-cyan-100 transition hover:bg-cyan-500/25 disabled:cursor-not-allowed disabled:opacity-40 lg:w-full"
                 >
                   {monthImportSaving ? 'ΔΗΜΙΟΥΡΓΙΑ...' : 'ΔΗΜΙΟΥΡΓΙΑ'}
@@ -1427,12 +1442,16 @@ export default function TechAnalysisModal({
                     {monthImportMessage}
                   </p>
                 ) : null}
+                <button
+                  type="button"
+                  onClick={() => openMovementCreate()}
+                  disabled={!tech}
+                  title="Νέα κίνηση (χωρίς προεπιλεγμένο τύπο)"
+                  className="shrink-0 rounded-xl border border-white/10 bg-slate-900/80 px-3 py-2.5 text-left text-xs font-semibold text-slate-200 transition hover:border-cyan-500/40 hover:bg-cyan-500/10 hover:text-cyan-100 disabled:cursor-not-allowed disabled:opacity-40 lg:w-full"
+                >
+                  ΕΙΣΑΓΩΓΗ
+                </button>
                 {[
-                  {
-                    label: 'Εμφάνιση',
-                    action: openMovementViewSelected,
-                    disabled: !selectedLedgerRowKey,
-                  },
                   { label: 'Διαγραφή', action: handleDeleteLedgerEntry, disabled: !selectedLedgerRowKey },
                   ...quickActionPresets,
                 ].map((item) => (
@@ -1511,10 +1530,128 @@ export default function TechAnalysisModal({
                         </tr>
                       </thead>
                       <tbody>
-                        {EARNINGS_ROW_DEFS.map((def, idx) => (
+                        {earningsTransferRowDefs().map((def, idx) => {
+                          const transferKey = autoTransferKeyForRow(def)
+                          const showTransfer = earningsRowHasAutoTransfer(def)
+                          const transferOn =
+                            showTransfer &&
+                            earningsForm.auto_transfer_settings?.[transferKey] === true
+                          return (
                           <tr
                             key={def.key}
                             className={`border-b border-white/5 ${idx % 2 === 0 ? 'bg-white/[0.02]' : ''}`}
+                          >
+                            <td className="px-4 py-1.5 font-medium text-white">{def.label}</td>
+                            {['amount', 'from', 'min'].map((suffix) => {
+                              const field = `${def.key}_${suffix}`
+                              const isAmount = suffix === 'amount'
+                              return (
+                                <td key={field} className="px-2 py-1">
+                                  <div
+                                    className={`flex items-center gap-2 ${isAmount ? '' : 'justify-end'}`}
+                                  >
+                                    {isAmount && showTransfer ? (
+                                      <label
+                                        className="group relative flex shrink-0 cursor-pointer items-center"
+                                        title="Συμπερίληψη στη Δημιουργία"
+                                      >
+                                        <input
+                                          type="checkbox"
+                                          checked={transferOn}
+                                          onChange={(e) =>
+                                            patchAutoTransfer(transferKey, e.target.checked)
+                                          }
+                                          disabled={earningsMissing}
+                                          className="peer h-3.5 w-3.5 cursor-pointer appearance-none rounded border border-white/25 bg-slate-950/80 transition checked:border-cyan-400/60 checked:bg-cyan-500/80 disabled:opacity-50"
+                                        />
+                                        <span className="pointer-events-none absolute inset-0 flex items-center justify-center text-[9px] font-bold text-slate-950 opacity-0 peer-checked:opacity-100">
+                                          ✓
+                                        </span>
+                                      </label>
+                                    ) : null}
+                                    <input
+                                      type="text"
+                                      inputMode="decimal"
+                                      autoComplete="off"
+                                      value={toElInputDisplay(earningsForm[field] ?? '')}
+                                      onChange={(e) =>
+                                        patchEarnings(field, fromElInputValue(e.target.value))
+                                      }
+                                      disabled={earningsMissing}
+                                      className="w-full min-w-0 rounded-lg border border-white/10 bg-slate-950/60 px-2 py-1.5 text-right font-mono text-sm text-white disabled:opacity-50"
+                                    />
+                                  </div>
+                                </td>
+                              )
+                            })}
+                          </tr>
+                          )
+                        })}
+                        {EARNINGS_AMOUNT_ONLY_DEFS.filter(
+                          (def) => !def.invoiceOnly || issuesInvoice
+                        ).map((def, idx) => {
+                          const field = amountOnlyField(def)
+                          const transferKey = autoTransferKeyForRow(def)
+                          const showTransfer = earningsRowHasAutoTransfer(def)
+                          const transferOn =
+                            showTransfer &&
+                            earningsForm.auto_transfer_settings?.[transferKey] === true
+                          return (
+                            <tr
+                              key={def.key}
+                              className={`border-b border-white/5 ${(earningsTransferRowDefs().length + idx) % 2 === 0 ? 'bg-white/[0.02]' : ''}`}
+                            >
+                              <td className="px-4 py-1.5 font-medium text-white">{def.label}</td>
+                              <td className="px-2 py-1">
+                                <div className="flex items-center gap-2">
+                                  {showTransfer ? (
+                                    <label
+                                      className="group relative flex shrink-0 cursor-pointer items-center"
+                                      title="Συμπερίληψη στη Δημιουργία"
+                                    >
+                                      <input
+                                        type="checkbox"
+                                        checked={transferOn}
+                                        onChange={(e) =>
+                                          patchAutoTransfer(transferKey, e.target.checked)
+                                        }
+                                        disabled={earningsMissing}
+                                        className="peer h-3.5 w-3.5 cursor-pointer appearance-none rounded border border-white/25 bg-slate-950/80 transition checked:border-cyan-400/60 checked:bg-cyan-500/80 disabled:opacity-50"
+                                      />
+                                      <span className="pointer-events-none absolute inset-0 flex items-center justify-center text-[9px] font-bold text-slate-950 opacity-0 peer-checked:opacity-100">
+                                        ✓
+                                      </span>
+                                    </label>
+                                  ) : null}
+                                  <input
+                                    type="text"
+                                    inputMode="decimal"
+                                    autoComplete="off"
+                                    value={toElInputDisplay(earningsForm[field] ?? '')}
+                                    onChange={(e) =>
+                                      patchEarnings(field, fromElInputValue(e.target.value))
+                                    }
+                                    disabled={earningsMissing}
+                                    className="w-full min-w-0 rounded-lg border border-white/10 bg-slate-950/60 px-2 py-1.5 text-right font-mono text-sm text-white disabled:opacity-50"
+                                  />
+                                </div>
+                              </td>
+                              <td className="px-2 py-1" />
+                              <td className="px-2 py-1" />
+                            </tr>
+                          )
+                        })}
+                        {earningsRateRowDefs().map((def, idx) => {
+                          const baseIdx =
+                            earningsTransferRowDefs().length +
+                            EARNINGS_AMOUNT_ONLY_DEFS.filter(
+                              (d) => !d.invoiceOnly || issuesInvoice
+                            ).length +
+                            idx
+                          return (
+                          <tr
+                            key={def.key}
+                            className={`border-b border-white/5 ${baseIdx % 2 === 0 ? 'bg-white/[0.02]' : ''}`}
                           >
                             <td className="px-4 py-1.5 font-medium text-white">{def.label}</td>
                             {['amount', 'from', 'min'].map((suffix) => {
@@ -1530,39 +1667,12 @@ export default function TechAnalysisModal({
                                       patchEarnings(field, fromElInputValue(e.target.value))
                                     }
                                     disabled={earningsMissing}
-                                    className="w-full rounded-lg border border-white/10 bg-slate-950/60 px-2 py-1.5 text-right font-mono text-sm text-white disabled:opacity-50"
+                                    className="w-full min-w-0 rounded-lg border border-white/10 bg-slate-950/60 px-2 py-1.5 text-right font-mono text-sm text-white disabled:opacity-50"
                                   />
                                 </td>
                               )
                             })}
                           </tr>
-                        ))}
-                        {EARNINGS_AMOUNT_ONLY_DEFS.filter(
-                          (def) => !def.invoiceOnly || issuesInvoice
-                        ).map((def, idx) => {
-                          const field = amountOnlyField(def)
-                          return (
-                            <tr
-                              key={def.key}
-                              className={`border-b border-white/5 ${(EARNINGS_ROW_DEFS.length + idx) % 2 === 0 ? 'bg-white/[0.02]' : ''}`}
-                            >
-                              <td className="px-4 py-1.5 font-medium text-white">{def.label}</td>
-                              <td className="px-2 py-1">
-                                <input
-                                  type="text"
-                                  inputMode="decimal"
-                                  autoComplete="off"
-                                  value={toElInputDisplay(earningsForm[field] ?? '')}
-                                  onChange={(e) =>
-                                    patchEarnings(field, fromElInputValue(e.target.value))
-                                  }
-                                  disabled={earningsMissing}
-                                  className="w-full rounded-lg border border-white/10 bg-slate-950/60 px-2 py-1.5 text-right font-mono text-sm text-white disabled:opacity-50"
-                                />
-                              </td>
-                              <td className="px-2 py-1" />
-                              <td className="px-2 py-1" />
-                            </tr>
                           )
                         })}
                       </tbody>

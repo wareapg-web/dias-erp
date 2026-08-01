@@ -1,6 +1,6 @@
 /**
- * Υπολογισμός μήνα — Εισαγωγή στην Οικονομική Ανάλυση από Αποδοχές / Συμφωνίες.
- * Δημιουργεί payroll_entries για Μισθό, Bonus, Λογιστή (όπου υπάρχει ποσό > 0).
+ * Υπολογισμός μήνα — Εισαγωγή στην Οικονομική Ανάλυση από Αποδοχές.
+ * Δημιουργεί payroll_entries μόνο για πεδία με ποσό > 0 και auto_transfer_settings[key] === true.
  */
 
 import { diasClient } from './supabase'
@@ -21,99 +21,92 @@ function parseAmount(value) {
   return parseElNumber(value) ?? 0
 }
 
-function earningsAmount(form, key) {
-  return parseAmount(form?.[`${key}_amount`])
+/**
+ * Form/DB field → transaction_types.id
+ * 3 Μισθός · 4 Bonus · 41 Bonus + · 21 Επίδομα Οδηγού · 23 Λογιστής
+ */
+export const TRANSFER_MAPPING = {
+  salary_amount: 3,
+  bonus_amount: 4,
+  bonus_plus_amount: 41,
+  driver_allowance: 21,
+  accountant_amount: 23,
 }
 
-function agreementAmount(agreements, codes) {
-  const set = new Set(codes.map((c) => String(c).toUpperCase()))
-  for (const row of agreements || []) {
-    const code = String(row.type_code || '').toUpperCase()
-    if (!set.has(code)) continue
-    const n = parseAmount(row.amount)
-    if (n > 0) return n
+/** Fallback αν λείπει το id από τη βάση — match σε description. */
+const TRANSFER_LABEL_FALLBACK = {
+  salary_amount: 'Μισθός',
+  bonus_amount: 'Bonus',
+  bonus_plus_amount: 'Bonus +',
+  driver_allowance: 'Επίδομα Οδηγού',
+  accountant_amount: 'Λογιστής',
+}
+
+function resolveTypeForTransferKey(transferKey, transactionTypes = []) {
+  const typeId = TRANSFER_MAPPING[transferKey]
+  const byId = new Map((transactionTypes || []).map((t) => [Number(t.id), t]))
+  if (typeId != null && byId.has(Number(typeId))) {
+    return byId.get(Number(typeId))
   }
-  return 0
+  const label = TRANSFER_LABEL_FALLBACK[transferKey]
+  if (!label) return null
+  const needle = label.trim().toLowerCase()
+  return (
+    (transactionTypes || []).find(
+      (t) => String(t.description || '').trim().toLowerCase() === needle
+    ) || null
+  )
 }
 
-function accountantFromAgreements(agreements) {
-  for (const row of agreements || []) {
-    const code = String(row.type_code || '').toUpperCase()
-    const label = String(row.type_code || '')
-    if (
-      code === 'ACCOUNTANT' ||
-      code === 'LOGISTIS' ||
-      code.includes('LOGIST') ||
-      /λογιστ/i.test(label)
-    ) {
-      const n = parseAmount(row.amount)
-      if (n > 0) return n
-    }
+function amountForTransferKey(earningsForm, transferKey) {
+  if (transferKey === 'accountant_amount') {
+    const fromField = parseAmount(earningsForm?.accountant_amount)
+    if (fromField > 0) return fromField
+    const extra = String(earningsForm?.extra || '').trim()
+    if (/^[\d.,]+$/.test(extra)) return parseAmount(extra)
+    return 0
   }
-  return 0
+  return parseAmount(earningsForm?.[transferKey])
 }
 
-/** Specs: type id in transaction_types → amount sources. */
-export const MONTH_IMPORT_SPECS = [
-  {
-    typeId: 3,
-    label: 'Μισθός',
-    fromEarnings: (e) => earningsAmount(e, 'salary'),
-    fromAgreements: (a) => agreementAmount(a, ['BASE_SALARY']),
-  },
-  {
-    typeId: 4,
-    label: 'Bonus',
-    fromEarnings: (e) => earningsAmount(e, 'bonus'),
-    fromAgreements: (a) => agreementAmount(a, ['BONUS']),
-  },
-  {
-    typeId: 23,
-    label: 'Λογιστής',
-    // Μόνο με payment_method === 'invoice' (gate στο resolveMonthImportLines).
-    // Πηγή: accountant_amount στις Αποδοχές, αλλιώς συμφωνία ACCOUNTANT / legacy extra.
-    fromEarnings: (e) => {
-      const fromField = parseAmount(e?.accountant_amount)
-      if (fromField > 0) return fromField
-      // Legacy: αριθμητικό extra στις Αποδοχές
-      const extra = String(e?.extra || '').trim()
-      if (/^[\d.,]+$/.test(extra)) return parseAmount(extra)
-      return 0
-    },
-    fromAgreements: accountantFromAgreements,
-  },
-]
+function isTransferEnabled(settings, transferKey) {
+  return settings?.[transferKey] === true
+}
 
+/**
+ * Γραμμές προς εισαγωγή: ποσό > 0 + checkbox true (+ invoice gate για λογιστή).
+ */
 export function resolveMonthImportLines({
   earningsForm,
   agreements = [],
   transactionTypes = [],
   issuesInvoice = null,
 }) {
-  const byId = new Map((transactionTypes || []).map((t) => [Number(t.id), t]))
+  void agreements
   const lines = []
-  // Gate από master personnel (payment_method), fallback στο earningsForm για συμβατότητα
+  const settings = earningsForm?.auto_transfer_settings || {}
   const canInvoice =
     issuesInvoice === true ||
     (issuesInvoice == null && earningsForm?.issues_invoice === true)
 
-  for (const spec of MONTH_IMPORT_SPECS) {
-    const type = byId.get(Number(spec.typeId))
+  for (const transferKey of Object.keys(TRANSFER_MAPPING)) {
+    if (!isTransferEnabled(settings, transferKey)) continue
+
+    if (transferKey === 'accountant_amount' && !canInvoice) continue
+
+    const amount = round2(amountForTransferKey(earningsForm, transferKey))
+    if (!(amount > 0)) continue
+
+    const type = resolveTypeForTransferKey(transferKey, transactionTypes)
     if (!type) continue
-
-    // Λογιστής (23): μόνο αν εκδίδει τιμολόγιο (personnel.payment_method === 'invoice')
-    if (Number(spec.typeId) === 23 && !canInvoice) continue
-
-    let amount = round2(spec.fromEarnings?.(earningsForm) || 0)
-    if (amount <= 0) amount = round2(spec.fromAgreements?.(agreements) || 0)
-    if (amount <= 0) continue
 
     lines.push({
       typeId: Number(type.id),
       type,
-      label: type.description || spec.label,
+      label: type.description || TRANSFER_LABEL_FALLBACK[transferKey] || transferKey,
       amount,
       isSalary: isSalaryLedgerGroup(type.ledger_group),
+      transferKey,
     })
   }
 
@@ -151,7 +144,7 @@ export async function importMonthFromAgreements({
   })
   if (!lines.length) {
     throw new Error(
-      'Δεν βρέθηκαν ποσά Μισθού / Bonus / Λογιστή στις Αποδοχές ή Συμφωνίες για εισαγωγή.'
+      'Δεν βρέθηκαν επιλεγμένα ποσά στις Αποδοχές (checkbox + ποσό > 0) για εισαγωγή.'
     )
   }
 
