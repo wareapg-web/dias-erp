@@ -33,8 +33,11 @@ function overlap(s, e, ws, we) {
   return Math.max(0, Math.min(e, we) - Math.max(s, ws))
 }
 
-/** global_calc_hours from main45.py */
-export function globalCalcHours(dateIso, tStart, tEnd) {
+/** global_calc_hours from main45.py
+ * @param {object} [options]
+ * @param {number} [options.otThreshold=8] κατώφλι υπερωρίας (π.χ. από Αποδοχές overtime_from)
+ */
+export function globalCalcHours(dateIso, tStart, tEnd, options = {}) {
   if (!tStart || !tEnd || tStart === '-' || tEnd === '-') {
     return { total: 0, night: 0, holiday: 0, overtime: 0 }
   }
@@ -71,8 +74,11 @@ export function globalCalcHours(dateIso, tStart, tEnd) {
     fixed.includes(mmdd) ||
     [mobile, goodFriday, easterMon, holySpirit].some((d) => fmt(d) === mmdd)
 
+  const thrRaw = Number(options?.otThreshold)
+  const otThreshold = Number.isFinite(thrRaw) && thrRaw > 0 ? thrRaw : 8
+
   const holHrs = isWeekend || isHoliday ? totHrs : 0
-  const otHrs = !isWeekend && !isHoliday ? Math.max(0, totHrs - 8) : 0
+  const otHrs = !isWeekend && !isHoliday ? Math.max(0, totHrs - otThreshold) : 0
 
   return { total: totHrs, night: nightHrs, holiday: holHrs, overtime: otHrs }
 }

@@ -13,6 +13,19 @@ export function isoDateToGreek(iso) {
   return `${m[3]}/${m[2]}/${m[1]}`
 }
 
+const weekdayLongFmt = new Intl.DateTimeFormat('el-GR', { weekday: 'long' })
+
+/** Ελληνικό όνομα ημέρας (π.χ. «Δευτέρα») από ISO YYYY-MM-DD. */
+export function greekWeekdayLong(iso) {
+  const m = String(iso || '')
+    .trim()
+    .match(/^(\d{4})-(\d{2})-(\d{2})/)
+  if (!m) return ''
+  const label = weekdayLongFmt.format(new Date(`${m[1]}-${m[2]}-${m[3]}T12:00:00`))
+  if (!label) return ''
+  return label.charAt(0).toLocaleUpperCase('el-GR') + label.slice(1)
+}
+
 function isValidYmd(iso) {
   const m = String(iso).match(/^(\d{4})-(\d{2})-(\d{2})$/)
   if (!m) return false

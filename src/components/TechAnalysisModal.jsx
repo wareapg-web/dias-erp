@@ -1,11 +1,14 @@
 import React, { useEffect, useMemo, useState } from 'react'
+import toast from 'react-hot-toast'
 import { adminClient, diasClient, safeQuery, isMissingTableError, formatSupabaseError } from '../lib/supabase'
 import {
   buildMonthlyPayroll,
+  globalCalcHours,
   mapAssignmentRow,
   mapDailyStatusRow,
   mapJobRow,
 } from '../lib/crewPayroll'
+import { greekWeekdayLong, isoDateToGreek, greekCapsLabel } from '../lib/greekDate'
 import {
   MONTH_LABELS,
   MONTH_SHORT,
@@ -29,11 +32,15 @@ import {
 } from '../lib/techEarnings'
 import { fromElInputValue, parseElNumber, toElInputDisplay, formatElNumber } from '../lib/numberFormat'
 import {
+  buildOfficeMonthSummary,
   calcOfficeWorkedHours,
   emptyManualDay,
+  isValidTimeHHMM,
   loadWorkHours,
+  manualHoursToEntries,
   maskTimeInput,
   monthDateList,
+  snapToHalfHour,
   upsertWorkHours,
 } from '../lib/workHours'
 import {
@@ -73,6 +80,17 @@ import { employmentLabel, personnelIssuesInvoice } from '../lib/personnel'
 import PersonnelPanel from './PersonnelPanel'
 import MovementModal from './MovementModal'
 import LedgerAnalysisGrid from './LedgerAnalysisGrid'
+import DarkSelect from './DarkSelect'
+
+/** Ώρες στο grid: 0 / κενό → παύλα. */
+function formatHoursDash(value) {
+  const n = Number(value)
+  if (!Number.isFinite(n) || n <= 0) return '—'
+  return formatElNumber(n, {
+    minimumFractionDigits: 1,
+    maximumFractionDigits: 2,
+  })
+}
 
 export default function TechAnalysisModal({
   tech,
@@ -553,6 +571,51 @@ export default function TechAnalysisModal({
     openMovementEdit(row)
   }
 
+  const handleDeleteLedgerEntry = async () => {
+    if (!selectedLedgerRowKey) return
+
+    const row = ledgerDisplayRows.find((r) => ledgerRowKey(r) === selectedLedgerRowKey)
+    if (!row) return
+
+    if (row.__template === true) {
+      toast.error('Δεν μπορείτε να διαγράψετε μια εικονική εγγραφή/πρότυπο.')
+      return
+    }
+
+    if (!row.id) {
+      toast.error('Δεν μπορείτε να διαγράψετε μια εικονική εγγραφή/πρότυπο.')
+      return
+    }
+
+    if (!window.confirm('Είστε σίγουροι ότι θέλετε να διαγράψετε την επιλεγμένη εγγραφή;')) {
+      return
+    }
+
+    const targetTable = row.source === 'PAYMENT' ? 'payment_entries' : 'payroll_entries'
+
+    setLedgerError(null)
+    try {
+      const { error } = await diasClient.from(targetTable).delete().eq('id', row.id)
+      if (error) {
+        const msg = formatSupabaseError(error, { table: targetTable, clientLabel: 'DIAS ERP' })
+        setLedgerError(msg)
+        toast.error(msg || 'Αποτυχία διαγραφής.')
+        return
+      }
+      setLedgerTick((n) => n + 1)
+      setSelectedLedgerRowKey(null)
+      setSelectedRowData(null)
+      toast.success('Η εγγραφή διαγράφηκε επιτυχώς.')
+    } catch (err) {
+      const msg =
+        formatSupabaseError(err, { table: targetTable, clientLabel: 'DIAS ERP' }) ||
+        err?.message ||
+        String(err)
+      setLedgerError(msg)
+      toast.error(msg)
+    }
+  }
+
   const closeMovement = () => {
     setMovementOpen(false)
     setSelectedRowData(null)
@@ -595,10 +658,14 @@ export default function TechAnalysisModal({
         transactionTypes,
         existingLedgerRows: ledgerRows,
       })
-      setMonthImportMessage(result.message || null)
+      const msg = result.message || 'Ο μήνας δημιουργήθηκε επιτυχώς.'
+      setMonthImportMessage(msg)
       setLedgerTick((n) => n + 1)
+      toast.success(msg)
     } catch (err) {
-      setLedgerError(err?.message || String(err))
+      const msg = err?.message || String(err)
+      setLedgerError(msg)
+      toast.error(msg)
     } finally {
       setMonthImportSaving(false)
     }
@@ -649,23 +716,43 @@ export default function TechAnalysisModal({
 
   const selectedPayroll = monthlyPayrolls[selectedMonth - 1]
   const movements = selectedPayroll?.rows || []
-  const selectedSummary = selectedPayroll?.summary
-  const selectedSalary = salaryMatrix.months[selectedMonth - 1]
-  const monthSettled = salaryMatrix.selectedSettled?.(selectedMonth)
-
   const isOfficeEmployee = tech?.in_office === true
   const officeDayList = useMemo(
     () => (isOfficeEmployee ? monthDateList(analysisYear, selectedMonth) : []),
     [isOfficeEmployee, analysisYear, selectedMonth]
   )
 
+  const officeOtThreshold = useMemo(() => {
+    const n = Number(String(earningsForm?.overtime_from ?? '').replace(',', '.'))
+    return Number.isFinite(n) && n > 0 ? n : 8
+  }, [earningsForm?.overtime_from])
+
+  const officeSummary = useMemo(() => {
+    if (!isOfficeEmployee) return null
+    return buildOfficeMonthSummary(manualHoursToEntries(manualHours), {
+      otThreshold: officeOtThreshold,
+      techName: tech?.displayName || tech?.name || '',
+    })
+  }, [isOfficeEmployee, manualHours, officeOtThreshold, tech?.displayName, tech?.name])
+
+  const selectedSummary = isOfficeEmployee
+    ? officeSummary
+    : selectedPayroll?.summary
+  const selectedSalary = salaryMatrix.months[selectedMonth - 1]
+  const monthSettled = salaryMatrix.selectedSettled?.(selectedMonth)
+
   const handleTransferHours = async () => {
     if (!tech?.id || hoursTransferSaving) return
     setHoursTransferSaving(true)
     setLedgerError(null)
     try {
-      if (!tech._adminTech && !tech.admin_tech_id) {
+      if (!isOfficeEmployee && !tech._adminTech && !tech.admin_tech_id) {
         throw new Error('Ο υπάλληλος δεν έχει σύνδεση με Admin για ώρες βάρδιας.')
+      }
+      if (isOfficeEmployee && !(selectedSummary?.totalHours > 0)) {
+        throw new Error(
+          'Δεν υπάρχουν συμπληρωμένες ώρες γραφείου για τον μήνα. Συμπλήρωσε ρολόγια στα Αναλυτικά στοιχεία.'
+        )
       }
       const result = await transferHoursToLedger({
         tech,
@@ -676,10 +763,14 @@ export default function TechAnalysisModal({
         transactionTypes,
         existingLedgerRows: ledgerRows,
       })
-      setMonthImportMessage(result.message || null)
+      const msg = result.message || 'Οι ώρες μεταφέρθηκαν επιτυχώς.'
+      setMonthImportMessage(msg)
       setLedgerTick((n) => n + 1)
+      toast.success(msg)
     } catch (err) {
-      setLedgerError(err?.message || String(err))
+      const msg = err?.message || String(err)
+      setLedgerError(msg)
+      toast.error(msg)
     } finally {
       setHoursTransferSaving(false)
     }
@@ -746,6 +837,12 @@ export default function TechAnalysisModal({
     setWorkHoursDirty(true)
   }
 
+  const blurManualTime = (dateIso, field, value) => {
+    const snapped = snapToHalfHour(maskTimeInput(value))
+    if (snapped === String(value || '').trim()) return
+    patchManualTime(dateIso, field, snapped)
+  }
+
   const handleSaveWorkHours = async () => {
     if (!tech?.id || !isOfficeEmployee || workHoursSaving) return
     setWorkHoursSaving(true)
@@ -754,41 +851,53 @@ export default function TechAnalysisModal({
       await upsertWorkHours({ techId: tech.id, days: manualHours })
       setWorkHoursDirty(false)
       setWorkHoursMissing(false)
+      toast.success('Οι ώρες γραφείου αποθηκεύτηκαν.')
     } catch (err) {
       setWorkHoursMissing(Boolean(err?.missingTable))
-      setWorkHoursError(err?.message || String(err))
+      const msg = err?.message || String(err)
+      setWorkHoursError(msg)
+      toast.error(msg)
     } finally {
       setWorkHoursSaving(false)
     }
   }
 
-  const handleSave = () => {
+  const handleSave = async () => {
     if (!tech) return
     const amount =
       selectedSalary?.sigma ||
       estimateAmount(tech, selectedSummary?.workDays ?? 0, selectedSummary?.totalHours ?? 0)
     const ticket_restaurant = parseElNumber(earningsForm?.ticket_amount) || 0
     const driver_allowance = parseElNumber(earningsForm?.driver_allowance) || 0
-    onSaveToErp?.({
-      tech_id: tech.id,
-      tech_name: displayName || tech.name,
-      days: selectedSummary?.workDays ?? 0,
-      hours: selectedSummary?.totalHours ?? 0,
-      overtime_hours: selectedSummary?.overtimeHours ?? 0,
-      night_hours: selectedSummary?.nightHours ?? 0,
-      holiday_hours: selectedSummary?.holidayHours ?? 0,
-      weekend_bonus: selectedSummary?.weekendBonus ?? 0,
-      metro_days: selectedSummary?.metroDays ?? 0,
-      overnight_days: selectedSummary?.overnightDays ?? 0,
-      repo_days: selectedSummary?.repoDays ?? 0,
-      leave_days: selectedSummary?.leaveDays ?? 0,
-      sick_days: selectedSummary?.sickDays ?? 0,
-      amount,
-      ticket_restaurant,
-      driver_allowance,
-      year: analysisYear,
-      month: selectedMonth,
-    })
+    try {
+      await onSaveToErp?.({
+        tech_id: tech.id,
+        tech_name: displayName || tech.name,
+        days: selectedSummary?.workDays ?? 0,
+        hours: selectedSummary?.totalHours ?? 0,
+        overtime_hours: selectedSummary?.overtimeHours ?? 0,
+        night_hours: selectedSummary?.nightHours ?? 0,
+        holiday_hours: selectedSummary?.holidayHours ?? 0,
+        weekend_bonus: selectedSummary?.weekendBonus ?? 0,
+        metro_days: selectedSummary?.metroDays ?? 0,
+        overnight_days: selectedSummary?.overnightDays ?? 0,
+        repo_days: selectedSummary?.repoDays ?? 0,
+        leave_days: selectedSummary?.leaveDays ?? 0,
+        sick_days: selectedSummary?.sickDays ?? 0,
+        amount,
+        ticket_restaurant,
+        driver_allowance,
+        year: analysisYear,
+        month: selectedMonth,
+      })
+      toast.success('Οριστική αποθήκευση ERP ολοκληρώθηκε.')
+    } catch (err) {
+      toast.error(
+        formatSupabaseError(err, { table: 'payrolls', clientLabel: 'DIAS ERP' }) ||
+          err?.message ||
+          'Αποτυχία αποθήκευσης ERP.'
+      )
+    }
   }
 
   const patchEarnings = (field, value) => {
@@ -811,9 +920,12 @@ export default function TechAnalysisModal({
       setEarningsForm(earningsFromDb(data))
       setEarningsRecordId(data?.id || null)
       setEarningsDirty(false)
+      toast.success('Οι αποδοχές αποθηκεύτηκαν.')
     } catch (err) {
       setEarningsMissing(isMissingTableError(err))
-      setEarningsError(formatSupabaseError(err, { table: 'tech_earnings', clientLabel: 'DIAS ERP' }))
+      const msg = formatSupabaseError(err, { table: 'tech_earnings', clientLabel: 'DIAS ERP' })
+      setEarningsError(msg)
+      toast.error(msg || 'Αποτυχία αποθήκευσης αποδοχών.')
     } finally {
       setEarningsSaving(false)
     }
@@ -838,8 +950,11 @@ export default function TechAnalysisModal({
       setEarningsForm(emptyEarningsForm())
       setEarningsRecordId(null)
       setEarningsDirty(false)
+      toast.success('Οι αποδοχές διαγράφηκαν.')
     } catch (err) {
-      setEarningsError(formatSupabaseError(err, { table: 'tech_earnings', clientLabel: 'DIAS ERP' }))
+      const msg = formatSupabaseError(err, { table: 'tech_earnings', clientLabel: 'DIAS ERP' })
+      setEarningsError(msg)
+      toast.error(msg || 'Αποτυχία διαγραφής αποδοχών.')
     } finally {
       setEarningsSaving(false)
     }
@@ -867,22 +982,23 @@ export default function TechAnalysisModal({
         valid_from: new Date().toISOString().slice(0, 10),
       }))
       await loadAgreements()
+      toast.success('Η συμφωνία αποθηκεύτηκε.')
     } catch (err) {
       const msg = String(err?.message || err || '')
+      let display
       if (msg.includes('add_tech_agreement') || msg.includes('function') || isMissingTableError(err)) {
         setAgreementsMissing(true)
-        setAgreementsError(
+        display =
           'Λείπει πίνακας/RPC tech_agreements. Τρέξε supabase/03_tech_agreements.sql στο DIAS.'
-        )
       } else if (msg.includes('foreign key') || msg.includes('personnel')) {
-        setAgreementsError(
+        display =
           'Ο υπάλληλος πρέπει να υπάρχει στο DIAS personnel (tech_id). Αποθήκευσε/εισήγαγε πρώτα το προσωπικό.'
-        )
       } else {
-        setAgreementsError(
+        display =
           formatSupabaseError(err, { table: 'tech_agreements', clientLabel: 'DIAS ERP' }) || msg
-        )
       }
+      setAgreementsError(display)
+      toast.error(display)
     } finally {
       setAgreementsSaving(false)
     }
@@ -904,22 +1020,22 @@ export default function TechAnalysisModal({
       setPaymentForm(emptyPaymentForm())
       await loadPayments()
       setLedgerTick((n) => n + 1)
+      toast.success('Η πληρωμή αποθηκεύτηκε.')
     } catch (err) {
       const msg = String(err?.message || err || '')
+      let display
       if (isMissingTableError(err) || msg.includes('payment_date') || msg.includes('payment_type')) {
         setPaymentsMissing(true)
-        setPaymentsError(
+        display =
           'Λείπουν στήλες payment_entries. Τρέξε supabase/04_payment_entries.sql στο DIAS.'
-        )
       } else if (msg.includes('foreign key') || msg.includes('personnel')) {
-        setPaymentsError(
-          'Ο υπάλληλος πρέπει να υπάρχει στο DIAS personnel (tech_id).'
-        )
+        display = 'Ο υπάλληλος πρέπει να υπάρχει στο DIAS personnel (tech_id).'
       } else {
-        setPaymentsError(
+        display =
           formatSupabaseError(err, { table: 'payment_entries', clientLabel: 'DIAS ERP' }) || msg
-        )
       }
+      setPaymentsError(display)
+      toast.error(display)
     } finally {
       setPaymentsSaving(false)
     }
@@ -1034,25 +1150,23 @@ export default function TechAnalysisModal({
       <div className={`relative space-y-3 ${embedded ? '' : 'flex-1 overflow-y-auto p-4 sm:p-5'}`}>
         {/* Κεφαλίδα όπως παλιό ERP: μήνας/έτος · στοιχεία · φωτογραφία */}
         {tech && (
-        <div className="rounded-2xl border border-white/10 bg-slate-900/75 p-3 shadow-xl backdrop-blur-md sm:p-4">
-          <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
-            <div className="flex flex-wrap items-end gap-2">
-              <div className="flex flex-col gap-1">
+        <div className="relative z-20 overflow-visible rounded-2xl border border-white/10 bg-slate-900/75 p-3 shadow-xl backdrop-blur-md sm:p-4">
+          <div className="flex flex-col gap-3 overflow-visible lg:flex-row lg:items-center">
+            <div className="flex flex-nowrap items-end gap-2 overflow-visible">
+              <div className="relative z-20 flex shrink-0 flex-col gap-1 overflow-visible">
                 <label htmlFor="analysis-month" className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
                   Μήνας
                 </label>
-                <select
+                <DarkSelect
                   id="analysis-month"
                   value={selectedMonth}
-                  onChange={(e) => setSelectedMonth(Number(e.target.value))}
-                  className="rounded-xl border border-white/10 bg-slate-950/60 px-3 py-2 text-sm font-medium text-white"
-                >
-                  {MONTH_LABELS.map((label, i) => (
-                    <option key={label} value={i + 1}>
-                      {String(i + 1).padStart(2, '0')}. {label.toUpperCase()}
-                    </option>
-                  ))}
-                </select>
+                  onChange={(v) => setSelectedMonth(Number(v))}
+                  options={MONTH_LABELS.map((label, i) => ({
+                    value: i + 1,
+                    label: greekCapsLabel(label),
+                  }))}
+                  className="min-w-[160px] shrink-0"
+                />
               </div>
               <div className="flex flex-col gap-1">
                 <label htmlFor="analysis-year" className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
@@ -1073,21 +1187,19 @@ export default function TechAnalysisModal({
                   <label htmlFor="analysis-tech" className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
                     Τεχνικός
                   </label>
-                  <select
+                  <DarkSelect
                     id="analysis-tech"
                     value={tech.id}
-                    onChange={(e) => {
-                      const next = techList.find((t) => String(t.id) === e.target.value)
+                    onChange={(v) => {
+                      const next = techList.find((t) => String(t.id) === String(v))
                       if (next) onTechChange(next)
                     }}
-                    className="min-w-[180px] rounded-xl border border-white/10 bg-slate-950/60 px-3 py-2 text-sm font-medium text-white"
-                  >
-                    {techList.map((t) => (
-                      <option key={t.id} value={t.id}>
-                        {t.name}
-                      </option>
-                    ))}
-                  </select>
+                    options={techList.map((t) => ({
+                      value: t.id,
+                      label: t.name,
+                    }))}
+                    className="min-w-[180px]"
+                  />
                 </div>
               )}
             </div>
@@ -1172,9 +1284,9 @@ export default function TechAnalysisModal({
                         <th className="sticky left-0 z-10 bg-slate-950/95 px-3 py-2 font-semibold"> </th>
                         {MONTH_LABELS.map((label, i) => (
                           <th
-                            key={label}
+                            key={`month-h-${i + 1}`}
                             className={`cursor-pointer px-1.5 py-2 text-center font-semibold transition hover:text-cyan-200 ${
-                              selectedMonth === i + 1 ? 'bg-amber-400/90 text-slate-950' : ''
+                              Number(selectedMonth) === i + 1 ? 'bg-amber-400/90 text-slate-950' : ''
                             }`}
                             onClick={() => setSelectedMonth(i + 1)}
                             title={label}
@@ -1321,7 +1433,7 @@ export default function TechAnalysisModal({
                     action: openMovementViewSelected,
                     disabled: !selectedLedgerRowKey,
                   },
-                  { label: 'Διαγραφή', action: () => alert('Διαγραφή — σύντομα') },
+                  { label: 'Διαγραφή', action: handleDeleteLedgerEntry, disabled: !selectedLedgerRowKey },
                   ...quickActionPresets,
                 ].map((item) => (
                   <button
@@ -1675,18 +1787,16 @@ export default function TechAnalysisModal({
                   <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
                     Τύπος αμοιβής
                   </label>
-                  <select
+                  <DarkSelect
                     value={agreementForm.type_code}
-                    onChange={(e) => patchAgreement('type_code', e.target.value)}
+                    onChange={(v) => patchAgreement('type_code', v)}
                     disabled={agreementsMissing || agreementsSaving}
-                    className="mt-1 w-full rounded-xl border border-white/10 bg-slate-950/60 px-3 py-2 text-sm text-white disabled:opacity-50"
-                  >
-                    {AGREEMENT_TYPES.map((t) => (
-                      <option key={t.value} value={t.value}>
-                        {t.label}
-                      </option>
-                    ))}
-                  </select>
+                    options={AGREEMENT_TYPES.map((t) => ({
+                      value: t.value,
+                      label: t.label,
+                    }))}
+                    className="mt-1 w-full"
+                  />
                 </div>
 
                 <div>
@@ -1812,18 +1922,16 @@ export default function TechAnalysisModal({
                 <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
                   Τύπος πληρωμής
                 </label>
-                <select
+                <DarkSelect
                   value={paymentForm.payment_type}
-                  onChange={(e) => patchPayment('payment_type', e.target.value)}
+                  onChange={(v) => patchPayment('payment_type', v)}
                   disabled={paymentsMissing || paymentsSaving}
-                  className="mt-1 w-full rounded-xl border border-white/10 bg-slate-950/60 px-3 py-2 text-sm text-white disabled:opacity-50"
-                >
-                  {PAYMENT_TYPES.map((t) => (
-                    <option key={t.value} value={t.value}>
-                      {t.label}
-                    </option>
-                  ))}
-                </select>
+                  options={PAYMENT_TYPES.map((t) => ({
+                    value: t.value,
+                    label: t.label,
+                  }))}
+                  className="mt-1 w-full"
+                />
               </div>
               <div className="sm:col-span-2 lg:col-span-1">
                 <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
@@ -1956,35 +2064,48 @@ export default function TechAnalysisModal({
 
             <div className="overflow-x-auto">
               {isOfficeEmployee ? (
-                <table className="w-full min-w-[720px] border-collapse text-left text-sm">
+                <table className="w-full min-w-[980px] border-collapse text-left text-sm">
                   <thead>
                     <tr className="border-b border-white/10 bg-slate-950/60 text-xs uppercase tracking-wider text-slate-400">
-                      <th className="px-4 py-3 font-semibold">Ημερομηνία</th>
-                      <th className="px-4 py-3 font-semibold">Έργο / Κατάσταση</th>
-                      <th className="px-4 py-3 font-semibold">Ώρες</th>
-                      <th className="px-4 py-3 text-right font-semibold">Σύνολο</th>
+                      <th className="whitespace-nowrap px-3 py-3 font-semibold">Ημέρα</th>
+                      <th className="whitespace-nowrap px-3 py-3 font-semibold">Ημερομηνία</th>
+                      <th className="px-3 py-3 font-semibold">Έργο / Κατάσταση</th>
+                      <th className="whitespace-nowrap px-3 py-3 font-semibold">Ώρες</th>
+                      <th className="whitespace-nowrap px-3 py-3 text-right font-semibold">Υπερωρίες</th>
+                      <th className="whitespace-nowrap px-3 py-3 text-right font-semibold">Νυχτερινά</th>
+                      <th className="whitespace-nowrap px-3 py-3 text-right font-semibold">Αργίες</th>
+                      <th className="whitespace-nowrap px-3 py-3 text-right font-semibold">Σύνολο</th>
                     </tr>
                   </thead>
                   <tbody>
                     {workHoursLoading ? (
                       <tr>
-                        <td colSpan={4} className="px-4 py-12 text-center text-slate-500">
+                        <td colSpan={8} className="px-4 py-12 text-center text-slate-500">
                           Φόρτωση ωρών γραφείου...
                         </td>
                       </tr>
                     ) : (
                       officeDayList.map((dateIso) => {
                         const day = manualHours[dateIso] || emptyManualDay()
+                        const buckets =
+                          isValidTimeHHMM(day.time_start) && isValidTimeHHMM(day.time_end)
+                            ? globalCalcHours(dateIso, day.time_start, day.time_end, {
+                                otThreshold: officeOtThreshold,
+                              })
+                            : { overtime: 0, night: 0, holiday: 0, total: 0 }
                         return (
                           <tr
                             key={dateIso}
                             className="border-b border-white/5 transition hover:bg-white/5"
                           >
-                            <td className="px-4 py-2.5 font-mono text-xs text-cyan-100/90">
-                              {dateIso}
+                            <td className="whitespace-nowrap px-3 py-2.5 text-sm text-slate-200">
+                              {greekWeekdayLong(dateIso)}
                             </td>
-                            <td className="px-4 py-2.5 text-white">ΕΤΑΙΡΙΑ</td>
-                            <td className="px-4 py-2.5">
+                            <td className="whitespace-nowrap px-3 py-2.5 font-mono text-xs text-cyan-100/90">
+                              {isoDateToGreek(dateIso)}
+                            </td>
+                            <td className="px-3 py-2.5 text-white">ΕΤΑΙΡΙΑ</td>
+                            <td className="px-3 py-2.5">
                               <div className="flex flex-wrap items-center gap-2">
                                 <input
                                   type="text"
@@ -1995,6 +2116,9 @@ export default function TechAnalysisModal({
                                   value={day.time_start || ''}
                                   onChange={(e) =>
                                     patchManualTime(dateIso, 'time_start', e.target.value)
+                                  }
+                                  onBlur={(e) =>
+                                    blurManualTime(dateIso, 'time_start', e.target.value)
                                   }
                                   disabled={workHoursMissing}
                                   className="w-[4.5rem] rounded-lg border border-white/10 bg-slate-950/60 px-2 py-1.5 text-center font-mono text-xs text-white disabled:opacity-50"
@@ -2010,12 +2134,24 @@ export default function TechAnalysisModal({
                                   onChange={(e) =>
                                     patchManualTime(dateIso, 'time_end', e.target.value)
                                   }
+                                  onBlur={(e) =>
+                                    blurManualTime(dateIso, 'time_end', e.target.value)
+                                  }
                                   disabled={workHoursMissing}
                                   className="w-[4.5rem] rounded-lg border border-white/10 bg-slate-950/60 px-2 py-1.5 text-center font-mono text-xs text-white disabled:opacity-50"
                                 />
                               </div>
                             </td>
-                            <td className="px-4 py-2.5 text-right font-mono text-slate-200">
+                            <td className="whitespace-nowrap px-3 py-2.5 text-right font-mono text-amber-200/90">
+                              {formatHoursDash(buckets.overtime)}
+                            </td>
+                            <td className="whitespace-nowrap px-3 py-2.5 text-right font-mono text-violet-200/90">
+                              {formatHoursDash(buckets.night)}
+                            </td>
+                            <td className="whitespace-nowrap px-3 py-2.5 text-right font-mono text-emerald-200/90">
+                              {formatHoursDash(buckets.holiday)}
+                            </td>
+                            <td className="whitespace-nowrap px-3 py-2.5 text-right font-mono text-slate-200">
                               {day.worked_hours > 0
                                 ? formatElNumber(day.worked_hours, {
                                     minimumFractionDigits: 1,
@@ -2030,29 +2166,30 @@ export default function TechAnalysisModal({
                   </tbody>
                 </table>
               ) : (
-                <table className="w-full min-w-[900px] border-collapse text-left text-sm">
+                <table className="w-full min-w-[1080px] border-collapse text-left text-sm">
                   <thead>
                     <tr className="border-b border-white/10 bg-slate-950/60 text-xs uppercase tracking-wider text-slate-400">
-                      <th className="px-4 py-3 font-semibold">Ημερομηνία</th>
-                      <th className="px-4 py-3 font-semibold">Έργο / Κατάσταση</th>
-                      <th className="px-4 py-3 font-semibold">Φάση</th>
-                      <th className="px-4 py-3 font-semibold">Ώρες</th>
-                      <th className="px-4 py-3 text-right font-semibold">Σύνολο</th>
-                      <th className="px-4 py-3 text-right font-semibold">Υπερ.</th>
-                      <th className="px-4 py-3 text-right font-semibold">Νυχτ.</th>
-                      <th className="px-4 py-3 text-right font-semibold">Αργίες</th>
+                      <th className="whitespace-nowrap px-3 py-3 font-semibold">Ημέρα</th>
+                      <th className="whitespace-nowrap px-3 py-3 font-semibold">Ημερομηνία</th>
+                      <th className="px-3 py-3 font-semibold">Έργο / Κατάσταση</th>
+                      <th className="whitespace-nowrap px-3 py-3 font-semibold">Φάση</th>
+                      <th className="whitespace-nowrap px-3 py-3 font-semibold">Ώρες</th>
+                      <th className="whitespace-nowrap px-3 py-3 text-right font-semibold">Υπερωρίες</th>
+                      <th className="whitespace-nowrap px-3 py-3 text-right font-semibold">Νυχτερινά</th>
+                      <th className="whitespace-nowrap px-3 py-3 text-right font-semibold">Αργίες</th>
+                      <th className="whitespace-nowrap px-3 py-3 text-right font-semibold">Σύνολο</th>
                     </tr>
                   </thead>
                   <tbody>
                     {loading ? (
                       <tr>
-                        <td colSpan={8} className="px-4 py-12 text-center text-slate-500">
+                        <td colSpan={9} className="px-4 py-12 text-center text-slate-500">
                           Φόρτωση κινήσεων...
                         </td>
                       </tr>
                     ) : movements.length === 0 ? (
                       <tr>
-                        <td colSpan={8} className="px-4 py-12 text-center text-slate-500">
+                        <td colSpan={9} className="px-4 py-12 text-center text-slate-500">
                           Δεν βρέθηκαν κινήσεις για τον επιλεγμένο μήνα.
                         </td>
                       </tr>
@@ -2062,29 +2199,34 @@ export default function TechAnalysisModal({
                           key={`${row.dateIso}-${row.jobOrStatus}-${row.timeStart}-${idx}`}
                           className="border-b border-white/5 transition hover:bg-white/5"
                         >
-                          <td className="px-4 py-2.5 font-mono text-xs text-cyan-100/90">
-                            {row.dateIso}
+                          <td className="whitespace-nowrap px-3 py-2.5 text-sm text-slate-200">
+                            {greekWeekdayLong(row.dateIso)}
                           </td>
-                          <td className="max-w-[240px] truncate px-4 py-2.5 text-white">
+                          <td className="whitespace-nowrap px-3 py-2.5 font-mono text-xs text-cyan-100/90">
+                            {isoDateToGreek(row.dateIso)}
+                          </td>
+                          <td className="max-w-[220px] truncate px-3 py-2.5 text-white">
                             {row.jobOrStatus}
                           </td>
-                          <td className="px-4 py-2.5 text-slate-400">{row.phase}</td>
-                          <td className="px-4 py-2.5 text-slate-300">
+                          <td className="whitespace-nowrap px-3 py-2.5 text-slate-400">
+                            {row.phase || '—'}
+                          </td>
+                          <td className="whitespace-nowrap px-3 py-2.5 text-slate-300">
                             {row.timeStart && row.timeEnd && row.timeStart !== '-'
                               ? `${row.timeStart} – ${row.timeEnd}`
                               : '—'}
                           </td>
-                          <td className="px-4 py-2.5 text-right text-slate-200">
-                            {row.workedHours || '—'}
+                          <td className="whitespace-nowrap px-3 py-2.5 text-right font-mono text-amber-200/90">
+                            {formatHoursDash(row.overtime)}
                           </td>
-                          <td className="px-4 py-2.5 text-right text-amber-200/90">
-                            {row.overtime || '—'}
+                          <td className="whitespace-nowrap px-3 py-2.5 text-right font-mono text-violet-200/90">
+                            {formatHoursDash(row.nightHours)}
                           </td>
-                          <td className="px-4 py-2.5 text-right text-violet-200/90">
-                            {row.nightHours || '—'}
+                          <td className="whitespace-nowrap px-3 py-2.5 text-right font-mono text-emerald-200/90">
+                            {formatHoursDash(row.weekendHolidayHours)}
                           </td>
-                          <td className="px-4 py-2.5 text-right text-emerald-200/90">
-                            {row.weekendHolidayHours || '—'}
+                          <td className="whitespace-nowrap px-3 py-2.5 text-right font-mono text-slate-200">
+                            {formatHoursDash(row.workedHours)}
                           </td>
                         </tr>
                       ))
@@ -2105,7 +2247,10 @@ export default function TechAnalysisModal({
         >
           {hoursTransferSaving ? 'Μεταφορά...' : 'Μεταφορά Ωρών'}
         </ActionButton>
-        <ActionButton tone="slate" onClick={() => alert('Εκτύπωση — σύντομα')}>
+        <ActionButton
+          tone="slate"
+          onClick={() => toast('Εκτύπωση — σύντομα', { icon: 'ℹ️' })}
+        >
           Εκτύπωση
         </ActionButton>
         <div className="mx-1 hidden h-6 w-px bg-white/10 sm:block" />
@@ -2117,7 +2262,7 @@ export default function TechAnalysisModal({
             type="button"
             onClick={() => {
               if (onClose) onClose()
-              else alert('Έξοδος — κλείσε από τη γραμμή τίτλου του παραθύρου')
+              else toast('Έξοδος — κλείσε από τη γραμμή τίτλου του παραθύρου', { icon: 'ℹ️' })
             }}
             className="ml-auto inline-flex items-center rounded-xl border border-rose-500/40 bg-rose-500/15 px-4 py-2 text-sm font-bold text-rose-100 transition hover:bg-rose-500/25 active:scale-95"
           >
@@ -2201,7 +2346,7 @@ function MatrixRow({ label, hint, values, total, selectedMonth, onSelectMonth })
           key={`${label}-${i}`}
           onClick={() => onSelectMonth(i + 1)}
           className={`cursor-pointer px-2 py-2 text-center font-mono text-[11px] transition hover:bg-white/5 ${
-            selectedMonth === i + 1 ? 'bg-amber-400/25 font-semibold text-amber-100' : 'text-slate-300'
+            Number(selectedMonth) === i + 1 ? 'bg-amber-400/25 font-semibold text-amber-100' : 'text-slate-300'
           }`}
         >
           {value || '·'}

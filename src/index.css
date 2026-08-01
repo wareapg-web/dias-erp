@@ -23,3 +23,27 @@ body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
+
+/* DarkSelect menu — thin scrollbar matching slate calendar UI */
+.dark-select-menu {
+  scrollbar-width: thin;
+  scrollbar-color: #64748b #1e293b;
+}
+
+.dark-select-menu::-webkit-scrollbar {
+  width: 6px;
+}
+
+.dark-select-menu::-webkit-scrollbar-track {
+  background: #1e293b;
+  border-radius: 999px;
+}
+
+.dark-select-menu::-webkit-scrollbar-thumb {
+  background: #64748b;
+  border-radius: 999px;
+}
+
+.dark-select-menu::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}

@@ -29,6 +29,7 @@ import {
   saveModalSize,
   PERSONNEL_FORM_MODAL_SIZE_KEY,
 } from '../lib/modalSize'
+import DarkSelect from './DarkSelect'
 import {
   addNewPeriod,
   findPeriodOverlapError,
@@ -480,18 +481,15 @@ export default function PersonnelPanel({
             </div>
 
             {(listFilter === 'all' || listFilter === 'active') && (
-            <select
+            <DarkSelect
               value={typeFilter}
-              onChange={(e) => onTypeFilterChange?.(e.target.value)}
-              className="mt-2 w-full rounded-xl border border-white/10 bg-slate-950/60 px-2 py-1.5 text-xs text-white"
-            >
-              <option value="all">Όλες οι κατηγορίες</option>
-              {EMPLOYMENT_TYPES.map((t) => (
-                <option key={t.value} value={t.value}>
-                  {t.label}
-                </option>
-              ))}
-            </select>
+              onChange={(v) => onTypeFilterChange?.(v)}
+              className="mt-2 w-full text-xs"
+              options={[
+                { value: 'all', label: 'Όλες οι κατηγορίες' },
+                ...EMPLOYMENT_TYPES.map((t) => ({ value: t.value, label: t.label })),
+              ]}
+            />
             )}
           </>
         )}
@@ -760,30 +758,20 @@ export default function PersonnelPanel({
                 />
               </Field>
               <Field label="Κατηγορία">
-                <select
+                <DarkSelect
                   value={form.employment_type}
-                  onChange={(e) => patch('employment_type', e.target.value)}
-                  className={inputClass}
-                >
-                  {EMPLOYMENT_TYPES.map((t) => (
-                    <option key={t.value} value={t.value}>
-                      {t.label}
-                    </option>
-                  ))}
-                </select>
+                  onChange={(v) => patch('employment_type', v)}
+                  className="w-full"
+                  options={EMPLOYMENT_TYPES.map((t) => ({ value: t.value, label: t.label }))}
+                />
               </Field>
               <Field label="Πληρωμή / παραστατικό">
-                <select
+                <DarkSelect
                   value={form.payment_method}
-                  onChange={(e) => patch('payment_method', e.target.value)}
-                  className={inputClass}
-                >
-                  {PAYMENT_METHODS.map((t) => (
-                    <option key={t.value} value={t.value}>
-                      {t.label}
-                    </option>
-                  ))}
-                </select>
+                  onChange={(v) => patch('payment_method', v)}
+                  className="w-full"
+                  options={PAYMENT_METHODS.map((t) => ({ value: t.value, label: t.label }))}
+                />
               </Field>
               <div className="col-span-2 grid grid-cols-2 gap-3 sm:col-span-4">
                 <Field label="Πρόσληψη">
@@ -889,17 +877,12 @@ export default function PersonnelPanel({
                 />
               </Field>
               <Field label="Οικογ. κατάσταση">
-                <select
+                <DarkSelect
                   value={form.marital_status}
-                  onChange={(e) => patch('marital_status', e.target.value)}
-                  className={inputClass}
-                >
-                  {MARITAL_STATUSES.map((t) => (
-                    <option key={t.value || 'empty'} value={t.value}>
-                      {t.label}
-                    </option>
-                  ))}
-                </select>
+                  onChange={(v) => patch('marital_status', v)}
+                  className="w-full"
+                  options={MARITAL_STATUSES.map((t) => ({ value: t.value, label: t.label }))}
+                />
               </Field>
               <Field label="Εντός γραφείου">
                 <label className="mt-1 flex h-[38px] cursor-pointer items-center gap-2 rounded-xl border border-white/10 bg-slate-950/60 px-3 text-sm text-slate-200">
@@ -921,17 +904,12 @@ export default function PersonnelPanel({
               </Field>
 
               <Field label="Τράπεζα">
-                <select
+                <DarkSelect
                   value={form.bank_name}
-                  onChange={(e) => patch('bank_name', e.target.value)}
-                  className={inputClass}
-                >
-                  {BANKS.map((t) => (
-                    <option key={t.value || 'empty'} value={t.value}>
-                      {t.label}
-                    </option>
-                  ))}
-                </select>
+                  onChange={(v) => patch('bank_name', v)}
+                  className="w-full"
+                  options={BANKS.map((t) => ({ value: t.value, label: t.label }))}
+                />
               </Field>
               <Field label="IBAN" className="sm:col-span-2">
                 <input
@@ -1135,19 +1113,17 @@ export default function PersonnelPanel({
                             </td>
                             <td className="px-2 py-1.5 align-middle">
                               {isEditing ? (
-                                <select
+                                <DarkSelect
                                   value={period.employment_type || 'permanent'}
-                                  onChange={(e) =>
-                                    patchPeriod(period.id, 'employment_type', e.target.value)
+                                  onChange={(v) =>
+                                    patchPeriod(period.id, 'employment_type', v)
                                   }
-                                  className={inputClass}
-                                >
-                                  {EMPLOYMENT_TYPES.map((t) => (
-                                    <option key={t.value} value={t.value}>
-                                      {t.label}
-                                    </option>
-                                  ))}
-                                </select>
+                                  className="w-full"
+                                  options={EMPLOYMENT_TYPES.map((t) => ({
+                                    value: t.value,
+                                    label: t.label,
+                                  }))}
+                                />
                               ) : (
                                 <span className="px-1 text-[11px]">
                                   {employmentLabel(period.employment_type)}

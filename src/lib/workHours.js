@@ -5,6 +5,7 @@
 
 import { diasClient, formatSupabaseError, isMissingTableError } from './supabase'
 import { hoursBetween } from './payrollAnalysis'
+import { globalCalcHours } from './crewPayroll'
 
 /** Στρογγυλοποίηση στο πλησιέστερο μισάωρο (π.χ. 8.25 → 8.5, 8.1 → 8.0). */
 export function roundToHalfHour(hours) {
@@ -19,6 +20,30 @@ export function isValidTimeHHMM(value) {
   const hh = Number(s.slice(0, 2))
   const mm = Number(s.slice(3, 5))
   return hh >= 0 && hh <= 23 && mm >= 0 && mm <= 59
+}
+
+/**
+ * Στρογγυλοποίηση HH:MM στο πλησιέστερο μισάωρο (:00 / :30).
+ * 00–14 → :00 · 15–44 → :30 · 45–59 → :00 επόμενης ώρας (23:50 → 00:00).
+ * Μη έγκυρο / ημιτελές string → επιστρέφεται ως έχει.
+ */
+export function snapToHalfHour(timeStr) {
+  const s = String(timeStr || '').trim()
+  if (!isValidTimeHHMM(s)) return s
+  let hh = Number(s.slice(0, 2))
+  const mm = Number(s.slice(3, 5))
+  if (mm === 0 || mm === 30) return s
+
+  let nextMm
+  if (mm <= 14) {
+    nextMm = 0
+  } else if (mm <= 44) {
+    nextMm = 30
+  } else {
+    nextMm = 0
+    hh = (hh + 1) % 24
+  }
+  return `${String(hh).padStart(2, '0')}:${String(nextMm).padStart(2, '0')}`
 }
 
 /**
@@ -90,6 +115,70 @@ export function monthDateList(year, month) {
 
 export function emptyManualDay() {
   return { time_start: '', time_end: '', worked_hours: 0 }
+}
+
+function round2(n) {
+  return Math.round((Number(n) || 0) * 100) / 100
+}
+
+/**
+ * Σύνοψη μήνα από work_hours (γραφείο) → ίδιο shape με buildMonthlyPayroll().summary
+ * ώστε Μεταφορά Ωρών / ledger να δουλεύουν με overtimeHours × rate κ.λπ.
+ *
+ * @param {Array<{ work_date?: string, dateIso?: string, time_start?: string, time_end?: string }>} workHoursEntries
+ * @param {{ otThreshold?: number, techName?: string }} [options]
+ */
+export function buildOfficeMonthSummary(workHoursEntries = [], options = {}) {
+  const thrRaw = Number(options?.otThreshold)
+  const otThreshold = Number.isFinite(thrRaw) && thrRaw > 0 ? thrRaw : 8
+
+  let totalHours = 0
+  let holidayHours = 0
+  let nightHours = 0
+  let overtimeHours = 0
+  let workDays = 0
+
+  for (const entry of workHoursEntries || []) {
+    const workDate = String(entry?.work_date || entry?.dateIso || '').slice(0, 10)
+    const timeStart = String(entry?.time_start || entry?.timeStart || '').trim()
+    const timeEnd = String(entry?.time_end || entry?.timeEnd || '').trim()
+    if (!workDate || !isValidTimeHHMM(timeStart) || !isValidTimeHHMM(timeEnd)) continue
+
+    const h = globalCalcHours(workDate, timeStart, timeEnd, { otThreshold })
+    if (!(h.total > 0)) continue
+
+    workDays += 1
+    totalHours += h.total
+    holidayHours += h.holiday
+    nightHours += h.night
+    overtimeHours += h.overtime
+  }
+
+  return {
+    tech: options?.techName || '',
+    totalHours: round2(totalHours),
+    holidayHours: round2(holidayHours),
+    nightHours: round2(nightHours),
+    overtimeHours: round2(overtimeHours),
+    overnightDays: 0,
+    metroDays: 0,
+    workDays,
+    repoDays: 0,
+    leaveDays: 0,
+    sickDays: 0,
+    weekendBonus: 0,
+  }
+}
+
+/**
+ * Μετατρέπει manualHours map { date → { time_start, time_end } } σε entries για summary.
+ */
+export function manualHoursToEntries(manualHours = {}) {
+  return Object.entries(manualHours || {}).map(([work_date, day]) => ({
+    work_date,
+    time_start: day?.time_start || '',
+    time_end: day?.time_end || '',
+  }))
 }
 
 /**
