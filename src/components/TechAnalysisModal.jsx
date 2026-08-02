@@ -674,8 +674,6 @@ export default function TechAnalysisModal({
     }
   }
 
-  const ledgerBalances = useMemo(() => computeLedgerBalances(ledgerRows), [ledgerRows])
-
   const monthlyPayrolls = useMemo(() => {
     if (!tech) return []
     return Array.from({ length: 12 }, (_, i) =>
@@ -799,6 +797,12 @@ export default function TechAnalysisModal({
       }),
     [sortedTransactionTypes, ledgerRows, typeLookup, ledgerMonthContext]
   )
+
+  const ledgerBalances = useMemo(() => {
+    const extraParsed = parseElNumber(earningsForm?.extra)
+    const extra = Number.isFinite(extraParsed) ? extraParsed : 0
+    return computeLedgerBalances(ledgerDisplayRows, { extra })
+  }, [ledgerDisplayRows, earningsForm?.extra])
 
   const filteredTechList = useMemo(() => {
     const list = Array.isArray(techList) ? techList : []
@@ -1297,18 +1301,28 @@ export default function TechAnalysisModal({
                     <thead>
                       <tr className="border-b border-white/10 bg-slate-950/60 text-[10px] uppercase tracking-wider text-slate-400">
                         <th className="sticky left-0 z-10 bg-slate-950/95 px-3 py-2 font-semibold"> </th>
-                        {MONTH_LABELS.map((label, i) => (
+                        {MONTH_LABELS.map((label, i) => {
+                          const monthNum = i + 1
+                          const isActive = Number(selectedMonth) === monthNum
+                          return (
                           <th
-                            key={`month-h-${i + 1}`}
+                            key={`month-h-${monthNum}`}
+                            aria-selected={isActive}
                             className={`cursor-pointer px-1.5 py-2 text-center font-semibold transition hover:text-cyan-200 ${
-                              Number(selectedMonth) === i + 1 ? 'bg-amber-400/90 text-slate-950' : ''
+                              isActive
+                                ? 'bg-amber-400/90 text-slate-950'
+                                : 'bg-slate-950/60 text-slate-400'
                             }`}
-                            onClick={() => setSelectedMonth(i + 1)}
+                            onMouseDown={(e) => {
+                              e.preventDefault()
+                              setSelectedMonth(monthNum)
+                            }}
                             title={label}
                           >
                             {MONTH_SHORT[i]}
                           </th>
-                        ))}
+                          )
+                        })}
                         <th className="px-3 py-2 text-right font-semibold text-cyan-300/90">Σύνολο</th>
                       </tr>
                     </thead>
@@ -1422,7 +1436,7 @@ export default function TechAnalysisModal({
                   <BalanceChip label="Υπόλοιπο" value={formatEuro(ledgerBalances.balance)} />
                   <BalanceChip label="Υπόλοιπο (1)" value={formatEuro(ledgerBalances.balance1)} />
                   <BalanceChip label="Υπόλοιπο (2)" value={formatEuro(ledgerBalances.balance2)} />
-                  <BalanceChip label="Έξτρα" value={formatEuro(0)} />
+                  <BalanceChip label="Έξτρα" value={formatEuro(ledgerBalances.extra || 0)} />
                   <BalanceChip label="Τιμολόγιο" value={formatEuro(ledgerBalances.invoice || 0)} />
                 </div>
               </div>
@@ -2304,16 +2318,19 @@ export default function TechAnalysisModal({
                         </td>
                       </tr>
                     ) : (
-                      movements.map((row, idx) => (
+                      movements.map((row, idx) => {
+                        const sameDayAsPrev =
+                          idx > 0 && movements[idx - 1]?.dateIso === row.dateIso
+                        return (
                         <tr
                           key={`${row.dateIso}-${row.jobOrStatus}-${row.timeStart}-${idx}`}
                           className="border-b border-white/5 transition hover:bg-white/5"
                         >
                           <td className="whitespace-nowrap px-3 py-2.5 text-sm text-slate-200">
-                            {greekWeekdayLong(row.dateIso)}
+                            {sameDayAsPrev ? '' : greekWeekdayLong(row.dateIso)}
                           </td>
                           <td className="whitespace-nowrap px-3 py-2.5 font-mono text-xs text-cyan-100/90">
-                            {isoDateToGreek(row.dateIso)}
+                            {sameDayAsPrev ? '' : isoDateToGreek(row.dateIso)}
                           </td>
                           <td className="max-w-[220px] truncate px-3 py-2.5 text-white">
                             {row.jobOrStatus}
@@ -2339,7 +2356,8 @@ export default function TechAnalysisModal({
                             {formatHoursDash(row.workedHours)}
                           </td>
                         </tr>
-                      ))
+                        )
+                      })
                     )}
                   </tbody>
                 </table>
@@ -2445,23 +2463,34 @@ function BalanceChip({ label, value }) {
 }
 
 function MatrixRow({ label, hint, values, total, selectedMonth, onSelectMonth }) {
+  const activeMonth = Number(selectedMonth)
   return (
     <tr className="border-b border-white/5">
       <td className="sticky left-0 bg-slate-900/95 px-3 py-2 font-bold text-cyan-200">
         <span title={hint}>{label}</span>
         <span className="ml-1 text-[10px] font-normal text-slate-500">{hint}</span>
       </td>
-      {values.map((value, i) => (
+      {values.map((value, i) => {
+        const monthNum = i + 1
+        const isActive = activeMonth === monthNum
+        return (
         <td
-          key={`${label}-${i}`}
-          onClick={() => onSelectMonth(i + 1)}
+          key={`${label}-${monthNum}`}
+          aria-selected={isActive}
+          onMouseDown={(e) => {
+            e.preventDefault()
+            onSelectMonth?.(monthNum)
+          }}
           className={`cursor-pointer px-2 py-2 text-center font-mono text-[11px] transition hover:bg-white/5 ${
-            Number(selectedMonth) === i + 1 ? 'bg-amber-400/25 font-semibold text-amber-100' : 'text-slate-300'
+            isActive
+              ? 'bg-amber-400/25 font-semibold text-amber-100'
+              : 'bg-transparent text-slate-300'
           }`}
         >
           {value || '·'}
         </td>
-      ))}
+        )
+      })}
       <td className="px-3 py-2 text-right font-semibold text-cyan-200">{total}</td>
     </tr>
   )

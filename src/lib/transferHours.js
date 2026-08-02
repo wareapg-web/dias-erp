@@ -10,6 +10,7 @@ import {
   monthDateRange,
 } from './techLedger'
 import { payrollTypeCodeFromDescription } from './transactionTypes'
+import { routesExtrasToInvoice } from './personnel'
 
 /** EPT_IDs από transaction_types (OTHER debit / Λοιπά Χρ.). */
 export const HOUR_TRANSFER_SPECS = [
@@ -120,6 +121,8 @@ export async function transferHoursToLedger({
     )
   }
 
+  const postExtrasToInvoice = routesExtrasToInvoice(tech)
+
   const rows = lines.map((line) => ({
     tech_id: String(tech.id),
     reference_date: entryDate,
@@ -127,8 +130,8 @@ export async function transferHoursToLedger({
     description: line.description,
     notes: 'Μεταφορά ωρών από Admin',
     amount: line.amount,
-    invoice_amount: 0,
-    // OTHER group → other_debit (Λοιπά Χρ.) στο tech_ledger_view
+    // invoice|mixed → view δρομολογεί στη στήλη Τιμολόγιο· αλλιώς Λοιπά Χρ.
+    invoice_amount: postExtrasToInvoice ? line.amount : 0,
     is_salary_type: false,
   }))
 

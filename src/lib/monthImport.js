@@ -5,7 +5,7 @@
 
 import { diasClient } from './supabase'
 import { monthDateRange } from './techLedger'
-import { personnelIssuesInvoice } from './personnel'
+import { personnelIssuesInvoice, routesExtrasToInvoice } from './personnel'
 import { parseElNumber } from './numberFormat'
 import {
   isSalaryLedgerGroup,
@@ -73,6 +73,25 @@ function isTransferEnabled(settings, transferKey) {
   return settings?.[transferKey] === true
 }
 
+/** Κανονικοποίηση ledger_group τύπου (SALARY | OTHER). */
+function typeLedgerGroup(type) {
+  return String(type?.ledger_group || 'OTHER').toUpperCase()
+}
+
+/**
+ * invoice|mixed: ό,τι είναι OTHER (Λοιπά) → Τιμολόγιο.
+ * Μόνο SALARY μένει χωρίς invoice_amount.
+ * Το transferKey salary_amount εξαιρείται πάντα.
+ */
+export function shouldPostLineToInvoice(line, postExtrasToInvoice) {
+  if (!postExtrasToInvoice) return false
+  if (line.transferKey === 'salary_amount') return false
+  const group = typeLedgerGroup(line.type)
+  if (group === 'SALARY') return false
+  // OTHER (και άγνωστο/κενό → Λοιπά)
+  return true
+}
+
 /**
  * Γραμμές προς εισαγωγή: ποσό > 0 + checkbox true (+ invoice gate για λογιστή).
  */
@@ -100,12 +119,14 @@ export function resolveMonthImportLines({
     const type = resolveTypeForTransferKey(transferKey, transactionTypes)
     if (!type) continue
 
+    const ledgerGroup = typeLedgerGroup(type)
     lines.push({
       typeId: Number(type.id),
       type,
       label: type.description || TRANSFER_LABEL_FALLBACK[transferKey] || transferKey,
       amount,
-      isSalary: isSalaryLedgerGroup(type.ledger_group),
+      ledgerGroup,
+      isSalary: ledgerGroup === 'SALARY' || isSalaryLedgerGroup(type.ledger_group),
       transferKey,
     })
   }
@@ -121,9 +142,15 @@ function entryMatchesType(row, type) {
   return false
 }
 
+function rowInvoiceAmount(row) {
+  return Math.abs(Number(row?.invoice_amount) || 0)
+}
+
 /**
  * Insert payroll rows for the selected month. Skips types that already have
  * a payroll entry in that month. Returns { inserted, skipped, lines }.
+ * Αν υπάρχει ήδη OTHER γραμμή χωρίς invoice_amount σε υπάλληλο invoice|mixed,
+ * κάνει UPDATE ώστε να δρομολογηθεί στο Τιμολόγιο (διορθώνει παλιά inserts).
  */
 export async function importMonthFromAgreements({
   tech,
@@ -135,6 +162,8 @@ export async function importMonthFromAgreements({
   existingLedgerRows = [],
 }) {
   if (!tech?.id) throw new Error('Δεν έχει επιλεγεί υπάλληλος')
+
+  const postExtrasToInvoice = routesExtrasToInvoice(tech)
 
   const lines = resolveMonthImportLines({
     earningsForm,
@@ -156,44 +185,88 @@ export async function importMonthFromAgreements({
   })
 
   const toInsert = []
+  const toRepair = []
   const skipped = []
 
   for (const line of lines) {
-    const already = existing.some((r) => entryMatchesType(r, line.type))
-    if (already) {
-      skipped.push(line.label)
+    const existingRow = existing.find((r) => entryMatchesType(r, line.type))
+    if (existingRow) {
+      const wantInvoice = shouldPostLineToInvoice(line, postExtrasToInvoice)
+      const hasInvoice = rowInvoiceAmount(existingRow) > 0.005
+      if (
+        wantInvoice &&
+        !hasInvoice &&
+        existingRow.id != null &&
+        String(existingRow.source || 'PAYROLL') === 'PAYROLL'
+      ) {
+        toRepair.push({
+          id: existingRow.id,
+          amount: line.amount,
+          label: line.label,
+        })
+      } else {
+        skipped.push(line.label)
+      }
       continue
     }
     toInsert.push(line)
   }
 
-  if (!toInsert.length) {
+  if (!toInsert.length && !toRepair.length) {
     return {
       inserted: 0,
+      repaired: 0,
       skipped,
       lines,
       message: `Υπάρχουν ήδη εγγραφές για: ${skipped.join(', ')}.`,
     }
   }
 
-  const rows = toInsert.map((line) => ({
-    tech_id: String(tech.id),
-    reference_date: entryDate,
-    type_code: payrollTypeCodeFromDescription(line.type.description),
-    description: null,
-    notes: 'Αυτόματη εισαγωγή μήνα από Αποδοχές/Συμφωνίες',
-    amount: line.amount,
-    invoice_amount: 0,
-    is_salary_type: Boolean(line.isSalary),
-  }))
+  const rows = toInsert.map((line) => {
+    const toInvoice = shouldPostLineToInvoice(line, postExtrasToInvoice)
+    const isSalary = Boolean(line.isSalary) || line.transferKey === 'salary_amount'
+    return {
+      tech_id: String(tech.id),
+      reference_date: entryDate,
+      type_code: payrollTypeCodeFromDescription(line.type.description),
+      description: null,
+      notes: 'Αυτόματη εισαγωγή μήνα από Αποδοχές/Συμφωνίες',
+      amount: line.amount,
+      invoice_amount: toInvoice ? line.amount : 0,
+      is_salary_type: isSalary && !toInvoice,
+    }
+  })
 
-  const { error } = await diasClient.from('payroll_entries').insert(rows)
-  if (error) throw error
+  if (rows.length) {
+    const { error } = await diasClient.from('payroll_entries').insert(rows)
+    if (error) throw error
+  }
+
+  for (const repair of toRepair) {
+    const { error } = await diasClient
+      .from('payroll_entries')
+      .update({
+        invoice_amount: repair.amount,
+        is_salary_type: false,
+      })
+      .eq('id', repair.id)
+    if (error) throw error
+  }
+
+  const parts = []
+  if (rows.length) parts.push(`Εισήχθησαν ${rows.length} γραμμές`)
+  if (toRepair.length) {
+    parts.push(
+      `διορθώθηκαν ${toRepair.length} στο Τιμολόγιο (${toRepair.map((r) => r.label).join(', ')})`
+    )
+  }
+  parts.push(`για ${from.slice(0, 7)}.`)
 
   return {
     inserted: rows.length,
+    repaired: toRepair.length,
     skipped,
-    lines: toInsert,
-    message: `Εισήχθησαν ${rows.length} γραμμές για ${from.slice(0, 7)}.`,
+    lines: [...toInsert, ...toRepair],
+    message: parts.join(' '),
   }
 }
