@@ -97,7 +97,7 @@ values
   -- SALARY (EPT_COL = 1)
   (3,  'Μισθός',                      'SALARY', true,  1,  0, true),
   (1,  'Εξόφληση',                    'SALARY', false, 13, 0, true),
-  (91, 'Εξόφληση (1)',                 'SALARY', false, 91, 0, true),
+  (91, 'Εξόφληση Μισθού',             'SALARY', false, 91, 0, true),
 
   -- OTHER (EPT_COL = 2)
   (4,  'Bonus',                       'OTHER',  true,  2,  0, true),
@@ -118,7 +118,7 @@ values
   (23, 'Λογιστής',                    'OTHER',  true,  23, 0, true),
   (24, 'Ticket Restaurant',           'OTHER',  false, 24, 0, true),
   (25, 'Μετρό',                       'OTHER',  true,  25, 1, true),
-  (92, 'Εξόφληση (2)',                 'OTHER',  false, 92, 0, true);
+  (92, 'Εξόφληση Λοιπών',              'OTHER',  false, 92, 0, true);
 
 -- Sync sequence αν υπάρχει (serial από 06) — αλλιώς no-op
 do $$

@@ -21,7 +21,7 @@ export const EPT_COL = {
 /** Salary block: Μισθός (debit) */
 export const SALARY_DEBIT_IDS = new Set([3])
 
-/** Salary block: Εξόφληση / Εξόφληση (1) (credit) */
+/** Salary block: Εξόφληση Μισθού (credit) */
 export const SALARY_CREDIT_IDS = new Set([1, 91])
 
 /**
@@ -30,7 +30,7 @@ export const SALARY_CREDIT_IDS = new Set([1, 91])
  */
 export const OTHER_DEBIT_IDS = new Set([7, 8, 9, 22, 25])
 
-/** Other block credit: προκαταβολές, δάνεια, ticket, εξόφληση (2), κλπ. */
+/** Other block credit: προκαταβολές, δάνεια, ticket, εξόφληση λοιπών, κλπ. */
 export const OTHER_CREDIT_IDS = new Set([2, 10, 14, 24, 92])
 
 export const LEDGER_COLUMNS = [
@@ -39,6 +39,7 @@ export const LEDGER_COLUMNS = [
   'other_debit',
   'other_credit',
   'invoice_amount',
+  'invoice_credit',
 ]
 
 function normalizePaymentType(paymentType) {
@@ -128,16 +129,20 @@ export function resolveLedgerSide(paymentType, amount, options = {}) {
   return column.endsWith('_credit') ? 'CREDIT' : 'DEBIT'
 }
 
-/** Distribute amount into ledger column fields (incl. invoice_amount). */
+/** Distribute amount into ledger column fields (incl. invoice_amount / invoice_credit). */
 export function distributeLedgerAmount(paymentType, amount, options = {}) {
   const column = resolveLedgerColumn(paymentType, amount, options)
   const abs = Math.abs(Number(amount) || 0)
+  const side = resolveLedgerSide(paymentType, amount, options)
+  const toInvoice = column === 'invoice_amount'
   return {
     salary_debit: column === 'salary_debit' ? abs : 0,
     salary_credit: column === 'salary_credit' ? abs : 0,
     other_debit: column === 'other_debit' ? abs : 0,
     other_credit: column === 'other_credit' ? abs : 0,
-    invoice_amount: column === 'invoice_amount' ? abs : 0,
+    // Χρέωση τιμολογίου (payroll) vs πίστωση (payment)
+    invoice_amount: toInvoice && side !== 'CREDIT' ? abs : 0,
+    invoice_credit: toInvoice && side === 'CREDIT' ? abs : 0,
   }
 }
 
@@ -150,6 +155,9 @@ function entryAmount(entry) {
 
   const fromInvoice = Number(entry?.invoice_amount) || 0
   if (fromInvoice) return fromInvoice
+
+  const fromInvoiceCredit = Number(entry?.invoice_credit) || 0
+  if (fromInvoiceCredit) return fromInvoiceCredit
 
   return Number(entry?.amount) || 0
 }
@@ -174,13 +182,28 @@ export function normalizeSavedEntry(entry, transactionType, options = {}) {
     id: entry?.ept_id,
     ledger_group: entry?.ledger_group,
   }
-  const fromInvoice = Number(entry?.invoice_amount) || 0
+  const fromInvoiceDebit = Number(entry?.invoice_amount) || 0
+  const fromInvoiceCredit = Number(entry?.invoice_credit) || 0
   const amount = entryAmount(entry)
-  const forceInvoice = fromInvoice !== 0 ? true : options.forceInvoice ?? null
-  const columns = distributeLedgerAmount(type, amount || fromInvoice, {
+  const forceInvoice =
+    fromInvoiceDebit !== 0 || fromInvoiceCredit !== 0
+      ? true
+      : options.forceInvoice ?? null
+  const sideFromSource =
+    fromInvoiceCredit !== 0 || String(entry?.source || '').toUpperCase() === 'PAYMENT'
+      ? 'CREDIT'
+      : 'DEBIT'
+  const columns = distributeLedgerAmount(type, amount || fromInvoiceDebit || fromInvoiceCredit, {
     ...options,
     forceInvoice,
+    side: options.side || sideFromSource,
   })
+
+  // Προτεραιότητα στις τιμές του view (όχι frontend split)
+  if (fromInvoiceDebit !== 0 || fromInvoiceCredit !== 0) {
+    columns.invoice_amount = fromInvoiceDebit
+    columns.invoice_credit = fromInvoiceCredit
+  }
 
   const rawDesc = String(entry?.description || '').trim()
   const description = rawDesc && !isBareEuroText(rawDesc) ? rawDesc : ''
@@ -217,6 +240,7 @@ function emptyTemplateRow(type, monthContext = null) {
   let other_debit = 0
   let other_credit = 0
   let invoice_amount = 0
+  let invoice_credit = 0
   let __prefilled = false
 
   if (DEFAULT_EARNINGS_PREFILL_IDS.has(id)) {
@@ -229,6 +253,7 @@ function emptyTemplateRow(type, monthContext = null) {
       other_debit = cols.other_debit
       other_credit = cols.other_credit
       invoice_amount = 0
+      invoice_credit = 0
       __prefilled = true
     }
   }
@@ -250,6 +275,7 @@ function emptyTemplateRow(type, monthContext = null) {
     other_debit,
     other_credit,
     invoice_amount,
+    invoice_credit,
     notes: '',
     created_at: null,
   }
@@ -296,8 +322,9 @@ export function buildTemplateMergeRows({
 
     const normalized = normalizeSavedEntry(row, matchedType)
     const { amount } = extractLedgerAmount(normalized)
-    const invoice = Math.abs(Number(normalized.invoice_amount) || 0)
-    if (Math.abs(amount) < 0.005 && invoice < 0.005) continue
+    const invoiceDebit = Math.abs(Number(normalized.invoice_amount) || 0)
+    const invoiceCredit = Math.abs(Number(normalized.invoice_credit) || 0)
+    if (Math.abs(amount) < 0.005 && invoiceDebit < 0.005 && invoiceCredit < 0.005) continue
     rows.push(normalized)
   }
 

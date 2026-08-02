@@ -24,9 +24,9 @@ export function ledgerTypeLabel(type) {
     METRO: 'Μετρό',
     TICKET: 'Ticket',
     ADVANCE: 'Έναντι',
-    SETTLEMENT: 'Εξόφληση',
-    SETTLEMENT_1: 'Εξόφληση (1)',
-    SETTLEMENT_2: 'Εξόφληση (2)',
+    SETTLEMENT: 'Εξόφληση Τιμολογίου',
+    SETTLEMENT_1: 'Εξόφληση Μισθού',
+    SETTLEMENT_2: 'Εξόφληση Λοιπών',
     EXPENSES: 'Έξοδα',
     BONUS_PAYOUT: 'Πληρωμή Bonus',
   }
@@ -185,6 +185,7 @@ export function extractLedgerAmount(row) {
     ['other_debit', Number(row.other_debit) || 0],
     ['other_credit', Number(row.other_credit) || 0],
     ['invoice_amount', Number(row.invoice_amount) || 0],
+    ['invoice_credit', Number(row.invoice_credit) || 0],
   ]
   const hit = cols.find(([, v]) => v !== 0)
   if (!hit) return { amount: 0, bucket: 'salary_debit' }
@@ -230,9 +231,13 @@ export function movementFormFromRow(row) {
   }
   const { amount, bucket } = extractLedgerAmount(row)
   const side =
-    bucket === 'salary_credit' || bucket === 'other_credit' ? 'CREDIT' : 'DEBIT'
+    bucket === 'salary_credit' ||
+    bucket === 'other_credit' ||
+    bucket === 'invoice_credit'
+      ? 'CREDIT'
+      : 'DEBIT'
   const ledger_group =
-    bucket === 'invoice_amount'
+    bucket === 'invoice_amount' || bucket === 'invoice_credit'
       ? 'INVOICE'
       : isSalaryBucket(bucket)
         ? 'SALARY'
@@ -248,7 +253,7 @@ export function movementFormFromRow(row) {
     side,
     ledger_group,
     is_salary_type: isSalaryBucket(bucket),
-    post_to_invoice: bucket === 'invoice_amount',
+    post_to_invoice: bucket === 'invoice_amount' || bucket === 'invoice_credit',
   }
 }
 
@@ -295,10 +300,10 @@ export function aggregateTicketRestaurantByMonth(ledgerRows = [], year) {
 
 /**
  * Υπόλοιπα από γραμμές ledger μήνα (όπως εμφανίζονται στο grid).
- * Υπόλοιπο (1) = Μισθός Χρ. − Μισθός Πιστ.
- * Υπόλοιπο (2) = Λοιπά Χρ. − Λοιπά Πιστ.
- * Τιμολόγιο = χρεώσεις invoice (PAYROLL) − πιστώσεις invoice (PAYMENT).
- * Υπόλοιπο = (1) + (2) + Τιμολόγιο + Έξτρα.
+ * Υπόλοιπο (Μ) = Μισθός Χρ. − Μισθός Πιστ.
+ * Υπόλοιπο (Λ) = Λοιπά Χρ. − Λοιπά Πιστ.
+ * Υπόλοιπο (ΤΙΜ) = invoice_amount (Χρ.) − invoice_credit (Πιστ.).
+ * Υπόλοιπο = (Μ) + (Λ) + (ΤΙΜ) + Έξτρα.
  * Ticket Restaurant δεν συμμετέχει.
  *
  * @param {object[]} rows
@@ -321,16 +326,11 @@ export function computeLedgerBalances(rows = [], options = {}) {
     salaryCredit += Number(r.salary_credit) || 0
     otherDebit += Number(r.other_debit) || 0
     otherCredit += Number(r.other_credit) || 0
-
-    const inv = Math.abs(Number(r.invoice_amount) || 0)
-    if (inv > 0) {
-      // View: payroll invoice = χρέωση, payment invoice = πίστωση/εξόφληση
-      if (String(r.source || '').toUpperCase() === 'PAYMENT') invoiceCredit += inv
-      else invoiceDebit += inv
-    }
+    invoiceDebit += Number(r.invoice_amount) || 0
+    invoiceCredit += Number(r.invoice_credit) || 0
 
     if (r.type === 'SETTLEMENT_1') {
-      y1 += Number(r.salary_credit) || Number(r.invoice_amount) || 0
+      y1 += Number(r.salary_credit) || Number(r.invoice_credit) || 0
     }
     if (r.type === 'SETTLEMENT_2') y2 += Number(r.other_credit) || 0
   }

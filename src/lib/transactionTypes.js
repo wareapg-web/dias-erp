@@ -25,11 +25,13 @@ export function isSalaryColIndex(colIndex) {
 
 /**
  * Target grid column from ledger_group + side (DEBIT|CREDIT).
- * @returns {'salary_debit'|'salary_credit'|'other_debit'|'other_credit'|'invoice_amount'}
+ * @returns {'salary_debit'|'salary_credit'|'other_debit'|'other_credit'|'invoice_amount'|'invoice_credit'}
  */
 export function ledgerColumnFor(ledgerGroup, side) {
   const g = String(ledgerGroup || '').toUpperCase()
-  if (g === 'INVOICE') return 'invoice_amount'
+  if (g === 'INVOICE') {
+    return String(side || '').toUpperCase() === 'CREDIT' ? 'invoice_credit' : 'invoice_amount'
+  }
   const salary = g === 'SALARY'
   const credit = String(side || '').toUpperCase() === 'CREDIT'
   if (salary) return credit ? 'salary_credit' : 'salary_debit'
@@ -37,7 +39,13 @@ export function ledgerColumnFor(ledgerGroup, side) {
 }
 
 export function sideFromLedgerBucket(bucket) {
-  if (bucket === 'salary_credit' || bucket === 'other_credit') return 'CREDIT'
+  if (
+    bucket === 'salary_credit' ||
+    bucket === 'other_credit' ||
+    bucket === 'invoice_credit'
+  ) {
+    return 'CREDIT'
+  }
   return 'DEBIT'
 }
 
@@ -47,7 +55,8 @@ export function ledgerColumnLabel(column) {
     salary_credit: 'Μισθός Πίστωση',
     other_debit: 'Λοιπά Χρέωση',
     other_credit: 'Λοιπά Πίστωση',
-    invoice_amount: 'Τιμολόγιο Χρ.-Πιστ.',
+    invoice_amount: 'Τιμολόγιο Χρέωση',
+    invoice_credit: 'Τιμολόγιο Πίστωση',
   }
   return map[column] || column || '—'
 }
@@ -82,7 +91,8 @@ export function buildTypeLookup(types = []) {
 
 /** Default transaction_type id hints for payment_entries.payment_type codes. */
 const PAYMENT_CODE_TYPE_IDS = {
-  SETTLEMENT: 1,
+  // SETTLEMENT = εξόφληση τιμολογίου (κουμπί ΕΞΟΦΛΗΣΗ(ΤΙΜ) / type 93) — όχι το παλιό id 1
+  SETTLEMENT: 93,
   SETTLEMENT_1: 91,
   SETTLEMENT_2: 92,
   ADVANCE: 2,
@@ -123,15 +133,29 @@ export function resolveTransactionType(lookup, { typeId, description, typeCode }
 
 /**
  * Resolve transaction_types row from a tech_ledger_view row (edit mode).
- * Uses type code only — description holds hours text, not the type name.
+ * Prefers type_id · μετά πιστωτική στήλη · μετά payment_type code.
  */
 export function resolveTransactionTypeFromLedgerRow(lookup, row) {
   if (!lookup || !row) return null
 
-  const typeCode = String(row.type || '').trim()
+  const storedTypeId = row.type_id ?? row.ept_id ?? null
+  if (storedTypeId != null && lookup.byId.has(Number(storedTypeId))) {
+    return lookup.byId.get(Number(storedTypeId))
+  }
 
-  let hit = resolveTransactionType(lookup, { description: typeCode, typeCode })
-  if (hit) return hit
+  const typeCode = String(row.type || '').trim()
+  const { bucket } = extractLedgerAmount(row)
+
+  // TIM / invoice credit πριν το generic SETTLEMENT→label
+  if (bucket === 'invoice_credit') {
+    return lookup.byId.get(93) || null
+  }
+  if (bucket === 'salary_credit') {
+    return lookup.byId.get(91) || lookup.byId.get(1) || null
+  }
+  if (bucket === 'other_credit') {
+    return lookup.byId.get(92) || lookup.byId.get(24) || null
+  }
 
   if (row.source === 'PAYMENT' && typeCode) {
     const hintedId = PAYMENT_CODE_TYPE_IDS[typeCode.toUpperCase()]
@@ -140,13 +164,8 @@ export function resolveTransactionTypeFromLedgerRow(lookup, row) {
     }
   }
 
-  const { bucket } = extractLedgerAmount(row)
-  if (bucket === 'other_credit') {
-    return lookup.byId.get(92) || lookup.byId.get(24) || null
-  }
-  if (bucket === 'salary_credit') {
-    return lookup.byId.get(1) || lookup.byId.get(91) || null
-  }
+  let hit = resolveTransactionType(lookup, { description: typeCode, typeCode })
+  if (hit) return hit
 
   return null
 }
@@ -170,14 +189,34 @@ export function paymentTypeCodeFromDescription(description, ledgerGroup) {
   const lower = d.toLowerCase()
   const salary = isSalaryLedgerGroup(ledgerGroup)
 
-  if (lower.includes('εξόφληση (2)') || lower.includes('εξοφληση (2)') || /\(2\)/.test(d)) {
+  // 93 / Εξόφληση Τιμολογίου → SETTLEMENT + invoice_credit
+  if (
+    lower.includes('τιμολογ') ||
+    lower.includes('τιμ') ||
+    /\(τιμ\)/i.test(d)
+  ) {
+    return 'SETTLEMENT'
+  }
+  // 92 / Εξόφληση Λοιπών (και legacy «(2)»)
+  if (
+    lower.includes('λοιπ') ||
+    lower.includes('εξόφληση (2)') ||
+    lower.includes('εξοφληση (2)') ||
+    /\(2\)/.test(d)
+  ) {
     return 'SETTLEMENT_2'
   }
-  if (lower.includes('εξόφληση (1)') || lower.includes('εξοφληση (1)') || /\(1\)/.test(d)) {
+  // 91 / Εξόφληση Μισθού (και legacy «(1)»)
+  if (
+    lower.includes('μισθ') ||
+    lower.includes('εξόφληση (1)') ||
+    lower.includes('εξοφληση (1)') ||
+    /\(1\)/.test(d)
+  ) {
     return 'SETTLEMENT_1'
   }
   if (lower.includes('εξόφληση') || lower.includes('εξοφληση')) {
-    return salary ? 'SETTLEMENT' : 'SETTLEMENT_2'
+    return salary ? 'SETTLEMENT_1' : 'SETTLEMENT_2'
   }
   if (lower.includes('προκαταβολή') || lower.includes('προκαταβολη')) return 'ADVANCE'
   if (lower.includes('έναντι') || lower.includes('εναντι')) return 'ADVANCE'
@@ -194,6 +233,61 @@ export function payrollTypeCodeFromDescription(description) {
 /** True when posting should go to payment_entries (credit side). */
 export function shouldPostAsPayment(side) {
   return String(side || '').toUpperCase() === 'CREDIT'
+}
+
+/**
+ * Κατανομή ποσού στις φυσικές credit στήλες του payment_entries.
+ * Ακριβώς μία από salary_credit / other_credit / invoice_credit παίρνει το ποσό.
+ */
+export function paymentCreditColumns({
+  amount,
+  paymentType,
+  postToInvoice = false,
+  typeId = null,
+  ledgerGroup = null,
+}) {
+  const abs = Math.abs(Number(amount) || 0)
+  const pt = String(paymentType || '').toUpperCase()
+  const id = Number(typeId)
+
+  if (postToInvoice || id === 93 || pt.includes('TIM') || pt === 'SETTLEMENT') {
+    return {
+      salary_debit: 0,
+      salary_credit: 0,
+      other_debit: 0,
+      other_credit: 0,
+      invoice_amount: 0,
+      invoice_credit: abs,
+    }
+  }
+
+  const toOther =
+    id === 92 ||
+    pt === 'SETTLEMENT_2' ||
+    pt === 'EXPENSES' ||
+    pt === 'BONUS_PAYOUT' ||
+    (ledgerGroup != null && !isSalaryLedgerGroup(ledgerGroup) && id !== 91)
+
+  if (toOther) {
+    return {
+      salary_debit: 0,
+      salary_credit: 0,
+      other_debit: 0,
+      other_credit: abs,
+      invoice_amount: 0,
+      invoice_credit: 0,
+    }
+  }
+
+  // 91 / SETTLEMENT_1 / ADVANCE / SETTLEMENT → Μισθός Πιστ.
+  return {
+    salary_debit: 0,
+    salary_credit: abs,
+    other_debit: 0,
+    other_credit: 0,
+    invoice_amount: 0,
+    invoice_credit: 0,
+  }
 }
 
 /** Default side for a type — settlement-like → CREDIT, else DEBIT. */

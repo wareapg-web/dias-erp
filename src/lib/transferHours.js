@@ -126,6 +126,8 @@ export async function transferHoursToLedger({
   const rows = lines.map((line) => ({
     tech_id: String(tech.id),
     reference_date: entryDate,
+    month: Number(month),
+    year: Number(year),
     type_code: payrollTypeCodeFromDescription(line.type.description),
     description: line.description,
     notes: 'Μεταφορά ωρών από Admin',

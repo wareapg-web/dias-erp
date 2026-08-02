@@ -42,6 +42,11 @@
 - `supabase/18_add_driver_allowance.sql` (Επίδομα οδηγού · tech_earnings + payrolls)
 - `supabase/19_work_hours.sql` (ώρες γραφείου · Εντός γραφείου)
 - `supabase/20_auto_transfer_settings.sql` (JSONB checkboxes Αποδοχές → Δημιουργία)
+- `supabase/21_invoice_credit.sql` (Τιμολόγιο Πιστ. · `payment_entries.invoice_credit` + view Χρ./Πιστ.)
+- `supabase/22_ledger_view_physical_credits.sql` (view: φυσικές salary/other/invoice_credit + legacy fallback)
+- `supabase/23_ledger_view_accounting_period.sql` (view: month/year λογιστική περίοδος · ανεξάρτητα από entry_date)
+- `supabase/24_rename_settlement_type_labels.sql` (91/92/93 → Εξόφληση Μισθού/Λοιπών/Τιμολογίου)
+- `supabase/25_payment_entries_type_id.sql` (payment_entries.type_id + view · TIM → 93)
 
 ### Φωτογραφίες προφίλ (Cloudflare R2 μέσω Edge Function)
 

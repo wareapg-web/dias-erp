@@ -56,14 +56,13 @@ import {
 import {
   PAYMENT_TYPES,
   emptyPaymentForm,
-  formatPaymentAmount,
+  formatPaymentCredit,
   paymentToDb,
   paymentTypeLabel,
 } from '../lib/techPayments'
 import {
   computeLedgerBalances,
   ledgerRowKey,
-  monthDateRange,
   buildLedgerDescriptionForType,
   buildLedgerAmountForType,
 } from '../lib/techLedger'
@@ -82,6 +81,7 @@ import {
 import { employmentLabel, personnelIssuesInvoice } from '../lib/personnel'
 import PersonnelPanel from './PersonnelPanel'
 import MovementModal from './MovementModal'
+import LoanModal from './LoanModal'
 import LedgerAnalysisGrid from './LedgerAnalysisGrid'
 import DarkSelect from './DarkSelect'
 
@@ -155,12 +155,14 @@ export default function TechAnalysisModal({
   const [workHoursError, setWorkHoursError] = useState(null)
   const [workHoursMissing, setWorkHoursMissing] = useState(false)
   const [movementOpen, setMovementOpen] = useState(false)
+  const [loanOpen, setLoanOpen] = useState(false)
   const [selectedRowData, setSelectedRowData] = useState(null)
   const [selectedLedgerRowKey, setSelectedLedgerRowKey] = useState(null)
   const [movementPresetTypeId, setMovementPresetTypeId] = useState(null)
   const [movementPresetSide, setMovementPresetSide] = useState(null)
   const [movementPresetDescription, setMovementPresetDescription] = useState(null)
   const [movementPresetAmount, setMovementPresetAmount] = useState(null)
+  const [movementPresetPostToInvoice, setMovementPresetPostToInvoice] = useState(null)
   const [transactionTypes, setTransactionTypes] = useState([])
   const [transactionTypesError, setTransactionTypesError] = useState(null)
 
@@ -414,14 +416,13 @@ export default function TechAnalysisModal({
     async function loadLedger() {
       setLedgerLoading(true)
       setLedgerError(null)
-      const { from, to } = monthDateRange(analysisYear, selectedMonth)
       try {
         const { data, error } = await diasClient
           .from('tech_ledger_view')
           .select('*')
           .eq('tech_id', String(tech.id))
-          .gte('entry_date', from)
-          .lte('entry_date', to)
+          .eq('month', Number(selectedMonth))
+          .eq('year', Number(analysisYear))
           .order('entry_date', { ascending: false })
           .order('created_at', { ascending: false })
 
@@ -509,6 +510,7 @@ export default function TechAnalysisModal({
     setMovementPresetSide(null)
     setMovementPresetDescription(null)
     setMovementPresetAmount(null)
+    setMovementPresetPostToInvoice(null)
   }, [activeTab])
 
   const typeLookup = useMemo(() => buildTypeLookup(transactionTypes), [transactionTypes])
@@ -523,6 +525,9 @@ export default function TechAnalysisModal({
     setSelectedLedgerRowKey(null)
     setMovementPresetTypeId(preset.typeId ?? null)
     setMovementPresetSide(preset.side ?? null)
+    setMovementPresetPostToInvoice(
+      preset.postToInvoice === true ? true : preset.postToInvoice === false ? false : null
+    )
 
     const ctx = { summary: selectedSummary, earningsForm }
     let presetDescription = preset.description ?? null
@@ -558,6 +563,7 @@ export default function TechAnalysisModal({
     setMovementPresetSide(null)
     setMovementPresetDescription(null)
     setMovementPresetAmount(null)
+    setMovementPresetPostToInvoice(null)
     setMovementOpen(true)
   }
 
@@ -627,19 +633,11 @@ export default function TechAnalysisModal({
     setMovementPresetSide(null)
     setMovementPresetDescription(null)
     setMovementPresetAmount(null)
+    setMovementPresetPostToInvoice(null)
   }
 
   const findTypeByDescription = (label) =>
     resolveTransactionType(typeLookup, { description: label, typeCode: label })
-
-  const quickActionPresets = useMemo(
-    () => [
-      { label: 'Εξόφληση (1)', typeId: 91, side: 'CREDIT' },
-      { label: 'Εξόφληση (2)', typeId: 92, side: 'CREDIT' },
-      { label: 'Πληρωμή', tab: 'payments' },
-    ],
-    []
-  )
 
   const handleMovementSaved = async ({ wasPayment } = {}) => {
     setLedgerTick((n) => n + 1)
@@ -803,6 +801,59 @@ export default function TechAnalysisModal({
     const extra = Number.isFinite(extraParsed) ? extraParsed : 0
     return computeLedgerBalances(ledgerDisplayRows, { extra })
   }, [ledgerDisplayRows, earningsForm?.extra])
+
+  /** Δεξιά στήλη ενεργειών — ΚΕΦΑΛΑΙΑ χωρίς τόνους · εξοφλήσεις autofill από υπόλοιπα. */
+  const ledgerActionButtons = useMemo(() => {
+    const showTim = personnelIssuesInvoice(tech)
+    const bal1 = Number(ledgerBalances?.balance1) || 0
+    const bal2 = Number(ledgerBalances?.balance2) || 0
+    const balInv = Number(ledgerBalances?.invoice) || 0
+    const items = [
+      {
+        label: 'ΔΙΑΓΡΑΦΗ',
+        action: handleDeleteLedgerEntry,
+        disabled: !selectedLedgerRowKey,
+      },
+      { label: 'ΠΛΗΡΩΜΗ', tab: 'payments' },
+      {
+        label: 'ΕΞΟΦΛΗΣΗ(Μ)',
+        typeId: 91,
+        side: 'CREDIT',
+        amount: bal1 > 0 ? bal1 : null,
+        disabled: !tech || bal1 <= 0,
+        title:
+          bal1 <= 0
+            ? 'Δεν υπάρχει υπόλοιπο μισθού για εξόφληση'
+            : 'Εξοφληση μισθου (Μισθος Πιστ.)',
+      },
+      {
+        label: 'ΕΞΟΦΛΗΣΗ(Λ)',
+        typeId: 92,
+        side: 'CREDIT',
+        amount: bal2 > 0 ? bal2 : null,
+        disabled: !tech || bal2 <= 0,
+        title:
+          bal2 <= 0
+            ? 'Δεν υπάρχει υπόλοιπο λοιπών για εξόφληση'
+            : 'Εξοφληση λοιπων (Λοιπα Πιστ.)',
+      },
+    ]
+    if (showTim) {
+      items.push({
+        label: 'ΕΞΟΦΛΗΣΗ(ΤΙΜ)',
+        typeId: 93,
+        side: 'CREDIT',
+        postToInvoice: true,
+        amount: balInv > 0 ? balInv : null,
+        disabled: !tech || balInv <= 0,
+        title:
+          balInv <= 0
+            ? 'Δεν υπάρχει υπόλοιπο τιμολογίου για εξόφληση'
+            : 'Εξοφληση τιμολογιου (Τιμολογιο Πιστ.)',
+      })
+    }
+    return items
+  }, [tech, selectedLedgerRowKey, ledgerBalances])
 
   const filteredTechList = useMemo(() => {
     const list = Array.isArray(techList) ? techList : []
@@ -1023,6 +1074,27 @@ export default function TechAnalysisModal({
     }
   }
 
+  const handleDeletePayment = async (row) => {
+    if (!row?.id) return
+    if (!window.confirm('Είστε σίγουροι ότι θέλετε να διαγράψετε αυτή την πληρωμή;')) {
+      return
+    }
+    try {
+      const { error } = await diasClient.from('payment_entries').delete().eq('id', row.id)
+      if (error) throw error
+      await loadPayments()
+      setLedgerTick((n) => n + 1)
+      toast.success('Η πληρωμή διαγράφηκε.')
+    } catch (err) {
+      const msg =
+        formatSupabaseError(err, { table: 'payment_entries', clientLabel: 'DIAS ERP' }) ||
+        err?.message ||
+        String(err)
+      setPaymentsError(msg)
+      toast.error(msg)
+    }
+  }
+
   const patchPayment = (field, value) => {
     setPaymentForm((prev) => ({ ...prev, [field]: value }))
   }
@@ -1033,7 +1105,10 @@ export default function TechAnalysisModal({
     setPaymentsSaving(true)
     setPaymentsError(null)
     try {
-      const payload = paymentToDb(paymentForm, tech)
+      const payload = paymentToDb(paymentForm, tech, {
+        month: selectedMonth,
+        year: analysisYear,
+      })
       const { error } = await diasClient.from('payment_entries').insert(payload)
       if (error) throw error
       setPaymentForm(emptyPaymentForm())
@@ -1345,7 +1420,7 @@ export default function TechAnalysisModal({
                       />
                       <MatrixRow
                         label="Υ (1)"
-                        hint="Εξόφληση 1"
+                        hint="Εξόφληση Μισθού"
                         selectedMonth={selectedMonth}
                         onSelectMonth={setSelectedMonth}
                         values={salaryMatrix.months.map((m) => formatEuroPlain(m.y1))}
@@ -1353,7 +1428,7 @@ export default function TechAnalysisModal({
                       />
                       <MatrixRow
                         label="Υ (2)"
-                        hint="Εξόφληση 2"
+                        hint="Εξόφληση Λοιπών"
                         selectedMonth={selectedMonth}
                         onSelectMonth={setSelectedMonth}
                         values={salaryMatrix.months.map((m) => formatEuroPlain(m.y2))}
@@ -1427,27 +1502,26 @@ export default function TechAnalysisModal({
                   typeLookup={typeLookup}
                   monthContext={ledgerMonthContext}
                   hasInvoice={ledgerMonthContext.hasInvoice}
+                  footerBalances={{
+                    balance: formatEuro(ledgerBalances.balance),
+                    balance1: formatEuro(ledgerBalances.balance1),
+                    balance2: formatEuro(ledgerBalances.balance2),
+                    extra: formatEuro(ledgerBalances.extra || 0),
+                    invoice: formatEuro(ledgerBalances.invoice || 0),
+                  }}
                   onSelectRow={selectLedgerRow}
                   onOpenCreateForType={openMovementCreate}
                   onOpenEditRow={openMovementViewSelected}
                 />
-
-                <div className="flex flex-wrap gap-3 border-t border-white/10 bg-slate-950/50 px-3 py-2.5">
-                  <BalanceChip label="Υπόλοιπο" value={formatEuro(ledgerBalances.balance)} />
-                  <BalanceChip label="Υπόλοιπο (1)" value={formatEuro(ledgerBalances.balance1)} />
-                  <BalanceChip label="Υπόλοιπο (2)" value={formatEuro(ledgerBalances.balance2)} />
-                  <BalanceChip label="Έξτρα" value={formatEuro(ledgerBalances.extra || 0)} />
-                  <BalanceChip label="Τιμολόγιο" value={formatEuro(ledgerBalances.invoice || 0)} />
-                </div>
               </div>
 
-              <aside className="flex shrink-0 flex-row gap-2 overflow-x-auto lg:w-36 lg:flex-col lg:overflow-visible">
+              <aside className="flex shrink-0 flex-row gap-2 overflow-x-auto lg:w-36 lg:flex-col lg:self-stretch lg:overflow-visible">
                 <button
                   type="button"
                   onClick={handleMonthImport}
                   disabled={monthImportSaving || ledgerLoading || !tech}
-                  title="Εισαγωγή στο ledger μόνο για Αποδοχές με τικ (ποσό > 0)"
-                  className="shrink-0 rounded-xl border border-cyan-500/40 bg-cyan-500/15 px-3 py-2.5 text-left text-xs font-semibold text-cyan-100 transition hover:bg-cyan-500/25 disabled:cursor-not-allowed disabled:opacity-40 lg:w-full"
+                  title="Εισαγωγη στο ledger μονο για Αποδοχες με τικ (ποσο > 0)"
+                  className="shrink-0 rounded-xl border border-cyan-500/40 bg-cyan-500/15 px-3 py-2.5 text-left text-xs font-semibold uppercase tracking-wide text-cyan-100 transition hover:bg-cyan-500/25 disabled:cursor-not-allowed disabled:opacity-40 lg:w-full"
                 >
                   {monthImportSaving ? 'ΔΗΜΙΟΥΡΓΙΑ...' : 'ΔΗΜΙΟΥΡΓΙΑ'}
                 </button>
@@ -1460,38 +1534,73 @@ export default function TechAnalysisModal({
                   type="button"
                   onClick={() => openMovementCreate()}
                   disabled={!tech}
-                  title="Νέα κίνηση (χωρίς προεπιλεγμένο τύπο)"
-                  className="shrink-0 rounded-xl border border-white/10 bg-slate-900/80 px-3 py-2.5 text-left text-xs font-semibold text-slate-200 transition hover:border-cyan-500/40 hover:bg-cyan-500/10 hover:text-cyan-100 disabled:cursor-not-allowed disabled:opacity-40 lg:w-full"
+                  title="Νεα κινηση (χωρις προεπιλεγμενο τυπο)"
+                  className="shrink-0 rounded-xl border border-white/10 bg-slate-900/80 px-3 py-2.5 text-left text-xs font-semibold uppercase tracking-wide text-slate-200 transition hover:border-cyan-500/40 hover:bg-cyan-500/10 hover:text-cyan-100 disabled:cursor-not-allowed disabled:opacity-40 lg:w-full"
                 >
                   ΕΙΣΑΓΩΓΗ
                 </button>
-                {[
-                  { label: 'Διαγραφή', action: handleDeleteLedgerEntry, disabled: !selectedLedgerRowKey },
-                  ...quickActionPresets,
-                ].map((item) => (
+                {ledgerActionButtons.map((item) => (
                   <button
                     key={item.label}
                     type="button"
                     disabled={item.disabled}
+                    title={item.title}
                     onClick={() => {
                       if (item.tab === 'payments') setActiveTab('payments')
-                      else if (item.action) item.action()
-                      else if (item.typeId) openMovementCreate({ typeId: item.typeId, side: item.side })
-                      else {
+                      else if (typeof item.action === 'function') item.action()
+                      else if (item.typeId) {
+                        if (item.amount == null && (item.typeId === 91 || item.typeId === 92 || item.typeId === 93)) {
+                          toast.error(item.title || 'Δεν υπάρχει υπόλοιπο για εξόφληση')
+                          return
+                        }
+                        openMovementCreate({
+                          typeId: item.typeId,
+                          side: item.side,
+                          postToInvoice: item.postToInvoice === true,
+                          amount: item.amount ?? undefined,
+                        })
+                      } else {
                         const tt = findTypeByDescription(item.label)
                         openMovementCreate({
                           typeId: tt?.id ?? item.typeId,
                           side: item.side || 'DEBIT',
+                          postToInvoice: item.postToInvoice === true,
                         })
                       }
                     }}
-                    className="shrink-0 rounded-xl border border-white/10 bg-slate-900/80 px-3 py-2.5 text-left text-xs font-semibold text-slate-200 transition hover:border-cyan-500/40 hover:bg-cyan-500/10 hover:text-cyan-100 disabled:cursor-not-allowed disabled:opacity-40 lg:w-full"
+                    className="shrink-0 rounded-xl border border-white/10 bg-slate-900/80 px-3 py-2.5 text-left text-xs font-semibold uppercase tracking-wide text-slate-200 transition hover:border-cyan-500/40 hover:bg-cyan-500/10 hover:text-cyan-100 disabled:cursor-not-allowed disabled:opacity-40 lg:w-full"
                   >
                     {item.label}
                   </button>
                 ))}
+                <button
+                  type="button"
+                  onClick={() => setLoanOpen(true)}
+                  disabled={!tech}
+                  title="Δανειο / προκαταβολη"
+                  className="mt-auto flex shrink-0 items-center gap-2 rounded-xl border border-amber-500/35 bg-amber-500/10 px-3 py-2.5 text-left text-xs font-semibold uppercase tracking-wide text-amber-100 transition hover:border-amber-400/50 hover:bg-amber-500/20 disabled:cursor-not-allowed disabled:opacity-40 lg:w-full"
+                >
+                  <svg
+                    viewBox="0 0 20 20"
+                    fill="currentColor"
+                    className="h-4 w-4 shrink-0"
+                    aria-hidden
+                  >
+                    <path d="M1 4.25A2.25 2.25 0 013.25 2h13.5A2.25 2.25 0 0119 4.25v2.5A2.25 2.25 0 0116.75 9H3.25A2.25 2.25 0 011 6.75v-2.5zM1 11.75A2.25 2.25 0 013.25 9.5h13.5A2.25 2.25 0 0119 11.75v2.5A2.25 2.25 0 0116.75 16.5H3.25A2.25 2.25 0 011 14.25v-2.5z" />
+                    <path d="M4.5 5.5a.75.75 0 01.75-.75h.01a.75.75 0 010 1.5H5.25A.75.75 0 014.5 5.5zM4.5 13a.75.75 0 01.75-.75h.01a.75.75 0 010 1.5H5.25A.75.75 0 014.5 13z" />
+                  </svg>
+                  ΔΑΝΕΙΟ
+                </button>
               </aside>
             </div>
+
+            <LoanModal
+              open={loanOpen}
+              tech={tech}
+              selectedMonth={selectedMonth}
+              analysisYear={analysisYear}
+              onClose={() => setLoanOpen(false)}
+            />
 
             <MovementModal
               key={
@@ -1506,6 +1615,9 @@ export default function TechAnalysisModal({
               presetSide={movementPresetSide}
               presetDescription={movementPresetDescription}
               presetAmount={movementPresetAmount}
+              presetPostToInvoice={movementPresetPostToInvoice}
+              presetMonth={selectedMonth}
+              presetYear={analysisYear}
               hasInvoice={ledgerMonthContext.hasInvoice}
               onClose={closeMovement}
               onSaved={handleMovementSaved}
@@ -2090,52 +2202,103 @@ export default function TechAnalysisModal({
                 <div className="px-4 py-12 text-center text-slate-400">Φόρτωση πληρωμών...</div>
               ) : (
                 <div className="overflow-x-auto">
-                  <table className="w-full min-w-[640px] border-collapse text-left text-sm">
+                  <table className="w-full min-w-[960px] border-collapse text-left text-sm">
                     <thead>
                       <tr className="border-b border-white/10 bg-slate-950/60 text-[10px] uppercase tracking-wider text-slate-400">
-                        <th className="px-4 py-2.5 font-semibold">Ημερομηνία</th>
-                        <th className="px-3 py-2.5 font-semibold">Τύπος</th>
-                        <th className="px-3 py-2.5 text-right font-semibold">Ποσό</th>
-                        <th className="px-3 py-2.5 font-semibold">Αιτιολογία</th>
-                        <th className="px-3 py-2.5 font-semibold">Καταχώρηση</th>
+                        <th className="whitespace-nowrap px-3 py-2.5 font-semibold">Ημερομηνία</th>
+                        <th className="whitespace-nowrap px-3 py-2.5 font-semibold">Τύπος</th>
+                        <th className="whitespace-nowrap px-2 py-2.5 font-semibold">Μήνας</th>
+                        <th className="whitespace-nowrap px-2 py-2.5 font-semibold">Έτος</th>
+                        <th className="min-w-[140px] px-3 py-2.5 font-semibold">Περιγραφή</th>
+                        <th className="whitespace-nowrap px-2 py-2.5 text-right font-semibold">
+                          Μισθός Πιστ.
+                        </th>
+                        <th className="whitespace-nowrap px-2 py-2.5 text-right font-semibold">
+                          Λοιπά Πιστ.
+                        </th>
+                        <th className="whitespace-nowrap px-2 py-2.5 text-right font-semibold">
+                          Τιμολόγιο Πιστ.
+                        </th>
+                        <th className="whitespace-nowrap px-3 py-2.5 text-center font-semibold">
+                          Ενέργειες
+                        </th>
                       </tr>
                     </thead>
                     <tbody>
                       {payments.length === 0 ? (
                         <tr>
-                          <td colSpan={5} className="px-4 py-10 text-center text-sm text-slate-500">
+                          <td colSpan={9} className="px-4 py-10 text-center text-sm text-slate-500">
                             Δεν υπάρχουν πληρωμές ακόμα.
                           </td>
                         </tr>
                       ) : (
-                        payments.map((row) => (
-                          <tr
-                            key={row.id}
-                            className="border-b border-white/5 hover:bg-slate-800/40"
-                          >
-                            <td className="px-4 py-2.5 text-slate-200">
-                              {row.payment_date
-                                ? new Date(row.payment_date).toLocaleDateString('el-GR')
-                                : '—'}
-                            </td>
-                            <td className="px-3 py-2.5">
-                              <span className="rounded-lg border border-white/10 bg-white/5 px-2 py-0.5 text-xs font-semibold text-slate-200">
-                                {paymentTypeLabel(row.payment_type || row.entry_type)}
-                              </span>
-                            </td>
-                            <td className="px-3 py-2.5 text-right font-mono font-semibold text-cyan-100">
-                              {formatPaymentAmount(row.amount)}
-                            </td>
-                            <td className="max-w-[280px] truncate px-3 py-2.5 text-slate-400">
-                              {row.notes || row.description || '—'}
-                            </td>
-                            <td className="px-3 py-2.5 text-xs text-slate-500">
-                              {row.created_at
-                                ? new Date(row.created_at).toLocaleString('el-GR')
-                                : '—'}
-                            </td>
-                          </tr>
-                        ))
+                        payments.map((row) => {
+                          const monthNum = Number(row.month)
+                          const monthLabel =
+                            monthNum >= 1 && monthNum <= 12
+                              ? MONTH_SHORT[monthNum - 1]
+                              : '—'
+                          return (
+                            <tr
+                              key={row.id}
+                              className="border-b border-white/5 hover:bg-slate-800/40"
+                            >
+                              <td className="whitespace-nowrap px-3 py-2.5 text-slate-200">
+                                {row.payment_date
+                                  ? new Date(row.payment_date).toLocaleDateString('el-GR')
+                                  : '—'}
+                              </td>
+                              <td className="px-3 py-2.5">
+                                <span className="rounded-lg border border-white/10 bg-white/5 px-2 py-0.5 text-xs font-semibold text-slate-200">
+                                  {paymentTypeLabel(row.payment_type || row.entry_type)}
+                                </span>
+                              </td>
+                              <td className="whitespace-nowrap px-2 py-2.5 text-slate-300">
+                                {monthLabel}
+                              </td>
+                              <td className="whitespace-nowrap px-2 py-2.5 tabular-nums text-slate-300">
+                                {row.year != null && row.year !== '' ? row.year : '—'}
+                              </td>
+                              <td
+                                className="max-w-[220px] truncate px-3 py-2.5 text-slate-400"
+                                title={row.notes || row.description || ''}
+                              >
+                                {row.notes || row.description || '—'}
+                              </td>
+                              <td className="whitespace-nowrap px-2 py-2.5 text-right font-mono text-sm text-cyan-100/90">
+                                {formatPaymentCredit(row.salary_credit)}
+                              </td>
+                              <td className="whitespace-nowrap px-2 py-2.5 text-right font-mono text-sm text-cyan-100/90">
+                                {formatPaymentCredit(row.other_credit)}
+                              </td>
+                              <td className="whitespace-nowrap px-2 py-2.5 text-right font-mono text-sm text-cyan-100/90">
+                                {formatPaymentCredit(row.invoice_credit)}
+                              </td>
+                              <td className="px-3 py-2.5 text-center">
+                                <button
+                                  type="button"
+                                  onClick={() => handleDeletePayment(row)}
+                                  title="Διαγραφή πληρωμής"
+                                  className="inline-flex items-center justify-center rounded-lg border border-rose-500/30 bg-rose-500/10 p-1.5 text-rose-200 transition hover:border-rose-400/50 hover:bg-rose-500/20"
+                                >
+                                  <svg
+                                    viewBox="0 0 20 20"
+                                    fill="currentColor"
+                                    className="h-4 w-4"
+                                    aria-hidden
+                                  >
+                                    <path
+                                      fillRule="evenodd"
+                                      d="M8.75 1A2.75 2.75 0 006 3.75v.443c-.795.077-1.584.176-2.365.298a.75.75 0 10.23 1.482l.149-.022.841 10.518A2.75 2.75 0 007.596 19h4.807a2.75 2.75 0 002.742-2.53l.841-10.52.149.023a.75.75 0 00.23-1.482A41.03 41.03 0 0014 4.193v-.443A2.75 2.75 0 0011.25 1h-2.5zM10 4c.784 0 1.532.022 2.235.064V3.75c0-.69-.56-1.25-1.25-1.25h-2.5c-.69 0-1.25.56-1.25 1.25v.314A41.65 41.65 0 0110 4zM8.58 7.72a.75.75 0 00-1.5.06l.3 7.5a.75.75 0 101.5-.06l-.3-7.5zm4.34.06a.75.75 0 10-1.5-.06l-.3 7.5a.75.75 0 101.5.06l.3-7.5z"
+                                      clipRule="evenodd"
+                                    />
+                                  </svg>
+                                  <span className="sr-only">Διαγραφή</span>
+                                </button>
+                              </td>
+                            </tr>
+                          )
+                        })
                       )}
                     </tbody>
                   </table>
@@ -2449,15 +2612,6 @@ function SummaryStat({ label, value }) {
     <div>
       <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">{label}</p>
       <p className="text-lg font-bold text-white">{value}</p>
-    </div>
-  )
-}
-
-function BalanceChip({ label, value }) {
-  return (
-    <div className="rounded-lg border border-white/5 bg-slate-900/60 px-2.5 py-1.5">
-      <p className="text-[9px] font-semibold uppercase tracking-wider text-slate-500">{label}</p>
-      <p className="font-mono text-xs font-semibold text-slate-200">{value}</p>
     </div>
   )
 }
