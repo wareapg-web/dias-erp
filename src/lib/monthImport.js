@@ -228,6 +228,8 @@ export async function importMonthFromAgreements({
     return {
       tech_id: String(tech.id),
       reference_date: entryDate,
+      month: Number(month),
+      year: Number(year),
       type_code: payrollTypeCodeFromDescription(line.type.description),
       description: null,
       notes: 'Αυτόματη εισαγωγή μήνα από Αποδοχές/Συμφωνίες',

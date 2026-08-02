@@ -13,6 +13,7 @@ import {
   ledgerColumnFor,
   ledgerColumnLabel,
   ledgerGroupLabel,
+  paymentCreditColumns,
   paymentTypeCodeFromDescription,
   payrollTypeCodeFromDescription,
   resolveTransactionTypeFromLedgerRow,
@@ -36,6 +37,9 @@ export default function MovementModal({
   presetSide = null,
   presetDescription = null,
   presetAmount = null,
+  presetPostToInvoice = null,
+  presetMonth = null,
+  presetYear = null,
   hasInvoice = false,
   onClose,
   onSaved,
@@ -122,9 +126,12 @@ export default function MovementModal({
             (bucket ? sideFromLedgerBucket(bucket) : null) ||
             resolveLedgerSide(chosen, Number(base.amount) || 0, {})
           const salary = typeIsSalary(chosen)
-          // Τιμολόγιο μόνο αν η αποθηκευμένη γραμμή είναι ήδη σε invoice_amount
-          const postToInvoice =
-            bucket === 'invoice_amount' || base.post_to_invoice === true
+          // Τιμολόγιο: αποθηκευμένη γραμμή σε invoice στήλη, ή preset από ΕΞΟΦΛΗΣΗ(ΤΙΜ)
+          const postToInvoice = selectedRowData
+            ? bucket === 'invoice_amount' ||
+              bucket === 'invoice_credit' ||
+              base.post_to_invoice === true
+            : presetPostToInvoice === true || base.post_to_invoice === true
           setForm({
             ...base,
             type: chosen.description,
@@ -165,7 +172,7 @@ export default function MovementModal({
     return () => {
       cancelled = true
     }
-  }, [open, selectedRowData, presetTypeId, presetSide, presetDescription, presetAmount, hasInvoice])
+  }, [open, selectedRowData, presetTypeId, presetSide, presetDescription, presetAmount, presetPostToInvoice, hasInvoice])
 
   const selectedType = useMemo(
     () => types.find((t) => Number(t.id) === Number(selectedTypeId)) || null,
@@ -174,7 +181,11 @@ export default function MovementModal({
 
   const targetColumn = useMemo(() => {
     if (!selectedType) return null
-    if (form.post_to_invoice) return 'invoice_amount'
+    if (form.post_to_invoice) {
+      return String(form.side || '').toUpperCase() === 'CREDIT'
+        ? 'invoice_credit'
+        : 'invoice_amount'
+    }
     return resolveLedgerColumn(selectedType, Number(form.amount) || 0, {
       forceInvoice: false,
       side: form.side,
@@ -224,7 +235,8 @@ export default function MovementModal({
     const side = form.side || 'DEBIT'
     const postAsPayment = shouldPostAsPayment(side)
     const postToInvoice = Boolean(hasInvoice && form.post_to_invoice)
-    const invoiceAmount = postToInvoice ? amount : 0
+    // Χρέωση τιμολογίου → payroll.invoice_amount · Πίστωση → φυσικές credit στήλες
+    const invoiceAmount = postToInvoice && !postAsPayment ? amount : 0
     const rawDescription = form.description?.trim() || ''
     const description =
       rawDescription && !isBareEuroText(rawDescription) ? rawDescription : null
@@ -238,6 +250,18 @@ export default function MovementModal({
       return
     }
 
+    // Λογιστική περίοδος UI (ανεξάρτητη από ημερομηνία συναλλαγής)
+    const periodMonth =
+      Number(presetMonth) ||
+      Number(selectedRowData?.month) ||
+      Number(String(entryDateIso).slice(5, 7)) ||
+      null
+    const periodYear =
+      Number(presetYear) ||
+      Number(selectedRowData?.year) ||
+      Number(String(entryDateIso).slice(0, 4)) ||
+      null
+
     setSaving(true)
     try {
       if (isEdit) {
@@ -246,18 +270,28 @@ export default function MovementModal({
             selectedType.description,
             selectedType.ledger_group
           )
+          const credits = paymentCreditColumns({
+            amount,
+            paymentType,
+            postToInvoice,
+            typeId: selectedType.id,
+            ledgerGroup: selectedType.ledger_group,
+          })
           const { error } = await diasClient
             .from('payment_entries')
             .update({
               payment_date: entryDateIso,
               payment_type: paymentType,
               amount,
-              invoice_amount: invoiceAmount,
+              ...credits,
               notes,
               entry_date: entryDateIso,
               entry_type: paymentType,
               description,
               tech_name: tech.displayName || tech.name || null,
+              month: periodMonth,
+              year: periodYear,
+              type_id: Number(selectedType.id) || null,
             })
             .eq('id', selectedRowData.id)
           if (error) throw error
@@ -272,6 +306,8 @@ export default function MovementModal({
               amount,
               invoice_amount: invoiceAmount,
               is_salary_type: isSalary,
+              month: periodMonth,
+              year: periodYear,
             })
             .eq('id', selectedRowData.id)
           if (error) throw error
@@ -281,17 +317,27 @@ export default function MovementModal({
           selectedType.description,
           selectedType.ledger_group
         )
+        const credits = paymentCreditColumns({
+          amount,
+          paymentType,
+          postToInvoice,
+          typeId: selectedType.id,
+          ledgerGroup: selectedType.ledger_group,
+        })
         const { error } = await diasClient.from('payment_entries').insert({
           tech_id: String(tech.id),
           tech_name: tech.displayName || tech.name || null,
           payment_date: entryDateIso,
           payment_type: paymentType,
           amount,
-          invoice_amount: invoiceAmount,
+          ...credits,
           notes,
           entry_date: entryDateIso,
           entry_type: paymentType,
           description,
+          month: periodMonth,
+          year: periodYear,
+          type_id: Number(selectedType.id) || null,
         })
         if (error) throw error
       } else {
@@ -304,6 +350,8 @@ export default function MovementModal({
           amount,
           invoice_amount: invoiceAmount,
           is_salary_type: isSalary,
+          month: periodMonth,
+          year: periodYear,
         })
         if (error) throw error
       }

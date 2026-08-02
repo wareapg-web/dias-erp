@@ -9,18 +9,28 @@ import {
 import { ledgerRowClassName } from '../lib/ledgerMapping'
 import { resolveTransactionTypeFromLedgerRow } from '../lib/transactionTypes'
 
-const COLUMN_WIDTHS_STORAGE_KEY = 'dias_ledger_column_widths_v4'
+const COLUMN_WIDTHS_STORAGE_KEY = 'dias_ledger_column_widths_v5'
 
-const INVOICE_COLUMN = {
-  id: 'invoice_amount',
-  label: 'Τιμολόγιο Χρ.-Πιστ.',
-  defaultWidth: 110,
-  minWidth: 56,
-  align: 'right',
-  group: 'invoice',
-}
+const INVOICE_COLUMNS = [
+  {
+    id: 'invoice_amount',
+    label: 'Τιμολόγιο Χρ.',
+    defaultWidth: 96,
+    minWidth: 52,
+    align: 'right',
+    group: 'invoice',
+  },
+  {
+    id: 'invoice_credit',
+    label: 'Τιμολόγιο Πιστ.',
+    defaultWidth: 96,
+    minWidth: 52,
+    align: 'right',
+    group: 'invoice',
+  },
+]
 
-/** Base columns; invoice inserted after other_credit when hasInvoice. */
+/** Base columns; invoice debit+credit inserted after other_credit when hasInvoice. */
 const BASE_COLUMN_DEFS = [
   { id: 'entry_date', label: 'Ημερομηνία', defaultWidth: 92, minWidth: 64 },
   { id: 'type', label: 'Τύπος', defaultWidth: 120, minWidth: 56 },
@@ -72,7 +82,7 @@ function getColumnDefs(hasInvoice) {
   const defs = []
   for (const col of BASE_COLUMN_DEFS) {
     defs.push(col)
-    if (col.id === 'other_credit') defs.push(INVOICE_COLUMN)
+    if (col.id === 'other_credit') defs.push(...INVOICE_COLUMNS)
   }
   return defs
 }
@@ -122,6 +132,7 @@ function activeBucket(row) {
     ['other_debit', Number(row.other_debit) || 0],
     ['other_credit', Number(row.other_credit) || 0],
     ['invoice_amount', Number(row.invoice_amount) || 0],
+    ['invoice_credit', Number(row.invoice_credit) || 0],
   ]
   const hit = cols.find(([, v]) => v !== 0)
   return hit ? hit[0] : null
@@ -152,6 +163,7 @@ export default function LedgerAnalysisGrid({
   typeLookup,
   monthContext = null,
   hasInvoice = false,
+  footerBalances = null,
   onSelectRow,
   onOpenCreateForType,
   onOpenEditRow,
@@ -261,7 +273,7 @@ export default function LedgerAnalysisGrid({
     ]
     if (colId.includes('salary')) parts.push('bg-cyan-500/[0.07]')
     if (colId.includes('other')) parts.push('bg-violet-500/[0.07]')
-    if (colId === 'invoice_amount') parts.push('bg-amber-500/[0.08] text-amber-100')
+    if (colId.includes('invoice')) parts.push('bg-amber-500/[0.08] text-amber-100')
     else if (colId.includes('credit')) parts.push('text-emerald-100')
     else parts.push('text-slate-200')
     if (active) parts.push('font-semibold ring-1 ring-inset ring-amber-400/50')
@@ -354,12 +366,20 @@ export default function LedgerAnalysisGrid({
           {formatLedgerAmount(row.other_credit)}
         </td>
         {showInvoice ? (
-          <td
-            style={cellStyle('invoice_amount')}
-            className={amountCellClass('invoice_amount', bucket, row)}
-          >
-            {formatLedgerAmount(row.invoice_amount)}
-          </td>
+          <>
+            <td
+              style={cellStyle('invoice_amount')}
+              className={amountCellClass('invoice_amount', bucket, row)}
+            >
+              {formatLedgerAmount(row.invoice_amount)}
+            </td>
+            <td
+              style={cellStyle('invoice_credit')}
+              className={amountCellClass('invoice_credit', bucket, row)}
+            >
+              {formatLedgerAmount(row.invoice_credit)}
+            </td>
+          </>
         ) : null}
         <td
           style={cellStyle('notes')}
@@ -445,7 +465,67 @@ export default function LedgerAnalysisGrid({
               )
               : visibleRows.map(renderRow)}
         </tbody>
+        {footerBalances ? (
+          <tfoot>
+            <tr className="border-t border-white/15 bg-slate-950/70">
+              {/* Ημερομηνία + Τύπος + Περιγραφή → γενικό Υπόλοιπο */}
+              <td colSpan={3} className="box-border border-r border-white/10 px-2 py-3 align-middle">
+                <div className="flex flex-wrap items-center gap-2">
+                  <BalanceChip label="Υπόλοιπο" value={footerBalances.balance} tone="cyan" />
+                </div>
+              </td>
+              {/* Μισθός Χρ. + Μισθός Πιστ. */}
+              <td colSpan={2} className="box-border border-r border-white/10 px-2 py-3 align-middle">
+                <div className="flex justify-center">
+                  <BalanceChip label="Υπόλοιπο (Μ)" value={footerBalances.balance1} />
+                </div>
+              </td>
+              {/* Λοιπά Χρ. + Λοιπά Πιστ. */}
+              <td colSpan={2} className="box-border border-r border-white/10 px-2 py-3 align-middle">
+                <div className="flex justify-center">
+                  <BalanceChip label="Υπόλοιπο (Λ)" value={footerBalances.balance2} />
+                </div>
+              </td>
+              {showInvoice ? (
+                <td
+                  colSpan={2}
+                  className="box-border border-r border-white/10 px-2 py-3 align-middle"
+                >
+                  <div className="flex justify-center">
+                    <BalanceChip
+                      label="Υπόλοιπο (ΤΙΜ)"
+                      value={footerBalances.invoice}
+                      tone="amber"
+                    />
+                  </div>
+                </td>
+              ) : null}
+              {/* Σημειώσεις + Εισαγωγή → Έξτρα */}
+              <td colSpan={2} className="box-border px-2 py-3 align-middle last:border-r-0">
+                <div className="flex justify-center">
+                  <BalanceChip label="Έξτρα" value={footerBalances.extra} />
+                </div>
+              </td>
+            </tr>
+          </tfoot>
+        ) : null}
       </table>
+    </div>
+  )
+}
+
+function BalanceChip({ label, value, tone = 'slate' }) {
+  const tones = {
+    slate: 'border-white/10 bg-slate-900/80 text-slate-100',
+    cyan: 'border-cyan-500/35 bg-cyan-500/10 text-cyan-50',
+    amber: 'border-amber-500/40 bg-amber-500/10 text-amber-50',
+  }
+  return (
+    <div
+      className={`min-w-[7.5rem] rounded-xl border px-3 py-2 shadow-sm shadow-black/20 ${tones[tone] || tones.slate}`}
+    >
+      <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">{label}</p>
+      <p className="mt-0.5 font-mono text-sm font-bold tabular-nums tracking-tight">{value}</p>
     </div>
   )
 }
