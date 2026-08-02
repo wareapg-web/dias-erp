@@ -223,9 +223,18 @@ export function personnelAsTech(person, adminTechs = []) {
   }
 }
 
-/** Master rule: έκδοση τιμολογίου από personnel.payment_method (όχι tech_earnings.issues_invoice). */
+/**
+ * Έξτρα παροχές → στήλη Τιμολόγιο όταν payment_method είναι invoice ή mixed.
+ * (Παλιό E_NEED_TIMO / υβριδικός: μισθός στα Λοιπά/Μισθό, extras στο τιμολόγιο.)
+ */
+export function routesExtrasToInvoice(personOrTech) {
+  const method = String(personOrTech?.payment_method || '')
+  return method === 'invoice' || method === 'mixed'
+}
+
+/** Εμφάνιση στήλης τιμολογίου / «κόβει παραστατικό» — ίδιο κριτήριο με extras routing. */
 export function personnelIssuesInvoice(personOrTech) {
-  return String(personOrTech?.payment_method || '') === 'invoice'
+  return routesExtrasToInvoice(personOrTech)
 }
 
 export function buildFullName(lastName, firstName) {

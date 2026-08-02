@@ -107,6 +107,17 @@ export default function DarkSelect({
   const pick = (opt) => {
     onChange?.(opt.value)
     setIsOpen(false)
+    // Απορρόφηση του επόμενου click: αλλιώς «περνάει» στο element κάτω από το portal
+    // (π.χ. στήλη μήνα στη μήτρα) και αφήνει φάντασμα επιλογής.
+    const swallowClick = (e) => {
+      e.preventDefault()
+      e.stopPropagation()
+      document.removeEventListener('click', swallowClick, true)
+    }
+    document.addEventListener('click', swallowClick, true)
+    window.setTimeout(() => {
+      document.removeEventListener('click', swallowClick, true)
+    }, 100)
   }
 
   const menu =

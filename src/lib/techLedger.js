@@ -294,15 +294,23 @@ export function aggregateTicketRestaurantByMonth(ledgerRows = [], year) {
 }
 
 /**
- * Υπόλοιπα από γραμμές ledger μήνα.
- * Ticket Restaurant δεν συμμετέχει στο Υπόλοιπο / Υπόλοιπο (1) / Υπόλοιπο (2).
+ * Υπόλοιπα από γραμμές ledger μήνα (όπως εμφανίζονται στο grid).
+ * Υπόλοιπο (1) = Μισθός Χρ. − Μισθός Πιστ.
+ * Υπόλοιπο (2) = Λοιπά Χρ. − Λοιπά Πιστ.
+ * Τιμολόγιο = χρεώσεις invoice (PAYROLL) − πιστώσεις invoice (PAYMENT).
+ * Υπόλοιπο = (1) + (2) + Τιμολόγιο + Έξτρα.
+ * Ticket Restaurant δεν συμμετέχει.
+ *
+ * @param {object[]} rows
+ * @param {{ extra?: number }} [options]
  */
-export function computeLedgerBalances(rows = []) {
+export function computeLedgerBalances(rows = [], options = {}) {
   let salaryDebit = 0
   let salaryCredit = 0
   let otherDebit = 0
   let otherCredit = 0
-  let invoiceAmount = 0
+  let invoiceDebit = 0
+  let invoiceCredit = 0
   let y1 = 0
   let y2 = 0
 
@@ -313,7 +321,14 @@ export function computeLedgerBalances(rows = []) {
     salaryCredit += Number(r.salary_credit) || 0
     otherDebit += Number(r.other_debit) || 0
     otherCredit += Number(r.other_credit) || 0
-    invoiceAmount += Number(r.invoice_amount) || 0
+
+    const inv = Math.abs(Number(r.invoice_amount) || 0)
+    if (inv > 0) {
+      // View: payroll invoice = χρέωση, payment invoice = πίστωση/εξόφληση
+      if (String(r.source || '').toUpperCase() === 'PAYMENT') invoiceCredit += inv
+      else invoiceDebit += inv
+    }
+
     if (r.type === 'SETTLEMENT_1') {
       y1 += Number(r.salary_credit) || Number(r.invoice_amount) || 0
     }
@@ -321,11 +336,18 @@ export function computeLedgerBalances(rows = []) {
   }
 
   const round2 = (n) => Math.round(n * 100) / 100
+  const extraRaw = Number(options.extra)
+  const extra = Number.isFinite(extraRaw) ? extraRaw : 0
+  const balance1 = round2(salaryDebit - salaryCredit)
+  const balance2 = round2(otherDebit - otherCredit)
+  const invoice = round2(invoiceDebit - invoiceCredit)
+
   return {
-    balance: round2(salaryDebit + otherDebit + invoiceAmount - salaryCredit - otherCredit),
-    balance1: round2(salaryDebit - salaryCredit),
-    balance2: round2(otherDebit - otherCredit),
-    invoice: round2(invoiceAmount),
+    balance1,
+    balance2,
+    invoice,
+    extra: round2(extra),
+    balance: round2(balance1 + balance2 + invoice + extra),
     y1: round2(y1),
     y2: round2(y2),
   }

@@ -164,6 +164,19 @@ function dailyStatusesOnDate(statusByKey, tech, dateIso) {
   return rows.sort((a, b) => a.status.localeCompare(b.status, 'el'))
 }
 
+/** Chronological order for OT accumulation (missing/invalid time → end of day). */
+function shiftStartMinutes(shift) {
+  const raw = shift.timeStart || shift.tStart || ''
+  if (!raw || raw === '-') return 24 * 60
+  const parsed = parseTime(raw)
+  if (!parsed) return 24 * 60
+  return parsed.h * 60 + parsed.m
+}
+
+function compareByTimeStart(a, b) {
+  return shiftStartMinutes(a) - shiftStartMinutes(b)
+}
+
 export function isSchedulableTech(role) {
   const r = String(role || '').toUpperCase()
   return (
@@ -400,8 +413,8 @@ export function buildMonthlyPayroll(tech, year, month, assignments, jobs, dailyR
 
   for (let day = 1; day <= daysInMonth; day++) {
     const dIso = `${targetPrefix}-${String(day).padStart(2, '0')}`
-    const jobsToday = assignByDate.get(dIso) ?? []
-    const dailyToday = dailyStatusesOnDate(statusByDate, tech.name, dIso)
+    const jobsToday = (assignByDate.get(dIso) ?? []).slice().sort(compareByTimeStart)
+    const dailyToday = dailyStatusesOnDate(statusByDate, tech.name, dIso).sort(compareByTimeStart)
 
     const dt = new Date(dIso + 'T12:00:00')
     const isWeekend = dt.getDay() === 0 || dt.getDay() === 6
@@ -427,7 +440,7 @@ export function buildMonthlyPayroll(tech, year, month, assignments, jobs, dailyR
       else if (stUp.includes('ΑΣΘΕΝ') || stUp.includes('ΑΝΑΡΡ')) sumAsth += 1
     }
 
-    const todaySpillovers = spillovers.get(dIso) ?? []
+    const todaySpillovers = (spillovers.get(dIso) ?? []).slice().sort(compareByTimeStart)
     spillovers.delete(dIso)
     for (const spill of todaySpillovers) {
       dayStatusLabel = spill.status || dayStatusLabel
@@ -493,43 +506,58 @@ export function buildMonthlyPayroll(tech, year, month, assignments, jobs, dailyR
         return undefined
       }
 
-      for (const r of jobsToday) {
+      // Resolve effective times first, then sort — OT uses runningDailyHours in process order.
+      const resolvedJobs = jobsToday.map((r) => {
         const matched = takeMatchingDaily(r.jobName)
         const rowStatus = matched?.status ?? 'ΕΤΑΙΡΙΑ'
-        const timeStart = matched?.tStart || r.timeStart
-        const timeEnd = matched?.tEnd || r.timeEnd
-        const rowMetro = matched ? matched.metro : r.metro
-        const rowOvernight = matched ? matched.overnight : r.overnight
-        const rowReceiptUrl = matched?.receiptUrl ?? ''
+        return {
+          jobOrStatus: r.jobName,
+          status: rowStatus,
+          phase: r.phase,
+          timeStart: matched?.tStart || r.timeStart,
+          timeEnd: matched?.tEnd || r.timeEnd,
+          metro: matched ? matched.metro : r.metro,
+          overnight: matched ? matched.overnight : r.overnight,
+          receiptUrl: matched?.receiptUrl ?? '',
+          _matched: Boolean(matched),
+        }
+      })
+      resolvedJobs.sort(compareByTimeStart)
 
-        if (matched) dayStatusLabel = rowStatus
-
+      for (const shift of resolvedJobs) {
+        if (shift._matched) dayStatusLabel = shift.status
         state = processPendingShift(
           dIso,
           {
-            jobOrStatus: r.jobName,
-            status: rowStatus,
-            phase: r.phase,
-            timeStart,
-            timeEnd,
-            metro: rowMetro,
-            overnight: rowOvernight,
-            receiptUrl: rowReceiptUrl,
+            jobOrStatus: shift.jobOrStatus,
+            status: shift.status,
+            phase: shift.phase,
+            timeStart: shift.timeStart,
+            timeEnd: shift.timeEnd,
+            metro: shift.metro,
+            overnight: shift.overnight,
+            receiptUrl: shift.receiptUrl,
           },
           claimedSlots,
           state
         )
       }
 
-      for (const sData of dailyToday) {
-        const key = dailyStatusSlotKey(tech.name, dIso, sData.status)
-        if (usedDailyKeys.has(key)) continue
+      const extraDailies = dailyToday
+        .filter((sData) => {
+          const key = dailyStatusSlotKey(tech.name, dIso, sData.status)
+          if (usedDailyKeys.has(key)) return false
+          const status = sData.status || 'ΕΤΑΙΡΙΑ'
+          const ts = sData.tStart ?? ''
+          const te = sData.tEnd ?? ''
+          return Boolean(ts || te || status !== 'ΕΤΑΙΡΙΑ')
+        })
+        .sort(compareByTimeStart)
 
+      for (const sData of extraDailies) {
         const status = sData.status || 'ΕΤΑΙΡΙΑ'
         const ts = sData.tStart ?? ''
         const te = sData.tEnd ?? ''
-        const hasContent = Boolean(ts || te || status !== 'ΕΤΑΙΡΙΑ')
-        if (!hasContent) continue
 
         dayStatusLabel = status
         state = processPendingShift(
@@ -598,7 +626,8 @@ export function buildMonthlyPayroll(tech, year, month, assignments, jobs, dailyR
       workedToday: false,
     }
     const claimedSlots = new Set()
-    for (const spill of list) {
+    const sortedSpills = list.slice().sort(compareByTimeStart)
+    for (const spill of sortedSpills) {
       state = processPendingShift(dateIso, spill, claimedSlots, state)
     }
     if (state.workedToday) {
@@ -612,9 +641,7 @@ export function buildMonthlyPayroll(tech, year, month, assignments, jobs, dailyR
 
   rows.sort((a, b) => {
     if (a.dateIso !== b.dateIso) return a.dateIso.localeCompare(b.dateIso)
-    const timeA = a.timeStart || '24:00'
-    const timeB = b.timeStart || '24:00'
-    return timeA.localeCompare(timeB)
+    return compareByTimeStart(a, b)
   })
 
   return {
