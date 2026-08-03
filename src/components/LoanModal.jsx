@@ -12,7 +12,8 @@ const CATEGORY_OPTIONS = [
   { value: 'invoice', label: 'Τιμολόγιο' },
 ]
 
-const LOAN_TYPE_ID = 94
+const LOAN_INSTALLMENT_TYPE_ID = 94
+const LOAN_DISBURSEMENT_TYPE_ID = 95
 
 function emptyLoanForm(month, year) {
   return {
@@ -29,6 +30,18 @@ function emptyLoanForm(month, year) {
 
 function roundMoney(n) {
   return Math.round((Number(n) || 0) * 100) / 100
+}
+
+/** Τραπεζική λογική: ακέραιες δόσεις 1..N-1 · η τελευταία απορροφά τη διαφορά. */
+function computeBankInstallments(totalAmount, numberOfInstallments) {
+  const total = Number(totalAmount)
+  const n = Math.floor(Number(numberOfInstallments))
+  if (!(total > 0) || !(n >= 1)) {
+    return { baseInstallment: null, lastInstallment: null }
+  }
+  const baseInstallment = Math.ceil(total / n)
+  const lastInstallment = roundMoney(total - baseInstallment * (n - 1))
+  return { baseInstallment, lastInstallment }
 }
 
 function formatMoneyField(n) {
@@ -77,11 +90,12 @@ export default function LoanModal({
     const total = parseElNumber(totalRaw)
     const count = Number(String(countRaw).replace(',', '.'))
     if (total != null && total > 0 && Number.isFinite(count) && count > 0) {
+      const { baseInstallment } = computeBankInstallments(total, count)
       return {
         ...prev,
         total_amount: totalRaw,
         installment_count: countRaw,
-        installment_amount: formatMoneyField(roundMoney(total / count)),
+        installment_amount: formatMoneyField(baseInstallment),
       }
     }
     return { ...prev, total_amount: totalRaw, installment_count: countRaw }
@@ -101,9 +115,10 @@ export default function LoanModal({
       const total = parseElNumber(prev.total_amount)
       if (installment != null && installment > 0 && total != null && total > 0) {
         const count = Math.max(1, Math.round(total / installment))
+        const { baseInstallment } = computeBankInstallments(total, count)
         return {
           ...prev,
-          installment_amount: raw,
+          installment_amount: formatMoneyField(baseInstallment),
           installment_count: String(count),
         }
       }
@@ -117,6 +132,18 @@ export default function LoanModal({
     for (let y = base - 1; y <= base + 5; y += 1) years.push(y)
     return years
   })()
+
+  const previewTotal = parseElNumber(form.total_amount)
+  const previewCount = Math.floor(Number(String(form.installment_count).replace(',', '.')))
+  const { baseInstallment: previewBase, lastInstallment: previewLast } = computeBankInstallments(
+    previewTotal,
+    previewCount
+  )
+  const showLastInstallmentHint =
+    previewBase != null &&
+    previewLast != null &&
+    previewCount > 1 &&
+    Number(previewLast) !== Number(previewBase)
 
   const handleSave = async (e) => {
     e.preventDefault()
@@ -158,24 +185,52 @@ export default function LoanModal({
       return
     }
 
-    // Βασική δόση: 2 δεκαδικά προς τα κάτω · η τελευταία απορροφά τη διαφορά
-    const regularInstallment = Math.floor((totalAmount / numberOfInstallments) * 100) / 100
-    const lastInstallment = roundMoney(
-      totalAmount - regularInstallment * (numberOfInstallments - 1)
+    // Τραπεζική λογική: ακέραιες δόσεις 1..N-1 · η τελευταία απορροφά τη διαφορά
+    const { baseInstallment, lastInstallment } = computeBankInstallments(
+      totalAmount,
+      numberOfInstallments
     )
 
     const paymentType = paymentTypeForCategory(form.category)
-    const baseNotes = String(form.notes || '').trim()
+    const baseNotes = String(form.notes || '').trim() || 'Δάνειο'
     const techName = tech?.displayName || tech?.name || tech?.tech_name || null
+    const grantMonth = Number(String(grantDate).slice(5, 7))
+    const grantYear = Number(String(grantDate).slice(0, 4))
 
-    const installmentsData = []
+    const creditFor = (amount) => ({
+      salary_credit: form.category === 'salary' ? amount : 0,
+      other_credit: form.category === 'other' ? amount : 0,
+      invoice_credit: form.category === 'invoice' ? amount : 0,
+    })
+
+    const entriesData = [
+      {
+        tech_id: techId,
+        tech_name: techName,
+        payment_date: grantDate,
+        entry_date: grantDate,
+        entry_type: paymentType,
+        month: grantMonth,
+        year: grantYear,
+        type_id: LOAN_DISBURSEMENT_TYPE_ID,
+        payment_type: paymentType,
+        amount: totalAmount,
+        ...creditFor(totalAmount),
+        invoice_amount: 0,
+        salary_debit: 0,
+        other_debit: 0,
+        notes: `Εκταμίευση Δανείου: ${baseNotes}`,
+        description: null,
+      },
+    ]
+
     for (let i = 0; i < numberOfInstallments; i += 1) {
       const { month: calcMonth, year: calcYear } = periodAfterOffset(startMonth, startYear, i)
       const currentInstallmentAmount =
-        i === numberOfInstallments - 1 ? lastInstallment : regularInstallment
-      const notes = `${baseNotes || 'Δάνειο'} (Δόση ${i + 1}/${numberOfInstallments})`
+        i === numberOfInstallments - 1 ? lastInstallment : baseInstallment
+      const notes = `${baseNotes} (Δόση ${i + 1}/${numberOfInstallments})`
 
-      installmentsData.push({
+      entriesData.push({
         tech_id: techId,
         tech_name: techName,
         payment_date: grantDate,
@@ -183,12 +238,10 @@ export default function LoanModal({
         entry_type: paymentType,
         month: calcMonth,
         year: calcYear,
-        type_id: LOAN_TYPE_ID,
+        type_id: LOAN_INSTALLMENT_TYPE_ID,
         payment_type: paymentType,
         amount: currentInstallmentAmount,
-        salary_credit: form.category === 'salary' ? currentInstallmentAmount : 0,
-        other_credit: form.category === 'other' ? currentInstallmentAmount : 0,
-        invoice_credit: form.category === 'invoice' ? currentInstallmentAmount : 0,
+        ...creditFor(currentInstallmentAmount),
         invoice_amount: 0,
         salary_debit: 0,
         other_debit: 0,
@@ -199,9 +252,9 @@ export default function LoanModal({
 
     setSaving(true)
     try {
-      const { error } = await diasClient.from('payment_entries').insert(installmentsData)
+      const { error } = await diasClient.from('payment_entries').insert(entriesData)
       if (error) throw error
-      toast.success('Οι δόσεις καταχωρήθηκαν επιτυχώς')
+      toast.success('Η εκταμίευση και οι δόσεις καταχωρήθηκαν επιτυχώς')
       await onSaved?.({ wasPayment: true })
       onClose?.()
     } catch (err) {
@@ -340,6 +393,11 @@ export default function LoanModal({
                     placeholder="αυτόματα"
                     className="mt-1 w-full rounded-xl border border-white/10 bg-slate-950/60 px-3 py-2 font-mono text-sm text-white placeholder:text-slate-600"
                   />
+                  {showLastInstallmentHint ? (
+                    <p className="mt-1 text-sm text-slate-500">
+                      Η τελευταία δόση θα διαμορφωθεί στα {previewLast}€
+                    </p>
+                  ) : null}
                 </div>
               </div>
             </div>

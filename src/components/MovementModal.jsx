@@ -23,6 +23,12 @@ import {
 import DarkSelect from './DarkSelect'
 import GreekDateInput from './GreekDateInput'
 import { parseToIsoDate } from '../lib/greekDate'
+import {
+  LOAN_DISBURSEMENT_TYPE_ID,
+  LOAN_INSTALLMENT_TYPE_ID,
+  isLoanInstallmentRow,
+  loanSeriesNotesKey,
+} from '../lib/loanUi'
 
 /**
  * Κίνηση modal — data-driven από transaction_types.
@@ -52,9 +58,12 @@ export default function MovementModal({
   const [selectedTypeId, setSelectedTypeId] = useState(null)
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState(null)
+  const [loanDeleteOpen, setLoanDeleteOpen] = useState(false)
+  const [deleting, setDeleting] = useState(false)
 
   const isEdit = Boolean(selectedRowData?.id)
   const rowSource = selectedRowData?.source || 'PAYROLL'
+  const showLoanDelete = isEdit && isLoanInstallmentRow(selectedRowData)
 
   const typeIsSalary = (t) => {
     if (!t) return false
@@ -82,6 +91,8 @@ export default function MovementModal({
     setForm(movementFormFromRow(selectedRowData))
     setTypesError(null)
     setSaveError(null)
+    setLoanDeleteOpen(false)
+    setDeleting(false)
 
     let cancelled = false
     async function loadTypes() {
@@ -381,8 +392,75 @@ export default function MovementModal({
     }
   }
 
+  const handleDeleteCurrentInstallment = async () => {
+    if (!selectedRowData?.id) return
+    const targetTable = rowSource === 'PAYMENT' ? 'payment_entries' : 'payroll_entries'
+    setDeleting(true)
+    try {
+      const { error } = await diasClient.from(targetTable).delete().eq('id', selectedRowData.id)
+      if (error) throw error
+      toast.success('Η δόση διαγράφηκε')
+      setLoanDeleteOpen(false)
+      onSaved?.({ wasPayment: true })
+      onClose?.()
+    } catch (err) {
+      const msg =
+        formatSupabaseError(err, { table: targetTable, clientLabel: 'DIAS ERP' }) ||
+        err?.message ||
+        String(err)
+      toast.error(msg || 'Αποτυχία διαγραφής δόσης.')
+    } finally {
+      setDeleting(false)
+    }
+  }
+
+  const handleDeleteLoanSeries = async () => {
+    if (!selectedRowData) return
+    const techId = selectedRowData.tech_id ?? tech?.id
+    const paymentDateRaw = selectedRowData.payment_date || selectedRowData.entry_date
+    const paymentDate = paymentDateRaw ? String(paymentDateRaw).slice(0, 10) : ''
+    const seriesKey = loanSeriesNotesKey(selectedRowData.notes)
+    if (!techId || !paymentDate || !seriesKey) {
+      toast.error('Δεν βρέθηκαν στοιχεία σύνδεσης της σειράς δανείου.')
+      return
+    }
+    setDeleting(true)
+    try {
+      const { error: installmentsError } = await diasClient
+        .from('payment_entries')
+        .delete()
+        .eq('tech_id', techId)
+        .eq('type_id', LOAN_INSTALLMENT_TYPE_ID)
+        .eq('payment_date', paymentDate)
+        .like('notes', `${seriesKey}%`)
+      if (installmentsError) throw installmentsError
+
+      const { error: disbursementError } = await diasClient
+        .from('payment_entries')
+        .delete()
+        .eq('tech_id', techId)
+        .eq('type_id', LOAN_DISBURSEMENT_TYPE_ID)
+        .eq('payment_date', paymentDate)
+        .like('notes', `Εκταμίευση Δανείου: ${seriesKey}%`)
+      if (disbursementError) throw disbursementError
+
+      toast.success('Ολόκληρη η σειρά του δανείου διαγράφηκε')
+      setLoanDeleteOpen(false)
+      onSaved?.({ wasPayment: true })
+      onClose?.()
+    } catch (err) {
+      const msg =
+        formatSupabaseError(err, { table: 'payment_entries', clientLabel: 'DIAS ERP' }) ||
+        err?.message ||
+        String(err)
+      toast.error(msg || 'Αποτυχία διαγραφής σειράς δανείου.')
+    } finally {
+      setDeleting(false)
+    }
+  }
+
   const displayError = saveError || externalError
-  const formDisabled = typesLoading || types.length === 0 || saving
+  const formDisabled = typesLoading || types.length === 0 || saving || deleting
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -391,7 +469,7 @@ export default function MovementModal({
         className="absolute inset-0 bg-slate-950/25 backdrop-blur-[1px]"
         aria-label="Κλείσιμο"
         onClick={onClose}
-        disabled={saving}
+        disabled={saving || deleting}
       />
       <form
         onSubmit={handleSave}
@@ -418,7 +496,7 @@ export default function MovementModal({
           <button
             type="button"
             onClick={onClose}
-            disabled={saving}
+            disabled={saving || deleting}
             className="rounded-lg border border-white/10 bg-white/5 px-2 py-1 text-sm text-slate-300 hover:bg-white/10 disabled:opacity-50"
           >
             ✕
@@ -585,16 +663,77 @@ export default function MovementModal({
           >
             {saving ? 'Αποθήκευση...' : typesLoading ? 'Φόρτωση...' : 'Αποθήκευση'}
           </button>
+          {showLoanDelete && (
+            <button
+              type="button"
+              onClick={() => setLoanDeleteOpen(true)}
+              disabled={saving || deleting}
+              className="rounded-xl border border-red-500/50 bg-red-600/30 px-4 py-2.5 text-sm font-bold text-red-100 hover:bg-red-600/45 disabled:opacity-50"
+            >
+              Διαγραφή
+            </button>
+          )}
           <button
             type="button"
             onClick={onClose}
-            disabled={saving}
+            disabled={saving || deleting}
             className="rounded-xl border border-rose-500/40 bg-rose-500/15 px-4 py-2.5 text-sm font-bold text-rose-100 disabled:opacity-50"
           >
             Έξοδος
           </button>
         </div>
       </form>
+
+      {loanDeleteOpen && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
+          <button
+            type="button"
+            className="absolute inset-0 bg-slate-950/60 backdrop-blur-[2px]"
+            aria-label="Κλείσιμο διαλόγου διαγραφής"
+            onClick={() => !deleting && setLoanDeleteOpen(false)}
+            disabled={deleting}
+          />
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="delete-loan-title"
+            className="relative w-full max-w-md rounded-2xl border border-white/10 bg-slate-900 p-5 shadow-2xl"
+          >
+            <h3 id="delete-loan-title" className="text-lg font-bold text-white">
+              Διαγραφή Δόσης Δανείου
+            </h3>
+            <p className="mt-2 text-sm text-slate-400">
+              Επιλέξτε αν θέλετε να διαγραφεί μόνο η τρέχουσα δόση ή ολόκληρη η σειρά.
+            </p>
+            <div className="mt-4 flex flex-col gap-2">
+              <button
+                type="button"
+                onClick={handleDeleteCurrentInstallment}
+                disabled={deleting}
+                className="rounded-xl border border-amber-500/40 bg-amber-500/15 px-4 py-2.5 text-sm font-bold text-amber-100 hover:bg-amber-500/25 disabled:opacity-50"
+              >
+                {deleting ? 'Διαγραφή...' : 'Διαγραφή τρέχουσας δόσης'}
+              </button>
+              <button
+                type="button"
+                onClick={handleDeleteLoanSeries}
+                disabled={deleting}
+                className="rounded-xl border border-red-500/50 bg-red-600/30 px-4 py-2.5 text-sm font-bold text-red-100 hover:bg-red-600/45 disabled:opacity-50"
+              >
+                {deleting ? 'Διαγραφή...' : 'Διαγραφή όλης της σειράς'}
+              </button>
+              <button
+                type="button"
+                onClick={() => setLoanDeleteOpen(false)}
+                disabled={deleting}
+                className="rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm font-bold text-slate-200 hover:bg-white/10 disabled:opacity-50"
+              >
+                Ακύρωση
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
