@@ -60,11 +60,7 @@ function resolveTypeForTransferKey(transferKey, transactionTypes = []) {
 
 function amountForTransferKey(earningsForm, transferKey) {
   if (transferKey === 'accountant_amount') {
-    const fromField = parseAmount(earningsForm?.accountant_amount)
-    if (fromField > 0) return fromField
-    const extra = String(earningsForm?.extra || '').trim()
-    if (/^[\d.,]+$/.test(extra)) return parseAmount(extra)
-    return 0
+    return parseAmount(earningsForm?.accountant_amount)
   }
   return parseAmount(earningsForm?.[transferKey])
 }

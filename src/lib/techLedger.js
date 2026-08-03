@@ -289,13 +289,117 @@ export function aggregateTicketRestaurantByMonth(ledgerRows = [], year) {
   const y = Number(year)
   for (const row of ledgerRows || []) {
     if (!isTicketRestaurantRow(row)) continue
-    const dateStr = String(row.entry_date || row.reference_date || '')
-    if (!/^\d{4}-\d{2}/.test(dateStr)) continue
-    const [yy, mm] = dateStr.split('-').map(Number)
+    const { year: yy, month: mm } = ledgerRowPeriod(row)
     if (yy !== y || mm < 1 || mm > 12) continue
-    byMonth[mm - 1] = Math.round((byMonth[mm - 1] + ticketRestaurantAmountFromRow(row)) * 100) / 100
+    byMonth[mm - 1] =
+      Math.round((byMonth[mm - 1] + ticketRestaurantAmountFromRow(row)) * 100) / 100
   }
   return byMonth
+}
+
+/** Λογιστική περίοδος γραμμής view · fallback από entry_date. */
+export function ledgerRowPeriod(row) {
+  const month = Number(row?.month)
+  const year = Number(row?.year)
+  if (month >= 1 && month <= 12 && Number.isFinite(year) && year > 0) {
+    return { year, month }
+  }
+  const dateStr = String(row?.entry_date || row?.reference_date || '')
+  if (/^\d{4}-\d{2}/.test(dateStr)) {
+    const [yy, mm] = dateStr.split('-').map(Number)
+    return { year: yy, month: mm }
+  }
+  return { year: 0, month: 0 }
+}
+
+/**
+ * Ετήσια μήτρα από tech_ledger_view (όχι payrolls).
+ * Σ = Χρεώσεις · Π = Πιστώσεις · Υ(Μ/Λ/ΤΙΜ) = Χρ. − Πιστ. ανά συρτάρι.
+ * Ticket ανεξάρτητο (εκτός Σ/Π/Υ).
+ */
+export function buildLedgerYearMatrix(ledgerRows = [], year) {
+  const y = Number(year)
+  const months = Array.from({ length: 12 }, (_, i) => ({
+    month: i + 1,
+    sigma: 0,
+    pi: 0,
+    yM: 0,
+    yL: 0,
+    yTim: 0,
+    ticket: 0,
+    salaryDebit: 0,
+    salaryCredit: 0,
+    otherDebit: 0,
+    otherCredit: 0,
+    invoiceDebit: 0,
+    invoiceCredit: 0,
+  }))
+
+  for (const row of ledgerRows || []) {
+    const { year: yy, month: mm } = ledgerRowPeriod(row)
+    if (yy !== y || mm < 1 || mm > 12) continue
+    const slot = months[mm - 1]
+
+    if (isTicketRestaurantRow(row)) {
+      slot.ticket =
+        Math.round((slot.ticket + ticketRestaurantAmountFromRow(row)) * 100) / 100
+      continue
+    }
+
+    const sd = Number(row.salary_debit) || 0
+    const sc = Number(row.salary_credit) || 0
+    const od = Number(row.other_debit) || 0
+    const oc = Number(row.other_credit) || 0
+    const id = Number(row.invoice_amount) || 0
+    const ic = Number(row.invoice_credit) || 0
+
+    slot.salaryDebit += sd
+    slot.salaryCredit += sc
+    slot.otherDebit += od
+    slot.otherCredit += oc
+    slot.invoiceDebit += id
+    slot.invoiceCredit += ic
+  }
+
+  const round2 = (n) => Math.round(n * 100) / 100
+
+  for (const slot of months) {
+    slot.sigma = round2(slot.salaryDebit + slot.otherDebit + slot.invoiceDebit)
+    slot.pi = round2(slot.salaryCredit + slot.otherCredit + slot.invoiceCredit)
+    slot.yM = round2(slot.salaryDebit - slot.salaryCredit)
+    slot.yL = round2(slot.otherDebit - slot.otherCredit)
+    slot.yTim = round2(slot.invoiceDebit - slot.invoiceCredit)
+    slot.ticket = round2(slot.ticket)
+  }
+
+  const totals = months.reduce(
+    (acc, m) => ({
+      sigma: round2(acc.sigma + m.sigma),
+      pi: round2(acc.pi + m.pi),
+      yM: round2(acc.yM + m.yM),
+      yL: round2(acc.yL + m.yL),
+      yTim: round2(acc.yTim + m.yTim),
+      ticket: round2(acc.ticket + m.ticket),
+    }),
+    { sigma: 0, pi: 0, yM: 0, yL: 0, yTim: 0, ticket: 0 }
+  )
+
+  const monthsWithEarnings = months.filter((m) => m.sigma > 0)
+  const avg =
+    monthsWithEarnings.length > 0
+      ? round2(totals.sigma / monthsWithEarnings.length)
+      : 0
+
+  const selectedSettled = (month) => {
+    const m = months[month - 1]
+    if (!m || m.sigma <= 0) return false
+    return Math.abs(m.yM) + Math.abs(m.yL) + Math.abs(m.yTim) < 0.015
+  }
+
+  const yearSettled =
+    totals.sigma > 0 && Math.abs(totals.yM) + Math.abs(totals.yL) + Math.abs(totals.yTim) < 0.015
+
+  return { months, totals, avg, selectedSettled, yearSettled }
 }
 
 /**
@@ -303,13 +407,13 @@ export function aggregateTicketRestaurantByMonth(ledgerRows = [], year) {
  * Υπόλοιπο (Μ) = Μισθός Χρ. − Μισθός Πιστ.
  * Υπόλοιπο (Λ) = Λοιπά Χρ. − Λοιπά Πιστ.
  * Υπόλοιπο (ΤΙΜ) = invoice_amount (Χρ.) − invoice_credit (Πιστ.).
- * Υπόλοιπο = (Μ) + (Λ) + (ΤΙΜ) + Έξτρα.
+ * Υπόλοιπο = (Μ) + (Λ) + (ΤΙΜ).
  * Ticket Restaurant δεν συμμετέχει.
+ * (tech_earnings.extra είναι % για τον Οδηγό Τιμολογίου — όχι μέρος των balances.)
  *
  * @param {object[]} rows
- * @param {{ extra?: number }} [options]
  */
-export function computeLedgerBalances(rows = [], options = {}) {
+export function computeLedgerBalances(rows = []) {
   let salaryDebit = 0
   let salaryCredit = 0
   let otherDebit = 0
@@ -336,8 +440,6 @@ export function computeLedgerBalances(rows = [], options = {}) {
   }
 
   const round2 = (n) => Math.round(n * 100) / 100
-  const extraRaw = Number(options.extra)
-  const extra = Number.isFinite(extraRaw) ? extraRaw : 0
   const balance1 = round2(salaryDebit - salaryCredit)
   const balance2 = round2(otherDebit - otherCredit)
   const invoice = round2(invoiceDebit - invoiceCredit)
@@ -346,8 +448,7 @@ export function computeLedgerBalances(rows = [], options = {}) {
     balance1,
     balance2,
     invoice,
-    extra: round2(extra),
-    balance: round2(balance1 + balance2 + invoice + extra),
+    balance: round2(balance1 + balance2 + invoice),
     y1: round2(y1),
     y2: round2(y2),
   }

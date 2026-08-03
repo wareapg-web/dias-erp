@@ -8,6 +8,7 @@ import {
 } from '../lib/techLedger'
 import { ledgerRowClassName } from '../lib/ledgerMapping'
 import { resolveTransactionTypeFromLedgerRow } from '../lib/transactionTypes'
+import { formatEuro } from '../lib/payrollAnalysis'
 
 const COLUMN_WIDTHS_STORAGE_KEY = 'dias_ledger_column_widths_v5'
 
@@ -164,6 +165,7 @@ export default function LedgerAnalysisGrid({
   monthContext = null,
   hasInvoice = false,
   footerBalances = null,
+  invoiceGuideData = null,
   onSelectRow,
   onOpenCreateForType,
   onOpenEditRow,
@@ -491,21 +493,23 @@ export default function LedgerAnalysisGrid({
                   colSpan={2}
                   className="box-border border-r border-white/10 px-2 py-3 align-middle"
                 >
-                  <div className="flex justify-center">
+                  <div className="flex flex-col items-center gap-3">
                     <BalanceChip
                       label="Υπόλοιπο (ΤΙΜ)"
                       value={footerBalances.invoice}
                       tone="amber"
                     />
+                    {invoiceGuideData && Number(invoiceGuideData.netAmount) !== 0 ? (
+                      <InvoiceGuideCard
+                        netAmount={Number(invoiceGuideData.netAmount) || 0}
+                        taxPercent={Number(invoiceGuideData.taxPercent) || 20}
+                      />
+                    ) : null}
                   </div>
                 </td>
               ) : null}
-              {/* Σημειώσεις + Εισαγωγή → Έξτρα */}
-              <td colSpan={2} className="box-border px-2 py-3 align-middle last:border-r-0">
-                <div className="flex justify-center">
-                  <BalanceChip label="Έξτρα" value={footerBalances.extra} />
-                </div>
-              </td>
+              {/* Σημειώσεις + Εισαγωγή — κενό (χωρίς chip παρακράτησης) */}
+              <td colSpan={2} className="box-border px-2 py-3 align-middle last:border-r-0" />
             </tr>
           </tfoot>
         ) : null}
@@ -526,6 +530,40 @@ function BalanceChip({ label, value, tone = 'slate' }) {
     >
       <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">{label}</p>
       <p className="mt-0.5 font-mono text-sm font-bold tabular-nums tracking-tight">{value}</p>
+    </div>
+  )
+}
+
+/** Τοπικό σκονάκι έκδοσης τιμολογίου — δεν αγγίζει computeLedgerBalances. */
+function InvoiceGuideCard({ netAmount, taxPercent }) {
+  const net = Number(netAmount) || 0
+  const pct = Number(taxPercent) || 20
+  const vat = net * 0.24
+  const withholding = net * (pct / 100)
+  const payable = net + vat - withholding
+
+  return (
+    <div className="w-full max-w-xs rounded-xl border border-slate-700/50 bg-slate-800/60 p-3 text-xs shadow-sm shadow-black/20">
+      <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+        Οδηγός τιμολογίου
+      </p>
+      <div className="flex justify-between gap-3 py-1 text-slate-300">
+        <span>Αξία Τιμολογίου</span>
+        <span className="font-mono tabular-nums">{formatEuro(net)}</span>
+      </div>
+      <div className="flex justify-between gap-3 py-1 text-emerald-400">
+        <span>ΦΠΑ 24%</span>
+        <span className="font-mono tabular-nums">+ {formatEuro(vat)}</span>
+      </div>
+      <div className="flex justify-between gap-3 py-1 text-rose-400">
+        <span>Παρακρ. Φόρου ({pct}%)</span>
+        <span className="font-mono tabular-nums">− {formatEuro(withholding)}</span>
+      </div>
+      <hr className="my-1 border-slate-600" />
+      <div className="flex justify-between gap-3 py-1 font-bold text-amber-400">
+        <span>Πληρωτέο (Στο χέρι)</span>
+        <span className="font-mono tabular-nums">{formatEuro(payable)}</span>
+      </div>
     </div>
   )
 }

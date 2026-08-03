@@ -1,13 +1,18 @@
 import React, { useEffect, useState } from 'react'
+import toast from 'react-hot-toast'
 import GreekDateInput from './GreekDateInput'
+import { diasClient, formatSupabaseError } from '../lib/supabase'
 import { fromElInputValue, parseElNumber, toElInputDisplay } from '../lib/numberFormat'
 import { MONTH_LABELS } from '../lib/payrollAnalysis'
+import { parseToIsoDate } from '../lib/greekDate'
 
 const CATEGORY_OPTIONS = [
   { value: 'salary', label: 'Μισθός' },
   { value: 'other', label: 'Λοιπά' },
   { value: 'invoice', label: 'Τιμολόγιο' },
 ]
+
+const LOAN_TYPE_ID = 94
 
 function emptyLoanForm(month, year) {
   return {
@@ -31,8 +36,21 @@ function formatMoneyField(n) {
   return toElInputDisplay(String(n))
 }
 
+function paymentTypeForCategory(category) {
+  if (category === 'other') return 'SETTLEMENT_2'
+  if (category === 'invoice') return 'SETTLEMENT'
+  return 'SETTLEMENT_1'
+}
+
+function periodAfterOffset(startMonth, startYear, offset) {
+  const zeroBased = Number(startMonth) - 1 + Number(offset)
+  const year = Number(startYear) + Math.floor(zeroBased / 12)
+  const month = ((zeroBased % 12) + 12) % 12 + 1
+  return { month, year }
+}
+
 /**
- * Modal δανείου / προκαταβολής — UI only (save → console.log).
+ * Modal δανείου / προκαταβολής — bulk insert δόσεων στο payment_entries.
  */
 export default function LoanModal({
   open,
@@ -40,12 +58,15 @@ export default function LoanModal({
   selectedMonth,
   analysisYear,
   onClose,
+  onSaved,
 }) {
   const [form, setForm] = useState(() => emptyLoanForm(selectedMonth, analysisYear))
+  const [saving, setSaving] = useState(false)
 
   useEffect(() => {
     if (!open) return
     setForm(emptyLoanForm(selectedMonth, analysisYear))
+    setSaving(false)
   }, [open, selectedMonth, analysisYear, tech?.id])
 
   if (!open) return null
@@ -78,12 +99,7 @@ export default function LoanModal({
     setForm((prev) => {
       const installment = parseElNumber(raw)
       const total = parseElNumber(prev.total_amount)
-      if (
-        installment != null &&
-        installment > 0 &&
-        total != null &&
-        total > 0
-      ) {
+      if (installment != null && installment > 0 && total != null && total > 0) {
         const count = Math.max(1, Math.round(total / installment))
         return {
           ...prev,
@@ -102,25 +118,101 @@ export default function LoanModal({
     return years
   })()
 
-  const handleSave = (e) => {
+  const handleSave = async (e) => {
     e.preventDefault()
-    const total = parseElNumber(form.total_amount)
-    const installment = parseElNumber(form.installment_amount)
-    const count = Number(String(form.installment_count).replace(',', '.'))
-    const payload = {
-      tech_id: tech?.id != null ? String(tech.id) : null,
-      tech_name: tech?.displayName || tech?.name || null,
-      grant_date: form.grant_date,
-      total_amount: total,
-      start_month: Number(form.start_month),
-      start_year: Number(form.start_year),
-      installment_count: Number.isFinite(count) ? count : null,
-      installment_amount: installment,
-      category: form.category,
-      notes: String(form.notes || '').trim() || null,
+    if (saving) return
+
+    const techId = tech?.id != null ? String(tech.id) : tech?.tech_id != null ? String(tech.tech_id) : null
+    if (!techId) {
+      toast.error('Δεν έχει επιλεγεί υπάλληλος')
+      return
     }
-    console.log('[LoanModal] payload', payload)
-    onClose?.()
+
+    const totalAmount = parseElNumber(form.total_amount)
+    const numberOfInstallments = Math.floor(
+      Number(String(form.installment_count).replace(',', '.'))
+    )
+    if (totalAmount == null || totalAmount <= 0) {
+      toast.error('Συμπλήρωσε έγκυρο συνολικό ποσό')
+      return
+    }
+    if (!Number.isFinite(numberOfInstallments) || numberOfInstallments < 1) {
+      toast.error('Συμπλήρωσε έγκυρο αριθμό δόσεων')
+      return
+    }
+
+    const grantDate =
+      parseToIsoDate(form.grant_date) ||
+      (typeof form.grant_date === 'string' && /^\d{4}-\d{2}-\d{2}/.test(form.grant_date)
+        ? form.grant_date.slice(0, 10)
+        : null)
+    if (!grantDate) {
+      toast.error('Μη έγκυρη ημερομηνία χορήγησης')
+      return
+    }
+
+    const startMonth = Number(form.start_month)
+    const startYear = Number(form.start_year)
+    if (!(startMonth >= 1 && startMonth <= 12) || !Number.isFinite(startYear)) {
+      toast.error('Μη έγκυρη έναρξη αποπληρωμής')
+      return
+    }
+
+    // Βασική δόση: 2 δεκαδικά προς τα κάτω · η τελευταία απορροφά τη διαφορά
+    const regularInstallment = Math.floor((totalAmount / numberOfInstallments) * 100) / 100
+    const lastInstallment = roundMoney(
+      totalAmount - regularInstallment * (numberOfInstallments - 1)
+    )
+
+    const paymentType = paymentTypeForCategory(form.category)
+    const baseNotes = String(form.notes || '').trim()
+    const techName = tech?.displayName || tech?.name || tech?.tech_name || null
+
+    const installmentsData = []
+    for (let i = 0; i < numberOfInstallments; i += 1) {
+      const { month: calcMonth, year: calcYear } = periodAfterOffset(startMonth, startYear, i)
+      const currentInstallmentAmount =
+        i === numberOfInstallments - 1 ? lastInstallment : regularInstallment
+      const notes = `${baseNotes || 'Δάνειο'} (Δόση ${i + 1}/${numberOfInstallments})`
+
+      installmentsData.push({
+        tech_id: techId,
+        tech_name: techName,
+        payment_date: grantDate,
+        entry_date: grantDate,
+        entry_type: paymentType,
+        month: calcMonth,
+        year: calcYear,
+        type_id: LOAN_TYPE_ID,
+        payment_type: paymentType,
+        amount: currentInstallmentAmount,
+        salary_credit: form.category === 'salary' ? currentInstallmentAmount : 0,
+        other_credit: form.category === 'other' ? currentInstallmentAmount : 0,
+        invoice_credit: form.category === 'invoice' ? currentInstallmentAmount : 0,
+        invoice_amount: 0,
+        salary_debit: 0,
+        other_debit: 0,
+        notes,
+        description: null,
+      })
+    }
+
+    setSaving(true)
+    try {
+      const { error } = await diasClient.from('payment_entries').insert(installmentsData)
+      if (error) throw error
+      toast.success('Οι δόσεις καταχωρήθηκαν επιτυχώς')
+      await onSaved?.({ wasPayment: true })
+      onClose?.()
+    } catch (err) {
+      const msg =
+        formatSupabaseError(err, { table: 'payment_entries', clientLabel: 'DIAS ERP' }) ||
+        err?.message ||
+        String(err)
+      toast.error(msg)
+    } finally {
+      setSaving(false)
+    }
   }
 
   const selectClass =
@@ -133,6 +225,7 @@ export default function LoanModal({
         className="absolute inset-0 bg-slate-950/25 backdrop-blur-[1px]"
         aria-label="Κλείσιμο"
         onClick={onClose}
+        disabled={saving}
       />
       <form
         onSubmit={handleSave}
@@ -153,7 +246,8 @@ export default function LoanModal({
           <button
             type="button"
             onClick={onClose}
-            className="rounded-lg border border-white/10 bg-white/5 px-2 py-1 text-sm text-slate-300 hover:bg-white/10"
+            disabled={saving}
+            className="rounded-lg border border-white/10 bg-white/5 px-2 py-1 text-sm text-slate-300 hover:bg-white/10 disabled:opacity-50"
           >
             ✕
           </button>
@@ -164,136 +258,139 @@ export default function LoanModal({
             Στοιχεία
           </p>
 
-          <div>
-            <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
-              Ημερομηνία Χορήγησης
-            </label>
-            <GreekDateInput
-              value={form.grant_date || ''}
-              onChange={(iso) => patch('grant_date', iso)}
-              className="mt-1 w-full rounded-xl border border-white/10 bg-slate-950/60 px-3 py-2 text-sm text-white"
-            />
-          </div>
+          <fieldset disabled={saving} className="space-y-3 disabled:opacity-60">
+            <div>
+              <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                Ημερομηνία Χορήγησης
+              </label>
+              <GreekDateInput
+                value={form.grant_date || ''}
+                onChange={(iso) => patch('grant_date', iso)}
+                className="mt-1 w-full rounded-xl border border-white/10 bg-slate-950/60 px-3 py-2 text-sm text-white"
+              />
+            </div>
 
-          <div>
-            <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
-              Συνολικό Ποσό (€)
-            </label>
-            <input
-              type="text"
-              inputMode="decimal"
-              value={toElInputDisplay(form.total_amount)}
-              onChange={(e) => handleTotalChange(fromElInputValue(e.target.value))}
-              placeholder="0,00"
-              className="mt-1 w-full rounded-xl border border-white/10 bg-slate-950/60 px-3 py-2 font-mono text-sm text-white placeholder:text-slate-600"
-            />
-          </div>
+            <div>
+              <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                Συνολικό Ποσό (€)
+              </label>
+              <input
+                type="text"
+                inputMode="decimal"
+                value={toElInputDisplay(form.total_amount)}
+                onChange={(e) => handleTotalChange(fromElInputValue(e.target.value))}
+                placeholder="0,00"
+                className="mt-1 w-full rounded-xl border border-white/10 bg-slate-950/60 px-3 py-2 font-mono text-sm text-white placeholder:text-slate-600"
+              />
+            </div>
 
-          <div>
-            <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
-              Έναρξη Αποπληρωμής
-            </label>
-            <div className="mt-1 grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                Έναρξη Αποπληρωμής
+              </label>
+              <div className="mt-1 grid grid-cols-2 gap-3">
+                <select
+                  value={form.start_month}
+                  onChange={(e) => patch('start_month', Number(e.target.value))}
+                  className={selectClass}
+                >
+                  {MONTH_LABELS.map((label, i) => (
+                    <option key={label} value={i + 1}>
+                      {label}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  value={form.start_year}
+                  onChange={(e) => patch('start_year', Number(e.target.value))}
+                  className={selectClass}
+                >
+                  {yearOptions.map((y) => (
+                    <option key={y} value={y}>
+                      {y}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            <div>
+              <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                Δοσολόγιο
+              </label>
+              <div className="mt-1 flex flex-col gap-3 sm:flex-row">
+                <div className="min-w-0 flex-1">
+                  <label className="text-[10px] text-slate-500">Αριθμός Δόσεων</label>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    value={form.installment_count}
+                    onChange={(e) => handleCountChange(e.target.value.replace(/[^\d]/g, ''))}
+                    placeholder="π.χ. 10"
+                    className="mt-1 w-full rounded-xl border border-white/10 bg-slate-950/60 px-3 py-2 font-mono text-sm text-white placeholder:text-slate-600"
+                  />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <label className="text-[10px] text-slate-500">Ποσό Δόσης (€)</label>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={toElInputDisplay(form.installment_amount)}
+                    onChange={(e) => handleInstallmentChange(fromElInputValue(e.target.value))}
+                    placeholder="αυτόματα"
+                    className="mt-1 w-full rounded-xl border border-white/10 bg-slate-950/60 px-3 py-2 font-mono text-sm text-white placeholder:text-slate-600"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div>
+              <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                Κατηγορία Κράτησης
+              </label>
               <select
-                value={form.start_month}
-                onChange={(e) => patch('start_month', Number(e.target.value))}
+                value={form.category}
+                onChange={(e) => patch('category', e.target.value)}
                 className={selectClass}
               >
-                {MONTH_LABELS.map((label, i) => (
-                  <option key={label} value={i + 1}>
-                    {label}
-                  </option>
-                ))}
-              </select>
-              <select
-                value={form.start_year}
-                onChange={(e) => patch('start_year', Number(e.target.value))}
-                className={selectClass}
-              >
-                {yearOptions.map((y) => (
-                  <option key={y} value={y}>
-                    {y}
+                {CATEGORY_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
                   </option>
                 ))}
               </select>
             </div>
-          </div>
 
-          <div>
-            <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
-              Δοσολόγιο
-            </label>
-            <div className="mt-1 flex flex-col gap-3 sm:flex-row">
-              <div className="min-w-0 flex-1">
-                <label className="text-[10px] text-slate-500">Αριθμός Δόσεων</label>
-                <input
-                  type="text"
-                  inputMode="numeric"
-                  value={form.installment_count}
-                  onChange={(e) => handleCountChange(e.target.value.replace(/[^\d]/g, ''))}
-                  placeholder="π.χ. 10"
-                  className="mt-1 w-full rounded-xl border border-white/10 bg-slate-950/60 px-3 py-2 font-mono text-sm text-white placeholder:text-slate-600"
-                />
-              </div>
-              <div className="min-w-0 flex-1">
-                <label className="text-[10px] text-slate-500">Ποσό Δόσης (€)</label>
-                <input
-                  type="text"
-                  inputMode="decimal"
-                  value={toElInputDisplay(form.installment_amount)}
-                  onChange={(e) => handleInstallmentChange(fromElInputValue(e.target.value))}
-                  placeholder="αυτόματα"
-                  className="mt-1 w-full rounded-xl border border-white/10 bg-slate-950/60 px-3 py-2 font-mono text-sm text-white placeholder:text-slate-600"
-                />
-              </div>
+            <div>
+              <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                Αιτιολογία / Σημειώσεις
+              </label>
+              <textarea
+                value={form.notes}
+                onChange={(e) => patch('notes', e.target.value)}
+                rows={2}
+                placeholder="π.χ. Δάνειο για αγορά αυτοκινήτου"
+                className="mt-1 w-full resize-y rounded-xl border border-white/10 bg-slate-950/60 px-3 py-2 text-sm text-white placeholder:text-slate-600"
+              />
             </div>
-          </div>
-
-          <div>
-            <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
-              Κατηγορία Κράτησης
-            </label>
-            <select
-              value={form.category}
-              onChange={(e) => patch('category', e.target.value)}
-              className={selectClass}
-            >
-              {CATEGORY_OPTIONS.map((opt) => (
-                <option key={opt.value} value={opt.value}>
-                  {opt.label}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div>
-            <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
-              Αιτιολογία / Σημειώσεις
-            </label>
-            <textarea
-              value={form.notes}
-              onChange={(e) => patch('notes', e.target.value)}
-              rows={2}
-              placeholder="π.χ. Δάνειο για αγορά αυτοκινήτου"
-              className="mt-1 w-full resize-y rounded-xl border border-white/10 bg-slate-950/60 px-3 py-2 text-sm text-white placeholder:text-slate-600"
-            />
-          </div>
+          </fieldset>
         </div>
 
         <div className="mt-4 flex justify-end gap-2">
           <button
             type="button"
             onClick={onClose}
-            className="rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-slate-300 hover:bg-white/10"
+            disabled={saving}
+            className="rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-slate-300 hover:bg-white/10 disabled:opacity-50"
           >
             Ακύρωση
           </button>
           <button
             type="submit"
-            disabled={!tech}
+            disabled={!tech || saving}
             className="rounded-xl border border-emerald-500/40 bg-emerald-500/20 px-4 py-2 text-sm font-bold text-emerald-100 hover:bg-emerald-500/30 disabled:opacity-50"
           >
-            Καταχώρηση
+            {saving ? 'Αποθήκευση...' : 'Καταχώρηση'}
           </button>
         </div>
       </form>
