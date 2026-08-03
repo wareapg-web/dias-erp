@@ -15,7 +15,6 @@ import {
   splitTechName,
   techHireDate,
   techPhotoUrl,
-  buildSalaryYearMatrix,
   estimateAmount,
   formatEuro,
   formatEuroPlain,
@@ -65,6 +64,7 @@ import {
   ledgerRowKey,
   buildLedgerDescriptionForType,
   buildLedgerAmountForType,
+  buildLedgerYearMatrix,
 } from '../lib/techLedger'
 import {
   buildTemplateMergeRows,
@@ -141,6 +141,7 @@ export default function TechAnalysisModal({
   const [paymentsMissing, setPaymentsMissing] = useState(false)
   const [paymentForm, setPaymentForm] = useState(emptyPaymentForm)
   const [ledgerRows, setLedgerRows] = useState([])
+  const [yearLedgerRows, setYearLedgerRows] = useState([])
   const [ledgerLoading, setLedgerLoading] = useState(false)
   const [ledgerError, setLedgerError] = useState(null)
   const [ledgerMissing, setLedgerMissing] = useState(false)
@@ -457,6 +458,47 @@ export default function TechAnalysisModal({
     }
   }, [tech?.id, analysisYear, selectedMonth, payments.length, ledgerTick])
 
+  // Ετήσιο ledger για τη μήτρα Απολαβών (όλοι οι μήνες του analysisYear)
+  useEffect(() => {
+    if (!tech?.id) {
+      setYearLedgerRows([])
+      return
+    }
+
+    let cancelled = false
+
+    async function loadYearLedger() {
+      try {
+        const { data, error } = await diasClient
+          .from('tech_ledger_view')
+          .select('*')
+          .eq('tech_id', String(tech.id))
+          .eq('year', Number(analysisYear))
+          .order('month', { ascending: true })
+          .order('entry_date', { ascending: true })
+
+        if (cancelled) return
+
+        if (error) {
+          console.warn('[year ledger]', error.message || error)
+          setYearLedgerRows([])
+        } else {
+          setYearLedgerRows(data || [])
+        }
+      } catch (err) {
+        if (!cancelled) {
+          console.warn('[year ledger]', err?.message || err)
+          setYearLedgerRows([])
+        }
+      }
+    }
+
+    loadYearLedger()
+    return () => {
+      cancelled = true
+    }
+  }, [tech?.id, analysisYear, ledgerTick, payments.length])
+
   // Ώρες γραφείου (work_hours) — μόνο όταν in_office
   useEffect(() => {
     if (!tech?.id || tech.in_office !== true) {
@@ -694,25 +736,25 @@ export default function TechAnalysisModal({
           month: i + 1,
           sigma: 0,
           pi: 0,
-          y1: 0,
-          y2: 0,
+          yM: 0,
+          yL: 0,
+          yTim: 0,
           ticket: 0,
         })),
-        totals: { sigma: 0, pi: 0, y1: 0, y2: 0, ticket: 0 },
+        totals: { sigma: 0, pi: 0, yM: 0, yL: 0, yTim: 0, ticket: 0 },
         avg: 0,
         selectedSettled: () => false,
         yearSettled: false,
       }
     }
-    const earningsTicketAmount = Number(
-      String(earningsForm?.ticket_amount ?? '').replace(',', '.')
-    )
-    return buildSalaryYearMatrix(tech, analysisYear, payrolls, estimatedByMonth, {
-      selectedMonth,
-      earningsTicketAmount: Number.isFinite(earningsTicketAmount) ? earningsTicketAmount : 0,
-    })
-  }, [tech, analysisYear, payrolls, estimatedByMonth, selectedMonth, earningsForm?.ticket_amount])
+    return buildLedgerYearMatrix(yearLedgerRows, analysisYear)
+  }, [tech, analysisYear, yearLedgerRows])
 
+  const formatMatrixCell = (value) => {
+    const n = Number(value) || 0
+    if (!n) return '-'
+    return formatEuro(n)
+  }
   const selectedPayroll = monthlyPayrolls[selectedMonth - 1]
   const movements = selectedPayroll?.rows || []
   const isOfficeEmployee = tech?.in_office === true
@@ -796,11 +838,10 @@ export default function TechAnalysisModal({
     [sortedTransactionTypes, ledgerRows, typeLookup, ledgerMonthContext]
   )
 
-  const ledgerBalances = useMemo(() => {
-    const extraParsed = parseElNumber(earningsForm?.extra)
-    const extra = Number.isFinite(extraParsed) ? extraParsed : 0
-    return computeLedgerBalances(ledgerDisplayRows, { extra })
-  }, [ledgerDisplayRows, earningsForm?.extra])
+  const ledgerBalances = useMemo(
+    () => computeLedgerBalances(ledgerDisplayRows),
+    [ledgerDisplayRows]
+  )
 
   /** Δεξιά στήλη ενεργειών — ΚΕΦΑΛΑΙΑ χωρίς τόνους · εξοφλήσεις autofill από υπόλοιπα. */
   const ledgerActionButtons = useMemo(() => {
@@ -1364,8 +1405,7 @@ export default function TechAnalysisModal({
                   Ετήσια Μήτρα Απολαβών · {analysisYear}
                 </h3>
                 <p className="text-xs text-slate-400">
-                  Σ = απολαβές · Π = πληρωμές · Υ(1)/Υ(2) = εξοφλήσεις — από DIAS payrolls (ή provisional από
-                  ώρες)
+                  Σ = απολαβές (Χρ.) · Π = πληρωμές (Πιστ.) · Υ(Μ)/Υ(Λ)/Υ(ΤΙΜ) = υπόλοιπα — από tech_ledger_view
                 </p>
               </div>
               {loading ? (
@@ -1407,32 +1447,40 @@ export default function TechAnalysisModal({
                         hint="Απολαβές"
                         selectedMonth={selectedMonth}
                         onSelectMonth={setSelectedMonth}
-                        values={salaryMatrix.months.map((m) => formatEuroPlain(m.sigma))}
-                        total={formatEuroPlain(salaryMatrix.totals.sigma)}
+                        values={salaryMatrix.months.map((m) => formatMatrixCell(m.sigma))}
+                        total={formatMatrixCell(salaryMatrix.totals.sigma)}
                       />
                       <MatrixRow
                         label="Π"
                         hint="Πληρωμές"
                         selectedMonth={selectedMonth}
                         onSelectMonth={setSelectedMonth}
-                        values={salaryMatrix.months.map((m) => formatEuroPlain(m.pi))}
-                        total={formatEuroPlain(salaryMatrix.totals.pi)}
+                        values={salaryMatrix.months.map((m) => formatMatrixCell(m.pi))}
+                        total={formatMatrixCell(salaryMatrix.totals.pi)}
                       />
                       <MatrixRow
-                        label="Υ (1)"
-                        hint="Εξόφληση Μισθού"
+                        label="Υ (Μ)"
+                        hint="Υπόλοιπο Μισθού"
                         selectedMonth={selectedMonth}
                         onSelectMonth={setSelectedMonth}
-                        values={salaryMatrix.months.map((m) => formatEuroPlain(m.y1))}
-                        total={formatEuroPlain(salaryMatrix.totals.y1)}
+                        values={salaryMatrix.months.map((m) => formatMatrixCell(m.yM))}
+                        total={formatMatrixCell(salaryMatrix.totals.yM)}
                       />
                       <MatrixRow
-                        label="Υ (2)"
-                        hint="Εξόφληση Λοιπών"
+                        label="Υ (Λ)"
+                        hint="Υπόλοιπο Λοιπών"
                         selectedMonth={selectedMonth}
                         onSelectMonth={setSelectedMonth}
-                        values={salaryMatrix.months.map((m) => formatEuroPlain(m.y2))}
-                        total={formatEuroPlain(salaryMatrix.totals.y2)}
+                        values={salaryMatrix.months.map((m) => formatMatrixCell(m.yL))}
+                        total={formatMatrixCell(salaryMatrix.totals.yL)}
+                      />
+                      <MatrixRow
+                        label="Υ (ΤΙΜ)"
+                        hint="Υπόλοιπο Τιμολογίου"
+                        selectedMonth={selectedMonth}
+                        onSelectMonth={setSelectedMonth}
+                        values={salaryMatrix.months.map((m) => formatMatrixCell(m.yTim))}
+                        total={formatMatrixCell(salaryMatrix.totals.yTim)}
                       />
                       <MatrixRow
                         label="Ticket Restaurant"
@@ -1449,8 +1497,10 @@ export default function TechAnalysisModal({
             </div>
 
             <div className="flex flex-wrap items-center gap-4 rounded-2xl border border-white/10 bg-slate-900/75 px-4 py-3 backdrop-blur-md">
-              <SummaryStat label="Συνολικές Απολαβές" value={formatEuro(salaryMatrix.totals.sigma)} />
-              <SummaryStat label="Έτος" value={formatEuro(salaryMatrix.totals.sigma)} />
+              <SummaryStat
+                label="Συνολικές Απολαβές (Έτος)"
+                value={formatEuro(salaryMatrix.totals.sigma)}
+              />
               <SummaryStat label="Μ. Όρος" value={formatEuro(salaryMatrix.avg)} />
               <SummaryStat
                 label={MONTH_LABELS[selectedMonth - 1]}
@@ -1506,8 +1556,14 @@ export default function TechAnalysisModal({
                     balance: formatEuro(ledgerBalances.balance),
                     balance1: formatEuro(ledgerBalances.balance1),
                     balance2: formatEuro(ledgerBalances.balance2),
-                    extra: formatEuro(ledgerBalances.extra || 0),
                     invoice: formatEuro(ledgerBalances.invoice || 0),
+                  }}
+                  invoiceGuideData={{
+                    netAmount: ledgerBalances.invoice,
+                    taxPercent: (() => {
+                      const pct = parseElNumber(earningsForm?.extra)
+                      return pct != null && Number.isFinite(pct) && pct !== 0 ? pct : 20
+                    })(),
                   }}
                   onSelectRow={selectLedgerRow}
                   onOpenCreateForType={openMovementCreate}
@@ -1600,6 +1656,7 @@ export default function TechAnalysisModal({
               selectedMonth={selectedMonth}
               analysisYear={analysisYear}
               onClose={() => setLoanOpen(false)}
+              onSaved={handleMovementSaved}
             />
 
             <MovementModal
@@ -1911,7 +1968,7 @@ export default function TechAnalysisModal({
                         htmlFor="earnings-extra"
                         className="shrink-0 text-[10px] font-semibold uppercase tracking-wider text-slate-400"
                       >
-                        Έξτρα
+                        Παρακράτηση Φόρου (%)
                       </label>
                       <input
                         id="earnings-extra"
