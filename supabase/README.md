@@ -48,6 +48,7 @@
 - `supabase/24_rename_settlement_type_labels.sql` (91/92/93 → Εξόφληση Μισθού/Λοιπών/Τιμολογίου)
 - `supabase/25_payment_entries_type_id.sql` (payment_entries.type_id + view · TIM → 93)
 - `supabase/26_loan_installment_type.sql` (transaction_types id 94 · Δόση Δανείου)
+- `supabase/27_loan_disbursement_type.sql` (transaction_types id 95 · Εκταμίευση Δανείου)
 
 ### Φωτογραφίες προφίλ (Cloudflare R2 μέσω Edge Function)
 

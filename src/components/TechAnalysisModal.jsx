@@ -59,12 +59,14 @@ import {
   paymentToDb,
   paymentTypeLabel,
 } from '../lib/techPayments'
+import { buildPaymentsDisplayList, isLoanInstallmentRow } from '../lib/loanUi'
 import {
   computeLedgerBalances,
   ledgerRowKey,
   buildLedgerDescriptionForType,
   buildLedgerAmountForType,
   buildLedgerYearMatrix,
+  extractLedgerAmount,
 } from '../lib/techLedger'
 import {
   buildTemplateMergeRows,
@@ -747,12 +749,34 @@ export default function TechAnalysisModal({
         yearSettled: false,
       }
     }
-    return buildLedgerYearMatrix(yearLedgerRows, analysisYear)
-  }, [tech, analysisYear, yearLedgerRows])
+
+    const yearPayrolls = (payrolls || []).filter((p) => {
+      const matchesTech =
+        String(p.tech_id ?? '') === String(tech.id ?? '') ||
+        p.tech_name === tech.name ||
+        p.technician_name === tech.name ||
+        p.name === tech.name
+      if (!matchesTech) return false
+      const period = String(p.period || '')
+      if (/^\d{4}-\d{2}/.test(period)) {
+        return Number(period.slice(0, 4)) === Number(analysisYear)
+      }
+      return Number(p.year) === Number(analysisYear)
+    })
+
+    return buildLedgerYearMatrix(yearLedgerRows, analysisYear, yearPayrolls)
+  }, [tech, analysisYear, yearLedgerRows, payrolls])
 
   const formatMatrixCell = (value) => {
     const n = Number(value) || 0
     if (!n) return '-'
+    return formatEuro(n)
+  }
+
+  /** Υπόλοιπα μήτρας: το 0 εμφανίζεται ως 0,00 € (όχι παύλα). */
+  const formatMatrixBalance = (value) => {
+    const n = Number(value) || 0
+    if (!Number.isFinite(n)) return formatEuro(0)
     return formatEuro(n)
   }
   const selectedPayroll = monthlyPayrolls[selectedMonth - 1]
@@ -842,6 +866,23 @@ export default function TechAnalysisModal({
     () => computeLedgerBalances(ledgerDisplayRows),
     [ledgerDisplayRows]
   )
+
+  /** Πληρωμές UI: κρύβει δόσεις 94 · δείχνει κανονικά εκταμίευση 95. */
+  const paymentsDisplayList = useMemo(
+    () => buildPaymentsDisplayList(payments),
+    [payments]
+  )
+
+  const notifyLoanHoldsInMonth = () => {
+    for (const row of ledgerRows || []) {
+      if (row.__template) continue
+      if (!isLoanInstallmentRow(row)) continue
+      const amount = Number(row.amount) || extractLedgerAmount(row).amount || 0
+      toast(`Εφαρμόστηκε κράτηση: ${row.notes || 'Δάνειο'} - ${amount}€`, {
+        icon: 'ℹ️',
+      })
+    }
+  }
 
   /** Δεξιά στήλη ενεργειών — ΚΕΦΑΛΑΙΑ χωρίς τόνους · εξοφλήσεις autofill από υπόλοιπα. */
   const ledgerActionButtons = useMemo(() => {
@@ -1463,24 +1504,24 @@ export default function TechAnalysisModal({
                         hint="Υπόλοιπο Μισθού"
                         selectedMonth={selectedMonth}
                         onSelectMonth={setSelectedMonth}
-                        values={salaryMatrix.months.map((m) => formatMatrixCell(m.yM))}
-                        total={formatMatrixCell(salaryMatrix.totals.yM)}
+                        values={salaryMatrix.months.map((m) => formatMatrixBalance(m.yM))}
+                        total={formatMatrixBalance(salaryMatrix.totals.yM)}
                       />
                       <MatrixRow
                         label="Υ (Λ)"
                         hint="Υπόλοιπο Λοιπών"
                         selectedMonth={selectedMonth}
                         onSelectMonth={setSelectedMonth}
-                        values={salaryMatrix.months.map((m) => formatMatrixCell(m.yL))}
-                        total={formatMatrixCell(salaryMatrix.totals.yL)}
+                        values={salaryMatrix.months.map((m) => formatMatrixBalance(m.yL))}
+                        total={formatMatrixBalance(salaryMatrix.totals.yL)}
                       />
                       <MatrixRow
                         label="Υ (ΤΙΜ)"
                         hint="Υπόλοιπο Τιμολογίου"
                         selectedMonth={selectedMonth}
                         onSelectMonth={setSelectedMonth}
-                        values={salaryMatrix.months.map((m) => formatMatrixCell(m.yTim))}
-                        total={formatMatrixCell(salaryMatrix.totals.yTim)}
+                        values={salaryMatrix.months.map((m) => formatMatrixBalance(m.yTim))}
+                        total={formatMatrixBalance(salaryMatrix.totals.yTim)}
                       />
                       <MatrixRow
                         label="Ticket Restaurant"
@@ -1608,6 +1649,9 @@ export default function TechAnalysisModal({
                         if (item.amount == null && (item.typeId === 91 || item.typeId === 92 || item.typeId === 93)) {
                           toast.error(item.title || 'Δεν υπάρχει υπόλοιπο για εξόφληση')
                           return
+                        }
+                        if (item.typeId === 91 || item.typeId === 92 || item.typeId === 93) {
+                          notifyLoanHoldsInMonth()
                         }
                         openMovementCreate({
                           typeId: item.typeId,
@@ -2282,19 +2326,24 @@ export default function TechAnalysisModal({
                       </tr>
                     </thead>
                     <tbody>
-                      {payments.length === 0 ? (
+                      {paymentsDisplayList.length === 0 ? (
                         <tr>
                           <td colSpan={9} className="px-4 py-10 text-center text-sm text-slate-500">
                             Δεν υπάρχουν πληρωμές ακόμα.
                           </td>
                         </tr>
                       ) : (
-                        payments.map((row) => {
+                        paymentsDisplayList.map((row) => {
                           const monthNum = Number(row.month)
                           const monthLabel =
                             monthNum >= 1 && monthNum <= 12
                               ? MONTH_SHORT[monthNum - 1]
                               : '—'
+                          const typeLabel =
+                            Number(row.type_id) === 95 ||
+                            String(row.notes || '').startsWith('Εκταμίευση Δανείου')
+                              ? 'Εκταμίευση Δανείου'
+                              : paymentTypeLabel(row.payment_type || row.entry_type)
                           return (
                             <tr
                               key={row.id}
@@ -2307,7 +2356,7 @@ export default function TechAnalysisModal({
                               </td>
                               <td className="px-3 py-2.5">
                                 <span className="rounded-lg border border-white/10 bg-white/5 px-2 py-0.5 text-xs font-semibold text-slate-200">
-                                  {paymentTypeLabel(row.payment_type || row.entry_type)}
+                                  {typeLabel}
                                 </span>
                               </td>
                               <td className="whitespace-nowrap px-2 py-2.5 text-slate-300">

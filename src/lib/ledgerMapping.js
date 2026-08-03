@@ -31,7 +31,7 @@ export const SALARY_CREDIT_IDS = new Set([1, 91])
 export const OTHER_DEBIT_IDS = new Set([7, 8, 9, 22, 25])
 
 /** Other block credit: προκαταβολές, δάνεια, ticket, εξόφληση λοιπών, κλπ. */
-export const OTHER_CREDIT_IDS = new Set([2, 10, 14, 24, 92])
+export const OTHER_CREDIT_IDS = new Set([2, 10, 14, 24, 92, 94, 95])
 
 export const LEDGER_COLUMNS = [
   'salary_debit',
@@ -176,33 +176,52 @@ function parseBareEuroAmount(text) {
   return Number.isFinite(n) ? n : 0
 }
 
-/** Re-apply APG column rules to a saved ledger row (from tech_ledger_view). */
+/** Re-apply APG column rules to a saved ledger row (from tech_ledger_view).
+ * Προτεραιότητα: φυσικές στήλες του view — χωρίς remap σε λάθος συρτάρι.
+ */
 export function normalizeSavedEntry(entry, transactionType, options = {}) {
   const type = transactionType || {
-    id: entry?.ept_id,
+    id: entry?.ept_id ?? entry?.type_id,
     ledger_group: entry?.ledger_group,
   }
+
+  const fromSalaryDebit = Number(entry?.salary_debit) || 0
+  const fromSalaryCredit = Number(entry?.salary_credit) || 0
+  const fromOtherDebit = Number(entry?.other_debit) || 0
+  const fromOtherCredit = Number(entry?.other_credit) || 0
   const fromInvoiceDebit = Number(entry?.invoice_amount) || 0
   const fromInvoiceCredit = Number(entry?.invoice_credit) || 0
-  const amount = entryAmount(entry)
-  const forceInvoice =
-    fromInvoiceDebit !== 0 || fromInvoiceCredit !== 0
-      ? true
-      : options.forceInvoice ?? null
-  const sideFromSource =
-    fromInvoiceCredit !== 0 || String(entry?.source || '').toUpperCase() === 'PAYMENT'
-      ? 'CREDIT'
-      : 'DEBIT'
-  const columns = distributeLedgerAmount(type, amount || fromInvoiceDebit || fromInvoiceCredit, {
-    ...options,
-    forceInvoice,
-    side: options.side || sideFromSource,
-  })
 
-  // Προτεραιότητα στις τιμές του view (όχι frontend split)
-  if (fromInvoiceDebit !== 0 || fromInvoiceCredit !== 0) {
-    columns.invoice_amount = fromInvoiceDebit
-    columns.invoice_credit = fromInvoiceCredit
+  const hasPhysicalColumns =
+    fromSalaryDebit !== 0 ||
+    fromSalaryCredit !== 0 ||
+    fromOtherDebit !== 0 ||
+    fromOtherCredit !== 0 ||
+    fromInvoiceDebit !== 0 ||
+    fromInvoiceCredit !== 0
+
+  let columns
+  if (hasPhysicalColumns) {
+    // Single source of truth: ό,τι φέρνει το view
+    columns = {
+      salary_debit: fromSalaryDebit,
+      salary_credit: fromSalaryCredit,
+      other_debit: fromOtherDebit,
+      other_credit: fromOtherCredit,
+      invoice_amount: fromInvoiceDebit,
+      invoice_credit: fromInvoiceCredit,
+    }
+  } else {
+    // Legacy / κενές στήλες — fallback από type + amount
+    const amount = entryAmount(entry)
+    const forceInvoice = options.forceInvoice ?? null
+    const sideFromSource =
+      String(entry?.source || '').toUpperCase() === 'PAYMENT' ? 'CREDIT' : 'DEBIT'
+    columns = distributeLedgerAmount(type, amount, {
+      ...options,
+      forceInvoice,
+      side: options.side || sideFromSource,
+    })
   }
 
   const rawDesc = String(entry?.description || '').trim()

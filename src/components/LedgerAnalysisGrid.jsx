@@ -9,6 +9,20 @@ import {
 import { ledgerRowClassName } from '../lib/ledgerMapping'
 import { resolveTransactionTypeFromLedgerRow } from '../lib/transactionTypes'
 import { formatEuro } from '../lib/payrollAnalysis'
+import { isLoanInstallmentRow } from '../lib/loanUi'
+
+function renderCreditAmount(row, value) {
+  const n = Number(value)
+  if (!Number.isFinite(n) || n === 0) return ''
+  if (isLoanInstallmentRow(row)) {
+    return (
+      <span className="font-medium text-red-400">
+        - {formatEuro(n)}
+      </span>
+    )
+  }
+  return formatLedgerAmount(value)
+}
 
 const COLUMN_WIDTHS_STORAGE_KEY = 'dias_ledger_column_widths_v5'
 
@@ -359,13 +373,13 @@ export default function LedgerAnalysisGrid({
           {formatLedgerAmount(row.salary_debit)}
         </td>
         <td style={cellStyle('salary_credit')} className={amountCellClass('salary_credit', bucket, row)}>
-          {formatLedgerAmount(row.salary_credit)}
+          {renderCreditAmount(row, row.salary_credit)}
         </td>
         <td style={cellStyle('other_debit')} className={amountCellClass('other_debit', bucket, row)}>
           {formatLedgerAmount(row.other_debit)}
         </td>
         <td style={cellStyle('other_credit')} className={amountCellClass('other_credit', bucket, row)}>
-          {formatLedgerAmount(row.other_credit)}
+          {renderCreditAmount(row, row.other_credit)}
         </td>
         {showInvoice ? (
           <>
@@ -379,7 +393,7 @@ export default function LedgerAnalysisGrid({
               style={cellStyle('invoice_credit')}
               className={amountCellClass('invoice_credit', bucket, row)}
             >
-              {formatLedgerAmount(row.invoice_credit)}
+              {renderCreditAmount(row, row.invoice_credit)}
             </td>
           </>
         ) : null}
