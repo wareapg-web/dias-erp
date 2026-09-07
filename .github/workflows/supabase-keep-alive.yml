@@ -1,0 +1,22 @@
+name: Keep Supabase Alive
+
+on:
+  schedule:
+    - cron: '0 10 * * *' # Καθημερινά 10:00 UTC
+  workflow_dispatch: # Χειροκίνητη εκτέλεση από Actions
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping DIAS Supabase
+        run: |
+          curl -fsS -X GET "${{ secrets.DIAS_SUPABASE_URL }}/rest/v1/personnel?select=id&limit=1" \
+            -H "apikey: ${{ secrets.DIAS_SUPABASE_ANON_KEY }}" \
+            -H "Authorization: Bearer ${{ secrets.DIAS_SUPABASE_ANON_KEY }}"
+
+      - name: Ping Admin Supabase
+        run: |
+          curl -fsS -X GET "${{ secrets.ADMIN_SUPABASE_URL }}/rest/v1/techs?select=id&limit=1" \
+            -H "apikey: ${{ secrets.ADMIN_SUPABASE_ANON_KEY }}" \
+            -H "Authorization: Bearer ${{ secrets.ADMIN_SUPABASE_ANON_KEY }}"

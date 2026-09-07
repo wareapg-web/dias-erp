@@ -565,17 +565,17 @@ function InvoiceGuideCard({ netAmount, taxPercent }) {
         <span>Αξία Τιμολογίου</span>
         <span className="font-mono tabular-nums">{formatEuro(net)}</span>
       </div>
-      <div className="flex justify-between gap-3 py-1 text-emerald-400">
+      <div className="flex justify-between gap-3 py-1 text-slate-300">
         <span>ΦΠΑ 24%</span>
         <span className="font-mono tabular-nums">+ {formatEuro(vat)}</span>
       </div>
-      <div className="flex justify-between gap-3 py-1 text-rose-400">
+      <div className="flex justify-between gap-3 py-1 text-slate-300">
         <span>Παρακρ. Φόρου ({pct}%)</span>
         <span className="font-mono tabular-nums">− {formatEuro(withholding)}</span>
       </div>
       <hr className="my-1 border-slate-600" />
-      <div className="flex justify-between gap-3 py-1 font-bold text-amber-400">
-        <span>Πληρωτέο (Στο χέρι)</span>
+      <div className="flex justify-between gap-3 py-1 font-bold text-slate-100">
+        <span>Πληρωτέο</span>
         <span className="font-mono tabular-nums">{formatEuro(payable)}</span>
       </div>
     </div>

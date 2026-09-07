@@ -18,6 +18,7 @@ import {
   estimateAmount,
   formatEuro,
   formatEuroPlain,
+  formatMatrixLoan,
   formatMatrixTicket,
 } from '../lib/payrollAnalysis'
 import {
@@ -31,6 +32,7 @@ import {
   earningsToDb,
   earningsTotal,
   earningsTransferRowDefs,
+  isFixedExpense,
 } from '../lib/techEarnings'
 import { fromElInputValue, parseElNumber, toElInputDisplay, formatElNumber } from '../lib/numberFormat'
 import {
@@ -60,6 +62,7 @@ import {
   paymentTypeLabel,
 } from '../lib/techPayments'
 import { buildPaymentsDisplayList, isLoanInstallmentRow } from '../lib/loanUi'
+import { exportMonthPayrollToExcel } from '../lib/monthPayrollExport'
 import {
   computeLedgerBalances,
   ledgerRowKey,
@@ -84,6 +87,7 @@ import { employmentLabel, personnelIssuesInvoice } from '../lib/personnel'
 import PersonnelPanel from './PersonnelPanel'
 import MovementModal from './MovementModal'
 import LoanModal from './LoanModal'
+import LoanManagementModal from './LoanManagementModal'
 import LedgerAnalysisGrid from './LedgerAnalysisGrid'
 import DarkSelect from './DarkSelect'
 
@@ -116,6 +120,7 @@ export default function TechAnalysisModal({
 }) {
   const [analysisYear, setAnalysisYear] = useState(initialYear)
   const [selectedMonth, setSelectedMonth] = useState(initialMonth)
+  const [monthExporting, setMonthExporting] = useState(false)
   const [assignments, setAssignments] = useState([])
   const [jobs, setJobs] = useState([])
   const [dailyStatus, setDailyStatus] = useState([])
@@ -159,6 +164,7 @@ export default function TechAnalysisModal({
   const [workHoursMissing, setWorkHoursMissing] = useState(false)
   const [movementOpen, setMovementOpen] = useState(false)
   const [loanOpen, setLoanOpen] = useState(false)
+  const [loanManagementOpen, setLoanManagementOpen] = useState(false)
   const [selectedRowData, setSelectedRowData] = useState(null)
   const [selectedLedgerRowKey, setSelectedLedgerRowKey] = useState(null)
   const [movementPresetTypeId, setMovementPresetTypeId] = useState(null)
@@ -742,8 +748,19 @@ export default function TechAnalysisModal({
           yL: 0,
           yTim: 0,
           ticket: 0,
+          loan: 0,
+          loanCount: 0,
         })),
-        totals: { sigma: 0, pi: 0, yM: 0, yL: 0, yTim: 0, ticket: 0 },
+        totals: {
+          sigma: 0,
+          pi: 0,
+          yM: 0,
+          yL: 0,
+          yTim: 0,
+          ticket: 0,
+          loan: 0,
+          loanCount: 0,
+        },
         avg: 0,
         selectedSettled: () => false,
         yearSettled: false,
@@ -805,6 +822,24 @@ export default function TechAnalysisModal({
     : selectedPayroll?.summary
   const selectedSalary = salaryMatrix.months[selectedMonth - 1]
   const monthSettled = salaryMatrix.selectedSettled?.(selectedMonth)
+
+  const handleMonthExcelExport = async () => {
+    if (monthExporting) return
+    setMonthExporting(true)
+    try {
+      const { rowCount, filename } = await exportMonthPayrollToExcel({
+        month: selectedMonth,
+        year: analysisYear,
+        personnel,
+      })
+      toast.success(`Εξαγωγή ολοκληρώθηκε · ${rowCount} τεχνικοί · ${filename}`)
+    } catch (err) {
+      const msg = err?.message || String(err)
+      toast.error(msg || 'Αποτυχία εξαγωγής')
+    } finally {
+      setMonthExporting(false)
+    }
+  }
 
   const handleTransferHours = async () => {
     if (!tech?.id || hoursTransferSaving) return
@@ -1052,6 +1087,18 @@ export default function TechAnalysisModal({
       auto_transfer_settings: {
         ...(prev.auto_transfer_settings || {}),
         [transferKey]: Boolean(checked),
+      },
+    }))
+    setEarningsDirty(true)
+  }
+
+  const patchFixedExpense = (earningsKey, checked) => {
+    if (!earningsKey) return
+    setEarningsForm((prev) => ({
+      ...prev,
+      fixed_expense_settings: {
+        ...(prev.fixed_expense_settings || {}),
+        [earningsKey]: Boolean(checked),
       },
     }))
     setEarningsDirty(true)
@@ -1358,6 +1405,24 @@ export default function TechAnalysisModal({
                   className="w-24 rounded-xl border border-white/10 bg-slate-950/60 px-3 py-2 text-sm font-medium text-white"
                 />
               </div>
+              <div className="flex flex-col gap-1">
+                <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                  Export
+                </span>
+                <button
+                  type="button"
+                  onClick={handleMonthExcelExport}
+                  disabled={monthExporting}
+                  title="Εξαγωγή χρεώσεων (δεδουλευμένων) όλου του προσωπικού για τον επιλεγμένο μήνα"
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-500/40 bg-emerald-500/15 px-3 py-2 text-xs font-bold text-emerald-100 transition hover:bg-emerald-500/25 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <svg viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4 shrink-0" aria-hidden>
+                    <path d="M10.75 2.75a.75.75 0 00-1.5 0v8.69L6.3 8.49a.75.75 0 00-1.1 1.02l4.25 4.5a.75.75 0 001.1 0l4.25-4.5a.75.75 0 10-1.1-1.02l-2.95 3.12V2.75z" />
+                    <path d="M3.5 12.75a.75.75 0 00-1.5 0v2.5A2.75 2.75 0 004.75 18h10.5A2.75 2.75 0 0018 15.25v-2.5a.75.75 0 00-1.5 0v2.5c0 .69-.56 1.25-1.25 1.25H4.75c-.69 0-1.25-.56-1.25-1.25v-2.5z" />
+                  </svg>
+                  {monthExporting ? 'Εξαγωγή...' : 'Εξαγωγή Μήνα (Excel)'}
+                </button>
+              </div>
               {showTechDropdown && (
                 <div className="flex flex-col gap-1">
                   <label htmlFor="analysis-tech" className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
@@ -1430,7 +1495,36 @@ export default function TechAnalysisModal({
               {tab.label}
             </button>
           ))}
+          <button
+            type="button"
+            onClick={() => setLoanManagementOpen(true)}
+            disabled={!tech}
+            title="Διαχείριση δανείων τεχνικού"
+            className="ml-auto shrink-0 self-center rounded-xl border border-amber-500/40 bg-transparent px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-amber-100/90 transition hover:border-amber-400/60 hover:bg-amber-500/10 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            Διαχείριση Δανείων
+          </button>
         </div>
+
+        <LoanManagementModal
+          open={loanManagementOpen}
+          tech={tech}
+          selectedMonth={selectedMonth}
+          analysisYear={analysisYear}
+          onClose={() => setLoanManagementOpen(false)}
+          onSaved={handleMovementSaved}
+          onOpenNewLoan={() => setLoanOpen(true)}
+          loanCreateOpen={loanOpen}
+        />
+
+        <LoanModal
+          open={loanOpen}
+          tech={tech}
+          selectedMonth={selectedMonth}
+          analysisYear={analysisYear}
+          onClose={() => setLoanOpen(false)}
+          onSaved={handleMovementSaved}
+        />
 
         {loadError && (
           <div className="rounded-xl border border-rose-500/40 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
@@ -1530,6 +1624,16 @@ export default function TechAnalysisModal({
                         onSelectMonth={setSelectedMonth}
                         values={salaryMatrix.months.map((m) => formatMatrixTicket(m.ticket))}
                         total={formatMatrixTicket(salaryMatrix.totals.ticket)}
+                      />
+                      <MatrixRow
+                        label="Δάνειο"
+                        hint=""
+                        selectedMonth={selectedMonth}
+                        onSelectMonth={setSelectedMonth}
+                        values={salaryMatrix.months.map((m) =>
+                          formatMatrixLoan(m.loan, m.loanCount)
+                        )}
+                        total={formatMatrixLoan(salaryMatrix.totals.loan)}
                       />
                     </tbody>
                   </table>
@@ -1673,35 +1777,8 @@ export default function TechAnalysisModal({
                     {item.label}
                   </button>
                 ))}
-                <button
-                  type="button"
-                  onClick={() => setLoanOpen(true)}
-                  disabled={!tech}
-                  title="Δανειο / προκαταβολη"
-                  className="mt-auto flex shrink-0 items-center gap-2 rounded-xl border border-amber-500/35 bg-amber-500/10 px-3 py-2.5 text-left text-xs font-semibold uppercase tracking-wide text-amber-100 transition hover:border-amber-400/50 hover:bg-amber-500/20 disabled:cursor-not-allowed disabled:opacity-40 lg:w-full"
-                >
-                  <svg
-                    viewBox="0 0 20 20"
-                    fill="currentColor"
-                    className="h-4 w-4 shrink-0"
-                    aria-hidden
-                  >
-                    <path d="M1 4.25A2.25 2.25 0 013.25 2h13.5A2.25 2.25 0 0119 4.25v2.5A2.25 2.25 0 0116.75 9H3.25A2.25 2.25 0 011 6.75v-2.5zM1 11.75A2.25 2.25 0 013.25 9.5h13.5A2.25 2.25 0 0119 11.75v2.5A2.25 2.25 0 0116.75 16.5H3.25A2.25 2.25 0 011 14.25v-2.5z" />
-                    <path d="M4.5 5.5a.75.75 0 01.75-.75h.01a.75.75 0 010 1.5H5.25A.75.75 0 014.5 5.5zM4.5 13a.75.75 0 01.75-.75h.01a.75.75 0 010 1.5H5.25A.75.75 0 014.5 13z" />
-                  </svg>
-                  ΔΑΝΕΙΟ
-                </button>
               </aside>
             </div>
-
-            <LoanModal
-              open={loanOpen}
-              tech={tech}
-              selectedMonth={selectedMonth}
-              analysisYear={analysisYear}
-              onClose={() => setLoanOpen(false)}
-              onSaved={handleMovementSaved}
-            />
 
             <MovementModal
               key={
@@ -1747,10 +1824,22 @@ export default function TechAnalysisModal({
                   <div className="px-4 py-12 text-center text-slate-400">Φόρτωση αποδοχών...</div>
                 ) : (
                   <div className="overflow-x-auto">
-                    <table className="w-full min-w-[480px] border-collapse text-left text-sm">
+                    <table className="w-full min-w-[560px] border-collapse text-left text-sm">
                       <thead>
                         <tr className="border-b border-white/10 bg-slate-950/60 text-[10px] uppercase tracking-wider text-slate-400">
+                          <th
+                            className="w-14 px-2 py-2.5 text-center font-semibold"
+                            title="Βασικό/στάνταρ μηνιαίο έξοδο (τικ) · μεταβλητό (κενό)"
+                          >
+                            Βασικό
+                          </th>
                           <th className="px-4 py-2.5 font-semibold">Τύπος</th>
+                          <th
+                            className="w-16 px-1 py-2.5 text-center font-semibold text-cyan-400/90"
+                            title="Συμπερίληψη στη Δημιουργία μήνα"
+                          >
+                            Δημιουργία
+                          </th>
                           <th className="px-3 py-2.5 text-right font-semibold">Ποσό</th>
                           <th className="px-3 py-2.5 text-right font-semibold">&gt; από</th>
                           <th className="px-3 py-2.5 text-right font-semibold">Ελάχιστο</th>
@@ -1763,51 +1852,72 @@ export default function TechAnalysisModal({
                           const transferOn =
                             showTransfer &&
                             earningsForm.auto_transfer_settings?.[transferKey] === true
+                          const fixedOn = isFixedExpense(earningsForm, def.key)
                           return (
                           <tr
                             key={def.key}
                             className={`border-b border-white/5 ${idx % 2 === 0 ? 'bg-white/[0.02]' : ''}`}
                           >
+                            <td className="px-2 py-1.5 text-center">
+                              <label
+                                className="group relative inline-flex cursor-pointer items-center justify-center"
+                                title={
+                                  fixedOn
+                                    ? 'Βασικό/στάνταρ μηνιαίο έξοδο'
+                                    : 'Μεταβλητό έξοδο'
+                                }
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={fixedOn}
+                                  onChange={(e) =>
+                                    patchFixedExpense(def.key, e.target.checked)
+                                  }
+                                  disabled={earningsMissing}
+                                  className="peer h-3.5 w-3.5 cursor-pointer appearance-none rounded border border-amber-400/40 bg-slate-950/80 transition checked:border-amber-400/70 checked:bg-amber-500/80 disabled:opacity-50"
+                                />
+                                <span className="pointer-events-none absolute inset-0 flex items-center justify-center text-[9px] font-bold text-slate-950 opacity-0 peer-checked:opacity-100">
+                                  ✓
+                                </span>
+                              </label>
+                            </td>
                             <td className="px-4 py-1.5 font-medium text-white">{def.label}</td>
+                            <td className="px-1 py-1.5 text-center">
+                              {showTransfer ? (
+                                <label
+                                  className="group relative inline-flex cursor-pointer items-center justify-center"
+                                  title="Συμπερίληψη στη Δημιουργία"
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked={transferOn}
+                                    onChange={(e) =>
+                                      patchAutoTransfer(transferKey, e.target.checked)
+                                    }
+                                    disabled={earningsMissing}
+                                    className="peer h-3.5 w-3.5 cursor-pointer appearance-none rounded border border-white/25 bg-slate-950/80 transition checked:border-cyan-400/60 checked:bg-cyan-500/80 disabled:opacity-50"
+                                  />
+                                  <span className="pointer-events-none absolute inset-0 flex items-center justify-center text-[9px] font-bold text-slate-950 opacity-0 peer-checked:opacity-100">
+                                    ✓
+                                  </span>
+                                </label>
+                              ) : null}
+                            </td>
                             {['amount', 'from', 'min'].map((suffix) => {
                               const field = `${def.key}_${suffix}`
-                              const isAmount = suffix === 'amount'
                               return (
                                 <td key={field} className="px-2 py-1">
-                                  <div
-                                    className={`flex items-center gap-2 ${isAmount ? '' : 'justify-end'}`}
-                                  >
-                                    {isAmount && showTransfer ? (
-                                      <label
-                                        className="group relative flex shrink-0 cursor-pointer items-center"
-                                        title="Συμπερίληψη στη Δημιουργία"
-                                      >
-                                        <input
-                                          type="checkbox"
-                                          checked={transferOn}
-                                          onChange={(e) =>
-                                            patchAutoTransfer(transferKey, e.target.checked)
-                                          }
-                                          disabled={earningsMissing}
-                                          className="peer h-3.5 w-3.5 cursor-pointer appearance-none rounded border border-white/25 bg-slate-950/80 transition checked:border-cyan-400/60 checked:bg-cyan-500/80 disabled:opacity-50"
-                                        />
-                                        <span className="pointer-events-none absolute inset-0 flex items-center justify-center text-[9px] font-bold text-slate-950 opacity-0 peer-checked:opacity-100">
-                                          ✓
-                                        </span>
-                                      </label>
-                                    ) : null}
-                                    <input
-                                      type="text"
-                                      inputMode="decimal"
-                                      autoComplete="off"
-                                      value={toElInputDisplay(earningsForm[field] ?? '')}
-                                      onChange={(e) =>
-                                        patchEarnings(field, fromElInputValue(e.target.value))
-                                      }
-                                      disabled={earningsMissing}
-                                      className="w-full min-w-0 rounded-lg border border-white/10 bg-slate-950/60 px-2 py-1.5 text-right font-mono text-sm text-white disabled:opacity-50"
-                                    />
-                                  </div>
+                                  <input
+                                    type="text"
+                                    inputMode="decimal"
+                                    autoComplete="off"
+                                    value={toElInputDisplay(earningsForm[field] ?? '')}
+                                    onChange={(e) =>
+                                      patchEarnings(field, fromElInputValue(e.target.value))
+                                    }
+                                    disabled={earningsMissing}
+                                    className="w-full min-w-0 rounded-lg border border-white/10 bg-slate-950/60 px-2 py-1.5 text-right font-mono text-sm text-white disabled:opacity-50"
+                                  />
                                 </td>
                               )
                             })}
@@ -1823,45 +1933,69 @@ export default function TechAnalysisModal({
                           const transferOn =
                             showTransfer &&
                             earningsForm.auto_transfer_settings?.[transferKey] === true
+                          const fixedOn = isFixedExpense(earningsForm, def.key)
                           return (
                             <tr
                               key={def.key}
                               className={`border-b border-white/5 ${(earningsTransferRowDefs().length + idx) % 2 === 0 ? 'bg-white/[0.02]' : ''}`}
                             >
-                              <td className="px-4 py-1.5 font-medium text-white">{def.label}</td>
-                              <td className="px-2 py-1">
-                                <div className="flex items-center gap-2">
-                                  {showTransfer ? (
-                                    <label
-                                      className="group relative flex shrink-0 cursor-pointer items-center"
-                                      title="Συμπερίληψη στη Δημιουργία"
-                                    >
-                                      <input
-                                        type="checkbox"
-                                        checked={transferOn}
-                                        onChange={(e) =>
-                                          patchAutoTransfer(transferKey, e.target.checked)
-                                        }
-                                        disabled={earningsMissing}
-                                        className="peer h-3.5 w-3.5 cursor-pointer appearance-none rounded border border-white/25 bg-slate-950/80 transition checked:border-cyan-400/60 checked:bg-cyan-500/80 disabled:opacity-50"
-                                      />
-                                      <span className="pointer-events-none absolute inset-0 flex items-center justify-center text-[9px] font-bold text-slate-950 opacity-0 peer-checked:opacity-100">
-                                        ✓
-                                      </span>
-                                    </label>
-                                  ) : null}
+                              <td className="px-2 py-1.5 text-center">
+                                <label
+                                  className="group relative inline-flex cursor-pointer items-center justify-center"
+                                  title={
+                                    fixedOn
+                                      ? 'Βασικό/στάνταρ μηνιαίο έξοδο'
+                                      : 'Μεταβλητό έξοδο'
+                                  }
+                                >
                                   <input
-                                    type="text"
-                                    inputMode="decimal"
-                                    autoComplete="off"
-                                    value={toElInputDisplay(earningsForm[field] ?? '')}
+                                    type="checkbox"
+                                    checked={fixedOn}
                                     onChange={(e) =>
-                                      patchEarnings(field, fromElInputValue(e.target.value))
+                                      patchFixedExpense(def.key, e.target.checked)
                                     }
                                     disabled={earningsMissing}
-                                    className="w-full min-w-0 rounded-lg border border-white/10 bg-slate-950/60 px-2 py-1.5 text-right font-mono text-sm text-white disabled:opacity-50"
+                                    className="peer h-3.5 w-3.5 cursor-pointer appearance-none rounded border border-amber-400/40 bg-slate-950/80 transition checked:border-amber-400/70 checked:bg-amber-500/80 disabled:opacity-50"
                                   />
-                                </div>
+                                  <span className="pointer-events-none absolute inset-0 flex items-center justify-center text-[9px] font-bold text-slate-950 opacity-0 peer-checked:opacity-100">
+                                    ✓
+                                  </span>
+                                </label>
+                              </td>
+                              <td className="px-4 py-1.5 font-medium text-white">{def.label}</td>
+                              <td className="px-1 py-1.5 text-center">
+                                {showTransfer ? (
+                                  <label
+                                    className="group relative inline-flex cursor-pointer items-center justify-center"
+                                    title="Συμπερίληψη στη Δημιουργία"
+                                  >
+                                    <input
+                                      type="checkbox"
+                                      checked={transferOn}
+                                      onChange={(e) =>
+                                        patchAutoTransfer(transferKey, e.target.checked)
+                                      }
+                                      disabled={earningsMissing}
+                                      className="peer h-3.5 w-3.5 cursor-pointer appearance-none rounded border border-white/25 bg-slate-950/80 transition checked:border-cyan-400/60 checked:bg-cyan-500/80 disabled:opacity-50"
+                                    />
+                                    <span className="pointer-events-none absolute inset-0 flex items-center justify-center text-[9px] font-bold text-slate-950 opacity-0 peer-checked:opacity-100">
+                                      ✓
+                                    </span>
+                                  </label>
+                                ) : null}
+                              </td>
+                              <td className="px-2 py-1">
+                                <input
+                                  type="text"
+                                  inputMode="decimal"
+                                  autoComplete="off"
+                                  value={toElInputDisplay(earningsForm[field] ?? '')}
+                                  onChange={(e) =>
+                                    patchEarnings(field, fromElInputValue(e.target.value))
+                                  }
+                                  disabled={earningsMissing}
+                                  className="w-full min-w-0 rounded-lg border border-white/10 bg-slate-950/60 px-2 py-1.5 text-right font-mono text-sm text-white disabled:opacity-50"
+                                />
                               </td>
                               <td className="px-2 py-1" />
                               <td className="px-2 py-1" />
@@ -1875,12 +2009,37 @@ export default function TechAnalysisModal({
                               (d) => !d.invoiceOnly || issuesInvoice
                             ).length +
                             idx
+                          const fixedOn = isFixedExpense(earningsForm, def.key)
                           return (
                           <tr
                             key={def.key}
                             className={`border-b border-white/5 ${baseIdx % 2 === 0 ? 'bg-white/[0.02]' : ''}`}
                           >
+                            <td className="px-2 py-1.5 text-center">
+                              <label
+                                className="group relative inline-flex cursor-pointer items-center justify-center"
+                                title={
+                                  fixedOn
+                                    ? 'Βασικό/στάνταρ μηνιαίο έξοδο'
+                                    : 'Μεταβλητό έξοδο'
+                                }
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={fixedOn}
+                                  onChange={(e) =>
+                                    patchFixedExpense(def.key, e.target.checked)
+                                  }
+                                  disabled={earningsMissing}
+                                  className="peer h-3.5 w-3.5 cursor-pointer appearance-none rounded border border-amber-400/40 bg-slate-950/80 transition checked:border-amber-400/70 checked:bg-amber-500/80 disabled:opacity-50"
+                                />
+                                <span className="pointer-events-none absolute inset-0 flex items-center justify-center text-[9px] font-bold text-slate-950 opacity-0 peer-checked:opacity-100">
+                                  ✓
+                                </span>
+                              </label>
+                            </td>
                             <td className="px-4 py-1.5 font-medium text-white">{def.label}</td>
+                            <td className="px-1 py-1.5" />
                             {['amount', 'from', 'min'].map((suffix) => {
                               const field = `${def.key}_${suffix}`
                               return (
@@ -1905,7 +2064,9 @@ export default function TechAnalysisModal({
                       </tbody>
                       <tfoot>
                         <tr className="border-t border-white/10 bg-slate-950/70">
+                          <td />
                           <td className="px-4 py-2.5 text-sm font-bold text-cyan-200">Σύνολο</td>
+                          <td />
                           <td className="px-3 py-2.5 text-right font-mono text-sm font-bold text-white">
                             {formatEuroPlain(earningsSum) || '0,00'}
                           </td>
@@ -1916,7 +2077,8 @@ export default function TechAnalysisModal({
                   </div>
                 )}
                 <p className="border-t border-white/5 px-4 py-2 text-[11px] text-slate-500">
-                  Αποδοχές ανά υπάλληλο στο DIAS · {earningsDirty ? 'μη αποθηκευμένες αλλαγές' : 'αποθηκευμένο'}
+                  Αποδοχές ανά υπάλληλο στο DIAS · κίτρινο ✓ = Βασικό · κυανό ✓ = Δημιουργία
+                  {earningsDirty ? ' · μη αποθηκευμένες αλλαγές' : ' · αποθηκευμένο'}
                 </p>
               </div>
 
@@ -2686,7 +2848,7 @@ export default function TechAnalysisModal({
       <button
         type="button"
         aria-label="Κλείσιμο"
-        className="absolute inset-0 bg-slate-950/25 backdrop-blur-[1px]"
+        className="absolute inset-0 bg-slate-950/20 backdrop-blur-none"
         onClick={onClose}
       />
       <div className="relative flex max-h-[94vh] w-full max-w-[1920px] flex-col overflow-hidden rounded-2xl border border-white/10 bg-gradient-to-br from-slate-950 via-slate-900 to-indigo-950 shadow-2xl">
