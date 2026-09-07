@@ -5,15 +5,19 @@ import { diasClient, formatSupabaseError } from '../lib/supabase'
 import { fromElInputValue, parseElNumber, toElInputDisplay } from '../lib/numberFormat'
 import { MONTH_LABELS } from '../lib/payrollAnalysis'
 import { parseToIsoDate } from '../lib/greekDate'
+import {
+  LOAN_DISBURSEMENT_TYPE_ID,
+  LOAN_INSTALLMENT_TYPE_ID,
+  computeBankInstallments,
+  generateLoanBatchId,
+  periodAfterOffset,
+} from '../lib/loanUi'
 
 const CATEGORY_OPTIONS = [
   { value: 'salary', label: 'Μισθός' },
   { value: 'other', label: 'Λοιπά' },
   { value: 'invoice', label: 'Τιμολόγιο' },
 ]
-
-const LOAN_INSTALLMENT_TYPE_ID = 94
-const LOAN_DISBURSEMENT_TYPE_ID = 95
 
 function emptyLoanForm(month, year) {
   return {
@@ -28,22 +32,6 @@ function emptyLoanForm(month, year) {
   }
 }
 
-function roundMoney(n) {
-  return Math.round((Number(n) || 0) * 100) / 100
-}
-
-/** Τραπεζική λογική: ακέραιες δόσεις 1..N-1 · η τελευταία απορροφά τη διαφορά. */
-function computeBankInstallments(totalAmount, numberOfInstallments) {
-  const total = Number(totalAmount)
-  const n = Math.floor(Number(numberOfInstallments))
-  if (!(total > 0) || !(n >= 1)) {
-    return { baseInstallment: null, lastInstallment: null }
-  }
-  const baseInstallment = Math.ceil(total / n)
-  const lastInstallment = roundMoney(total - baseInstallment * (n - 1))
-  return { baseInstallment, lastInstallment }
-}
-
 function formatMoneyField(n) {
   if (!Number.isFinite(n) || n === 0) return ''
   return toElInputDisplay(String(n))
@@ -53,13 +41,6 @@ function paymentTypeForCategory(category) {
   if (category === 'other') return 'SETTLEMENT_2'
   if (category === 'invoice') return 'SETTLEMENT'
   return 'SETTLEMENT_1'
-}
-
-function periodAfterOffset(startMonth, startYear, offset) {
-  const zeroBased = Number(startMonth) - 1 + Number(offset)
-  const year = Number(startYear) + Math.floor(zeroBased / 12)
-  const month = ((zeroBased % 12) + 12) % 12 + 1
-  return { month, year }
 }
 
 /**
@@ -196,6 +177,7 @@ export default function LoanModal({
     const techName = tech?.displayName || tech?.name || tech?.tech_name || null
     const grantMonth = Number(String(grantDate).slice(5, 7))
     const grantYear = Number(String(grantDate).slice(0, 4))
+    const loanBatchId = generateLoanBatchId()
 
     const creditFor = (amount) => ({
       salary_credit: form.category === 'salary' ? amount : 0,
@@ -221,6 +203,7 @@ export default function LoanModal({
         other_debit: 0,
         notes: `Εκταμίευση Δανείου: ${baseNotes}`,
         description: null,
+        loan_batch_id: loanBatchId,
       },
     ]
 
@@ -247,6 +230,7 @@ export default function LoanModal({
         other_debit: 0,
         notes,
         description: null,
+        loan_batch_id: loanBatchId,
       })
     }
 
@@ -272,10 +256,10 @@ export default function LoanModal({
     'mt-1 w-full rounded-xl border border-white/10 bg-slate-950/60 px-3 py-2 text-sm text-white outline-none focus:border-cyan-500/40'
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+    <div className="fixed inset-0 z-[70] flex items-center justify-center p-4">
       <button
         type="button"
-        className="absolute inset-0 bg-slate-950/25 backdrop-blur-[1px]"
+        className="absolute inset-0 bg-slate-950/20 backdrop-blur-none"
         aria-label="Κλείσιμο"
         onClick={onClose}
         disabled={saving}

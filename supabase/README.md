@@ -49,6 +49,9 @@
 - `supabase/25_payment_entries_type_id.sql` (payment_entries.type_id + view · TIM → 93)
 - `supabase/26_loan_installment_type.sql` (transaction_types id 94 · Δόση Δανείου)
 - `supabase/27_loan_disbursement_type.sql` (transaction_types id 95 · Εκταμίευση Δανείου)
+- `supabase/28_uncheck_bonus_plus_transfer.sql` (ξετικάρισμα Bonus+ auto_transfer)
+- `supabase/29_loan_batch_id.sql` (`payment_entries.loan_batch_id` + view · σειρά δανείου)
+- `supabase/30_fixed_expense_settings.sql` (JSONB Βασικό/Μεταβλητό στις Αποδοχές)
 
 ### Φωτογραφίες προφίλ (Cloudflare R2 μέσω Edge Function)
 

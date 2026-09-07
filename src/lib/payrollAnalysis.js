@@ -220,6 +220,18 @@ export function formatMatrixTicket(value) {
   return formatEuroPlain(n)
 }
 
+/**
+ * Γραμμή Δάνειο στη μήτρα: άθροισμα δόσεων 94.
+ * count > 1 → παρένθεση με πλήθος δίπλα στο ποσό.
+ */
+export function formatMatrixLoan(value, count = 0) {
+  const n = Number(value) || 0
+  if (n <= 0) return '-'
+  const base = formatEuro(n)
+  const c = Number(count) || 0
+  return c > 1 ? `${base} (${c})` : base
+}
+
 function payrollMatchesTech(payroll, tech) {
   if (!tech || !payroll) return false
   return (

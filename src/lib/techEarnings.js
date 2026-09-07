@@ -3,11 +3,11 @@
 import { parseElNumber } from './numberFormat'
 
 export const EARNINGS_ROW_DEFS = [
-  // Ομάδα 1 (με checkbox) — εμφανίζονται πρώτα μαζί με amount-only
+  // Ομάδα 1 (με checkbox Δημιουργίας) — εμφανίζονται πρώτα μαζί με amount-only
   { key: 'salary', label: 'Μισθός' },
   { key: 'bonus', label: 'Bonus' },
   { key: 'bonus_plus', label: 'Bonus +' },
-  // Ομάδα 2 (χωρίς checkbox) — rates / ποσά ωρών
+  // Ομάδα 2 (χωρίς checkbox Δημιουργίας) — rates / ποσά ωρών
   { key: 'overtime', label: 'Υπερωρίες' },
   { key: 'holiday', label: 'Αργίες' },
   { key: 'night', label: 'Νυχτερινά' },
@@ -49,6 +49,98 @@ export const EARNINGS_AUTO_TRANSFER_DEFS = [
   },
 ]
 
+/** Keys που θεωρούνται Βασικό/Στάνταρ όταν λείπει τιμή στο JSON. */
+export const FIXED_EXPENSE_DEFAULT_TRUE_KEYS = new Set([
+  'salary',
+  'bonus',
+  'driver_allowance',
+  'accountant',
+])
+
+/**
+ * transaction_types.id → κλειδί αποδοχών (για Βασικό/Μεταβλητό ανά μήνα).
+ * 3 Μισθός · 4 Bonus · 41 Bonus+ · 21 Οδηγού · 23 Λογιστής ·
+ * 7 Υπερωρίες · 8 Αργίες · 9 Νυχτερινά · 22 Διανυκτέρευση · 25 Μετρό · 24 Ticket
+ */
+export const EARNINGS_KEY_BY_TYPE_ID = {
+  3: 'salary',
+  4: 'bonus',
+  41: 'bonus_plus',
+  21: 'driver_allowance',
+  23: 'accountant',
+  7: 'overtime',
+  8: 'holiday',
+  9: 'night',
+  22: 'overnight',
+  25: 'metro',
+  24: 'ticket',
+}
+
+/** type_code / type string → earnings key (payroll_entries στο view). */
+export const EARNINGS_KEY_BY_TYPE_CODE = {
+  base_salary: 'salary',
+  salary: 'salary',
+  μισθός: 'salary',
+  μισθος: 'salary',
+  bonus: 'bonus',
+  bonus_plus: 'bonus_plus',
+  'bonus +': 'bonus_plus',
+  overtime: 'overtime',
+  υπερωρίες: 'overtime',
+  υπερωριες: 'overtime',
+  holiday: 'holiday',
+  αργίες: 'holiday',
+  αργιες: 'holiday',
+  night: 'night',
+  νυχτερινά: 'night',
+  νυχτερινα: 'night',
+  overnight: 'overnight',
+  διανυκτέρευση: 'overnight',
+  διανυκτερευση: 'overnight',
+  metro: 'metro',
+  μετρό: 'metro',
+  μετρο: 'metro',
+  ticket: 'ticket',
+  'ticket restaurant': 'ticket',
+  driver_allowance: 'driver_allowance',
+  επίδομα_οδηγού: 'driver_allowance',
+  'επίδομα οδηγού': 'driver_allowance',
+  accountant: 'accountant',
+  λογιστής: 'accountant',
+  λογιστης: 'accountant',
+}
+
+/**
+ * Αντιστοίχιση γραμμής ledger → κλειδί αποδοχών (ή null αν άγνωστο → μεταβλητό).
+ */
+export function earningsKeyFromLedgerRow(row) {
+  if (!row) return null
+  const tid = Number(row.type_id ?? row.ept_id)
+  if (Number.isFinite(tid) && EARNINGS_KEY_BY_TYPE_ID[tid]) {
+    return EARNINGS_KEY_BY_TYPE_ID[tid]
+  }
+  const typeStr = String(row.type || row.type_code || '')
+    .trim()
+    .toLowerCase()
+  if (typeStr && EARNINGS_KEY_BY_TYPE_CODE[typeStr]) {
+    return EARNINGS_KEY_BY_TYPE_CODE[typeStr]
+  }
+  const desc = String(row.description || row.notes || '')
+    .trim()
+    .toLowerCase()
+  for (const [needle, key] of Object.entries(EARNINGS_KEY_BY_TYPE_CODE)) {
+    if (desc === needle || desc.startsWith(`${needle} `)) return key
+  }
+  // Label match από EARNINGS_ROW_DEFS / amount-only
+  for (const def of EARNINGS_ROW_DEFS) {
+    if (typeStr === def.label.toLowerCase() || desc === def.label.toLowerCase()) return def.key
+  }
+  for (const def of EARNINGS_AMOUNT_ONLY_DEFS) {
+    if (typeStr === def.label.toLowerCase() || desc === def.label.toLowerCase()) return def.key
+  }
+  return null
+}
+
 /** Form / DB field name για amount-only γραμμή. */
 export function amountOnlyField(def) {
   return def.dbColumn || `${def.key}_amount`
@@ -67,6 +159,46 @@ function normalizeAutoTransferSettings(raw) {
   return out
 }
 
+/** Όλα τα κλειδιά τύπων αποδοχών που έχουν στήλη «Βασικό». */
+export function allFixedExpenseKeys() {
+  const keys = EARNINGS_ROW_DEFS.map((d) => d.key)
+  for (const d of EARNINGS_AMOUNT_ONLY_DEFS) keys.push(d.key)
+  return keys
+}
+
+export function emptyFixedExpenseSettings() {
+  const out = {}
+  for (const key of allFixedExpenseKeys()) {
+    out[key] = FIXED_EXPENSE_DEFAULT_TRUE_KEYS.has(key)
+  }
+  return out
+}
+
+/**
+ * Κανονικοποίηση JSON από DB · άγνωστα keys αγνοούνται ·
+ * keys χωρίς τιμή παίρνουν default (Μισθός = true).
+ */
+export function normalizeFixedExpenseSettings(raw) {
+  const defaults = emptyFixedExpenseSettings()
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return defaults
+  const out = { ...defaults }
+  for (const key of allFixedExpenseKeys()) {
+    if (Object.prototype.hasOwnProperty.call(raw, key)) {
+      out[key] = raw[key] === true
+    }
+  }
+  return out
+}
+
+/** True αν ο τύπος είναι βασικό/στάνταρ μηνιαίο έξοδο. */
+export function isFixedExpense(form, key) {
+  const settings = form?.fixed_expense_settings
+  if (settings && Object.prototype.hasOwnProperty.call(settings, key)) {
+    return settings[key] === true
+  }
+  return FIXED_EXPENSE_DEFAULT_TRUE_KEYS.has(key)
+}
+
 export function emptyEarningsForm() {
   const form = {
     bank_account: '',
@@ -74,6 +206,7 @@ export function emptyEarningsForm() {
     issues_invoice: false,
     extra: '',
     auto_transfer_settings: emptyAutoTransferSettings(),
+    fixed_expense_settings: emptyFixedExpenseSettings(),
   }
   for (const row of EARNINGS_ROW_DEFS) {
     form[`${row.key}_amount`] = ''
@@ -100,6 +233,7 @@ export function earningsFromDb(row) {
   form.issues_invoice = Boolean(row.issues_invoice)
   form.extra = row.extra || ''
   form.auto_transfer_settings = normalizeAutoTransferSettings(row.auto_transfer_settings)
+  form.fixed_expense_settings = normalizeFixedExpenseSettings(row.fixed_expense_settings)
   for (const def of EARNINGS_ROW_DEFS) {
     form[`${def.key}_amount`] = numOrEmpty(row[`${def.key}_amount`])
     form[`${def.key}_from`] = numOrEmpty(row[`${def.key}_from`])
@@ -128,6 +262,7 @@ export function earningsToDb(form, tech) {
     issues_invoice: Boolean(form.issues_invoice),
     extra: form.extra?.trim() || null,
     auto_transfer_settings: normalizeAutoTransferSettings(form.auto_transfer_settings),
+    fixed_expense_settings: normalizeFixedExpenseSettings(form.fixed_expense_settings),
     updated_at: new Date().toISOString(),
   }
   for (const def of EARNINGS_ROW_DEFS) {

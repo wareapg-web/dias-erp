@@ -329,7 +329,9 @@ function payrollRowMonthYear(payroll) {
 /**
  * Ετήσια μήτρα: Σ/Π/Υ από tech_ledger_view · Ticket από payrolls (hybrid).
  * Type 94: μετράει στα Υ (λογιστική κράτηση) · εξαιρείται από το Π (όχι cash-out).
- * Ticket ανεξάρτητο — δεν μπαίνει σε Σ/Π/Υ/avg.
+ * Γραμμή «Δάνειο»: πληροφοριακό άθροισμα δόσεων 94 (όλες οι κατηγορίες) · δεν αλλάζει Σ/Π/Υ.
+ * Ticket: γραμμή μήτρας από payrolls · Σ της μήτρας το συμπεριλαμβάνει (εξαίρεση) ·
+ * Π/Υ και computeLedgerBalances μένουν χωρίς Ticket.
  *
  * @param {object[]} ledgerRows
  * @param {number} year
@@ -345,6 +347,8 @@ export function buildLedgerYearMatrix(ledgerRows = [], year, yearPayrolls = []) 
     yL: 0,
     yTim: 0,
     ticket: 0,
+    loan: 0,
+    loanCount: 0,
     salaryDebit: 0,
     salaryCredit: 0,
     otherDebit: 0,
@@ -378,14 +382,29 @@ export function buildLedgerYearMatrix(ledgerRows = [], year, yearPayrolls = []) 
 
     // Type 94: μετράει στα Υ · εξαιρείται από το Pi (όχι πραγματικό cash-out)
     if (isLoanInstallmentRow(row)) {
-      slot.loanInstallmentsCredit += sc + oc + ic
+      const loanAmt = sc + oc + ic
+      slot.loanInstallmentsCredit += loanAmt
+      slot.loanCount += 1
     }
   }
 
   const round2 = (n) => Math.round(n * 100) / 100
 
   for (const slot of months) {
-    slot.sigma = round2(slot.salaryDebit + slot.otherDebit + slot.invoiceDebit)
+    const monthPayrolls = (yearPayrolls || []).filter((p) => {
+      const { year: py, month: pm } = payrollRowMonthYear(p)
+      return py === y && pm === slot.month
+    })
+    const ticketVals = monthPayrolls.map(
+      (p) => Number(p.ticket_restaurant) || Number(p.ticket_amount) || 0
+    )
+    slot.ticket = round2(ticketVals.length ? Math.max(...ticketVals) : 0)
+    slot.loan = round2(slot.loanInstallmentsCredit || 0)
+
+    // Σ μήτρας = ledger χρεώσεις + Ticket (εξαίρεση) · Π/Υ χωρίς Ticket
+    slot.sigma = round2(
+      slot.salaryDebit + slot.otherDebit + slot.invoiceDebit + slot.ticket
+    )
     slot.pi = round2(
       slot.salaryCredit +
         slot.otherCredit +
@@ -395,15 +414,6 @@ export function buildLedgerYearMatrix(ledgerRows = [], year, yearPayrolls = []) 
     slot.yM = round2(slot.salaryDebit - slot.salaryCredit)
     slot.yL = round2(slot.otherDebit - slot.otherCredit)
     slot.yTim = round2(slot.invoiceDebit - slot.invoiceCredit)
-
-    const monthPayrolls = (yearPayrolls || []).filter((p) => {
-      const { year: py, month: pm } = payrollRowMonthYear(p)
-      return py === y && pm === slot.month
-    })
-    const ticketVals = monthPayrolls.map(
-      (p) => Number(p.ticket_restaurant) || Number(p.ticket_amount) || 0
-    )
-    slot.ticket = round2(ticketVals.length ? Math.max(...ticketVals) : 0)
   }
 
   const totals = months.reduce(
@@ -414,8 +424,10 @@ export function buildLedgerYearMatrix(ledgerRows = [], year, yearPayrolls = []) 
       yL: round2(acc.yL + m.yL),
       yTim: round2(acc.yTim + m.yTim),
       ticket: round2(acc.ticket + m.ticket),
+      loan: round2(acc.loan + m.loan),
+      loanCount: acc.loanCount + (m.loanCount || 0),
     }),
-    { sigma: 0, pi: 0, yM: 0, yL: 0, yTim: 0, ticket: 0 }
+    { sigma: 0, pi: 0, yM: 0, yL: 0, yTim: 0, ticket: 0, loan: 0, loanCount: 0 }
   )
 
   const monthsWithEarnings = months.filter((m) => m.sigma > 0)

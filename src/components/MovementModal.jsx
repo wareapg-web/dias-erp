@@ -4,11 +4,15 @@ import { diasClient, formatSupabaseError } from '../lib/supabase'
 import { movementFormFromRow, parseMovementAmount, extractLedgerAmount, isBareEuroText, normalizeEntryDate } from '../lib/techLedger'
 import { fromElInputValue, toElInputDisplay } from '../lib/numberFormat'
 import {
-  resolveLedgerColumn,
-  resolveLedgerSide,
+  HIDDEN_LEDGER_TYPE_IDS,
+  OTHER_CREDIT_IDS,
+  OTHER_DEBIT_IDS,
+  SALARY_CREDIT_IDS,
+  SALARY_DEBIT_IDS,
 } from '../lib/ledgerMapping'
 import {
   buildTypeLookup,
+  defaultSideForType,
   isSalaryLedgerGroup,
   ledgerColumnFor,
   ledgerColumnLabel,
@@ -30,10 +34,161 @@ import {
   loanSeriesNotesKey,
 } from '../lib/loanUi'
 
+const INVOICE_CREDIT_TYPE_ID = 93
+
+/** Δώρα μετρητά — σε Χρέωση εμφανίζονται σε κάθε Κατηγορία (Μισθός/Λοιπά/Τιμολόγιο). */
+const CROSS_CATEGORY_DEBIT_GIFT_IDS = new Set([11, 12])
+
+/** Τύποι που δημιουργούνται αλλού (settlement / LoanModal / αποδοχές) — όχι χειροκίνητα. */
+const EXCLUDED_MANUAL_TYPE_IDS = new Set([
+  1, 2, 3, 10, 14, 24, 91, 92, 93, 94, 95,
+  // σταθερές αποδοχές / auto-transfer
+  5, // Extra Bonus
+  21, // Επίδομα Οδηγού
+  23, // Λογιστής
+  41, // Bonus +
+])
+
+/** Λεκτικό backup για μελλοντικά IDs με ίδια σημασία. */
+const EXCLUDED_MANUAL_LABEL_RE =
+  /εξόφλησ|εξοφλησ|προκαταβολ|δάνειο|δανειο|δόση|δοση|εκταμίευσ|εκταμιευσ|ticket|bonus\s*\+|extra\s*bonus|επίδομα\s*οδηγ|επιδομα\s*οδηγ|λογιστ/i
+
+const EMPTY_TYPE_PLACEHOLDER = 'Δεν υπάρχουν διαθέσιμοι τύποι για χειροκίνητη εισαγωγή'
+
+const CATEGORY_BASE = [
+  { value: 'SALARY', label: 'Μισθός' },
+  { value: 'OTHER', label: 'Λοιπά' },
+]
+
+const CATEGORY_WITH_INVOICE = [
+  ...CATEGORY_BASE,
+  { value: 'INVOICE', label: 'Τιμολόγιο' },
+]
+
+const SIDE_OPTIONS = [
+  { value: 'DEBIT', label: 'Χρέωση' },
+  { value: 'CREDIT', label: 'Πίστωση' },
+]
+
+function typeIsSalary(t) {
+  if (!t) return false
+  if (t.ledger_group) return isSalaryLedgerGroup(t.ledger_group)
+  return Number(t.col_index) === 1
+}
+
+function normalizeCategory(value) {
+  const g = String(value || '').toUpperCase()
+  if (g === 'INVOICE') return 'INVOICE'
+  if (g === 'SALARY') return 'SALARY'
+  return 'OTHER'
+}
+
+/** Κατηγορία UI από bucket / form / τύπο. */
+function resolveUiCategory({ postToInvoice, ledgerGroup, type }) {
+  if (postToInvoice || normalizeCategory(ledgerGroup) === 'INVOICE') return 'INVOICE'
+  if (typeIsSalary(type) || normalizeCategory(ledgerGroup) === 'SALARY') return 'SALARY'
+  return 'OTHER'
+}
+
+function isExcludedManualType(t) {
+  if (!t) return true
+  const id = Number(t.id)
+  if (EXCLUDED_MANUAL_TYPE_IDS.has(id)) return true
+  return EXCLUDED_MANUAL_LABEL_RE.test(String(t.description || ''))
+}
+
+function isExcludedManualTypeId(id, types = []) {
+  if (id == null || id === '') return false
+  const n = Number(id)
+  if (EXCLUDED_MANUAL_TYPE_IDS.has(n)) return true
+  const t = types.find((x) => Number(x.id) === n)
+  return t ? isExcludedManualType(t) : false
+}
+
 /**
- * Κίνηση modal — data-driven από transaction_types.
- * ledger_group (SALARY|OTHER) → Μισθός vs Λοιπά columns.
- * side (DEBIT|CREDIT) → Χρέωση vs Πίστωση (UI choice, not locked by type).
+ * Φίλτρο τύπων με βάση Κατηγορία + Κατεύθυνση.
+ * Τιμολόγιο: πίστωση → μόνο 93 · χρέωση → δεδουλευμένα (όχι εξοφλήσεις).
+ * Δώρα 11/12: σε Χρέωση → όλες οι κατηγορίες (και Τιμολόγιο → invoice_amount).
+ */
+function filterTypesForCategorySide(types, category, side) {
+  const cat = normalizeCategory(category)
+  const credit = String(side || '').toUpperCase() === 'CREDIT'
+  const list = Array.isArray(types) ? types : []
+
+  return list.filter((t) => {
+    const id = Number(t.id)
+    if (HIDDEN_LEDGER_TYPE_IDS.has(id)) return false
+
+    // Δώρο Πάσχα / Χριστουγέννων: bypass ledger_group σε κάθε Κατηγορία (μόνο Χρέωση)
+    if (!credit && CROSS_CATEGORY_DEBIT_GIFT_IDS.has(id)) return true
+
+    if (cat === 'INVOICE') {
+      if (credit) return id === INVOICE_CREDIT_TYPE_ID
+      if (id === INVOICE_CREDIT_TYPE_ID) return false
+      if (SALARY_CREDIT_IDS.has(id) || OTHER_CREDIT_IDS.has(id)) return false
+      return true
+    }
+
+    if (cat === 'SALARY') {
+      if (!typeIsSalary(t)) return false
+      if (credit) return SALARY_CREDIT_IDS.has(id)
+      return SALARY_DEBIT_IDS.has(id) || !SALARY_CREDIT_IDS.has(id)
+    }
+
+    // OTHER — αποκλείουμε 93 (ανήκει στο Τιμολόγιο)
+    if (typeIsSalary(t) || id === INVOICE_CREDIT_TYPE_ID) return false
+    if (credit) {
+      return (
+        OTHER_CREDIT_IDS.has(id) ||
+        defaultSideForType(t.description) === 'CREDIT'
+      )
+    }
+    if (OTHER_CREDIT_IDS.has(id)) return false
+    if (OTHER_DEBIT_IDS.has(id)) return true
+    return defaultSideForType(t.description) !== 'CREDIT'
+  })
+}
+
+/** Μετά το category/side: κόψε auto/settlement τύπους · allowTypeId = edit/preset exception. */
+function applyManualTypeExclusion(types, allowTypeId = null) {
+  const allow = allowTypeId != null && allowTypeId !== '' ? Number(allowTypeId) : null
+  return (types || []).filter((t) => {
+    if (allow != null && Number(t.id) === allow) return true
+    return !isExcludedManualType(t)
+  })
+}
+
+/** 11/12 πάντα στο κάτω μέρος της λίστας Τύπου. */
+function sortMovementTypeOptions(types) {
+  return [...(types || [])].sort((a, b) => {
+    const aGift = CROSS_CATEGORY_DEBIT_GIFT_IDS.has(Number(a.id)) ? 1 : 0
+    const bGift = CROSS_CATEGORY_DEBIT_GIFT_IDS.has(Number(b.id)) ? 1 : 0
+    if (aGift !== bGift) return aGift - bGift
+    const orderA = Number(a.sort_order ?? 0)
+    const orderB = Number(b.sort_order ?? 0)
+    if (orderA !== orderB) return orderA - orderB
+    return Number(a.id) - Number(b.id)
+  })
+}
+
+function getFilteredMovementTypes(types, category, side, allowTypeId = null) {
+  let base = applyManualTypeExclusion(
+    filterTypesForCategorySide(types, category, side),
+    allowTypeId
+  )
+  if (allowTypeId != null && allowTypeId !== '') {
+    const allow = Number(allowTypeId)
+    if (!base.some((t) => Number(t.id) === allow)) {
+      const extra = (types || []).find((t) => Number(t.id) === allow)
+      if (extra) base = [extra, ...base]
+    }
+  }
+  return sortMovementTypeOptions(base)
+}
+
+/**
+ * Κίνηση modal — οδηγείται από Κατηγορία + Κατεύθυνση · ο Τύπος φιλτράρεται.
+ * Αποθήκευση: DEBIT→payroll_entries · CREDIT→payment_entries (αμετάβλητο).
  */
 export default function MovementModal({
   open,
@@ -60,30 +215,87 @@ export default function MovementModal({
   const [saveError, setSaveError] = useState(null)
   const [loanDeleteOpen, setLoanDeleteOpen] = useState(false)
   const [deleting, setDeleting] = useState(false)
+  /** Edit τιμολογίου χωρίς hasInvoice: κράτα την επιλογή Κατηγορίας σε όλο το session. */
+  const [allowInvoiceCategory, setAllowInvoiceCategory] = useState(false)
 
   const isEdit = Boolean(selectedRowData?.id)
   const rowSource = selectedRowData?.source || 'PAYROLL'
   const showLoanDelete = isEdit && isLoanInstallmentRow(selectedRowData)
 
-  const typeIsSalary = (t) => {
-    if (!t) return false
-    if (t.ledger_group) return isSalaryLedgerGroup(t.ledger_group)
-    return Number(t.col_index) === 1
-  }
+  const uiCategory = normalizeCategory(form.ledger_group)
+  const postToInvoice = uiCategory === 'INVOICE'
 
-  const applyType = (t, sideOverride) => {
+  const showInvoiceCategory = hasInvoice === true || allowInvoiceCategory
+
+  const categoryOptions = showInvoiceCategory ? CATEGORY_WITH_INVOICE : CATEGORY_BASE
+
+  /** Edit / settlement preset: κράτα excluded τύπο ορατό & κλειδωμένο. */
+  const exceptionTypeId = useMemo(() => {
+    if (presetTypeId != null && isExcludedManualTypeId(presetTypeId, types)) {
+      return Number(presetTypeId)
+    }
+    if (isEdit && selectedRowData) {
+      const fromRow =
+        selectedTypeId ??
+        selectedRowData.type_id ??
+        selectedRowData.ept_id ??
+        null
+      if (fromRow != null && isExcludedManualTypeId(fromRow, types)) {
+        return Number(fromRow)
+      }
+    }
+    return null
+  }, [presetTypeId, isEdit, selectedRowData, selectedTypeId, types])
+
+  const typeSelectLocked = exceptionTypeId != null
+
+  const filteredTypes = useMemo(
+    () => getFilteredMovementTypes(types, uiCategory, form.side, exceptionTypeId),
+    [types, uiCategory, form.side, exceptionTypeId]
+  )
+
+  const noAvailableTypes = !typesLoading && filteredTypes.length === 0
+
+  const selectedType = useMemo(
+    () => types.find((t) => Number(t.id) === Number(selectedTypeId)) || null,
+    [types, selectedTypeId]
+  )
+
+  const targetColumn = useMemo(() => {
+    if (!form.side) return null
+    if (postToInvoice || uiCategory === 'INVOICE') {
+      return ledgerColumnFor('INVOICE', form.side)
+    }
+    if (!selectedType) return null
+    return ledgerColumnFor(
+      selectedType.ledger_group || (typeIsSalary(selectedType) ? 'SALARY' : 'OTHER'),
+      form.side
+    )
+  }, [selectedType, form.side, postToInvoice, uiCategory])
+
+  const applyTypeKeepDrivers = (t, category, side) => {
     if (!t) return
-    const side = sideOverride || resolveLedgerSide(t, 0, {})
+    const cat = normalizeCategory(category)
     const salary = typeIsSalary(t)
     setForm((prev) => ({
       ...prev,
       type: t.description,
       is_salary_type: salary,
-      ledger_group: t.ledger_group || (salary ? 'SALARY' : 'OTHER'),
-      side,
-      // Μισθός ποτέ αυτόματα σε τιμολόγιο — μόνο ρητό checkbox
-      post_to_invoice: false,
+      ledger_group: cat,
+      side: side || prev.side || 'DEBIT',
+      post_to_invoice: cat === 'INVOICE',
     }))
+  }
+
+  const pickTypeForDrivers = (list, preferredId, category, side) => {
+    const preferred =
+      preferredId != null
+        ? list.find((t) => Number(t.id) === Number(preferredId))
+        : null
+    const chosen = preferred || list[0] || null
+    setSelectedTypeId(chosen?.id ?? null)
+    if (chosen) applyTypeKeepDrivers(chosen, category, side)
+    return chosen
   }
 
   useEffect(() => {
@@ -93,6 +305,7 @@ export default function MovementModal({
     setSaveError(null)
     setLoanDeleteOpen(false)
     setDeleting(false)
+    setAllowInvoiceCategory(hasInvoice === true)
 
     let cancelled = false
     async function loadTypes() {
@@ -121,50 +334,80 @@ export default function MovementModal({
           match = resolveTransactionTypeFromLedgerRow(lookup, selectedRowData)
         }
 
-        const chosen = match || list[0] || null
-        setSelectedTypeId(chosen?.id ?? null)
+        const base = selectedRowData
+          ? movementFormFromRow(selectedRowData)
+          : movementFormFromRow(null)
+        const { bucket } = selectedRowData
+          ? extractLedgerAmount(selectedRowData)
+          : { bucket: null }
 
-        if (chosen) {
-          const base = selectedRowData
-            ? movementFormFromRow(selectedRowData)
-            : movementFormFromRow(null)
-          const { bucket } = selectedRowData
-            ? extractLedgerAmount(selectedRowData)
-            : { bucket: null }
-          const side =
-            presetSide ||
-            base.side ||
-            (bucket ? sideFromLedgerBucket(bucket) : null) ||
-            resolveLedgerSide(chosen, Number(base.amount) || 0, {})
-          const salary = typeIsSalary(chosen)
-          // Τιμολόγιο: αποθηκευμένη γραμμή σε invoice στήλη, ή preset από ΕΞΟΦΛΗΣΗ(ΤΙΜ)
-          const postToInvoice = selectedRowData
-            ? bucket === 'invoice_amount' ||
-              bucket === 'invoice_credit' ||
-              base.post_to_invoice === true
-            : presetPostToInvoice === true || base.post_to_invoice === true
-          setForm({
-            ...base,
-            type: chosen.description,
-            description:
-              !selectedRowData && presetDescription
-                ? presetDescription
-                : isBareEuroText(base.description)
-                  ? ''
-                  : base.description,
-            amount:
-              !selectedRowData && presetAmount != null && presetAmount !== ''
-                ? String(presetAmount)
-                : base.amount,
-            is_salary_type: salary,
-            ledger_group:
-              chosen.ledger_group || (salary ? 'SALARY' : 'OTHER'),
-            side,
-            post_to_invoice: Boolean(postToInvoice),
-          })
-        } else if (selectedRowData) {
-          setForm(movementFormFromRow(selectedRowData))
+        const side =
+          presetSide ||
+          base.side ||
+          (bucket ? sideFromLedgerBucket(bucket) : null) ||
+          (match ? defaultSideForType(match.description) : null) ||
+          'DEBIT'
+
+        const postInvoiceFlag = selectedRowData
+          ? bucket === 'invoice_amount' ||
+            bucket === 'invoice_credit' ||
+            base.post_to_invoice === true
+          : presetPostToInvoice === true || base.post_to_invoice === true
+
+        const category = resolveUiCategory({
+          postToInvoice: postInvoiceFlag,
+          ledgerGroup: base.ledger_group,
+          type: match,
+        })
+
+        if (hasInvoice === true || category === 'INVOICE') {
+          setAllowInvoiceCategory(true)
         }
+
+        const allowId =
+          match && isExcludedManualType(match)
+            ? Number(match.id)
+            : presetTypeId != null && isExcludedManualTypeId(presetTypeId, list)
+              ? Number(presetTypeId)
+              : null
+
+        const filtered = getFilteredMovementTypes(list, category, side, allowId)
+        // Edit / preset excluded: κράτα τον τύπο · αλλιώς μόνο από φιλτραρισμένη λίστα
+        let chosen = match
+        if (chosen) {
+          const inFiltered = filtered.some((t) => Number(t.id) === Number(chosen.id))
+          if (!inFiltered) {
+            if (allowId != null && Number(chosen.id) === allowId) {
+              // κρατείται via exception
+            } else if (isEdit) {
+              // legacy edit εκτός φίλτρου — κράτα
+            } else {
+              chosen = filtered[0] || null
+            }
+          }
+        } else {
+          chosen = filtered[0] || null
+        }
+
+        setSelectedTypeId(chosen?.id ?? null)
+        setForm({
+          ...base,
+          type: chosen?.description || base.type,
+          description:
+            !selectedRowData && presetDescription
+              ? presetDescription
+              : isBareEuroText(base.description)
+                ? ''
+                : base.description,
+          amount:
+            !selectedRowData && presetAmount != null && presetAmount !== ''
+              ? String(presetAmount)
+              : base.amount,
+          is_salary_type: typeIsSalary(chosen),
+          ledger_group: category,
+          side,
+          post_to_invoice: category === 'INVOICE',
+        })
       } catch (err) {
         if (!cancelled) {
           setTypes([])
@@ -185,42 +428,60 @@ export default function MovementModal({
     }
   }, [open, selectedRowData, presetTypeId, presetSide, presetDescription, presetAmount, presetPostToInvoice, hasInvoice])
 
-  const selectedType = useMemo(
-    () => types.find((t) => Number(t.id) === Number(selectedTypeId)) || null,
-    [types, selectedTypeId]
-  )
-
-  const targetColumn = useMemo(() => {
-    if (!selectedType) return null
-    if (form.post_to_invoice) {
-      return String(form.side || '').toUpperCase() === 'CREDIT'
-        ? 'invoice_credit'
-        : 'invoice_amount'
-    }
-    return resolveLedgerColumn(selectedType, Number(form.amount) || 0, {
-      forceInvoice: false,
-      side: form.side,
-    })
-  }, [selectedType, form.side, form.amount, form.post_to_invoice])
-
   if (!open) return null
 
   const patch = (field, value) => setForm((prev) => ({ ...prev, [field]: value }))
 
+  const handleCategoryChange = (value) => {
+    const category = normalizeCategory(value)
+    const side = form.side || 'DEBIT'
+    const nextFiltered = getFilteredMovementTypes(types, category, side, exceptionTypeId)
+    setForm((prev) => ({
+      ...prev,
+      ledger_group: category,
+      post_to_invoice: category === 'INVOICE',
+    }))
+    pickTypeForDrivers(
+      nextFiltered,
+      typeSelectLocked ? exceptionTypeId : selectedTypeId,
+      category,
+      side
+    )
+  }
+
+  const handleSideChange = (value) => {
+    const side = String(value || 'DEBIT').toUpperCase() === 'CREDIT' ? 'CREDIT' : 'DEBIT'
+    const category = uiCategory
+    const nextFiltered = getFilteredMovementTypes(types, category, side, exceptionTypeId)
+    setForm((prev) => ({ ...prev, side }))
+    pickTypeForDrivers(
+      nextFiltered,
+      typeSelectLocked ? exceptionTypeId : selectedTypeId,
+      category,
+      side
+    )
+  }
+
   const handleTypeChange = (typeId) => {
+    if (typeSelectLocked) return
     const id = Number(typeId)
+    if (!Number.isFinite(id)) return
     setSelectedTypeId(id)
     const t = types.find((x) => Number(x.id) === id)
     if (!t) return
-    applyType(t, isEdit ? form.side : resolveLedgerSide(t, 0, {}))
+    applyTypeKeepDrivers(t, uiCategory, form.side)
   }
 
   const handleSave = async (e) => {
     e.preventDefault()
     setSaveError(null)
 
-    if (typesLoading || !selectedType) {
-      const msg = typesLoading ? 'Περίμενε φόρτωση τύπων...' : 'Επίλεξε τύπο κίνησης'
+    if (typesLoading || !selectedType || noAvailableTypes) {
+      const msg = typesLoading
+        ? 'Περίμενε φόρτωση τύπων...'
+        : noAvailableTypes
+          ? EMPTY_TYPE_PLACEHOLDER
+          : 'Επίλεξε τύπο κίνησης'
       setSaveError(msg)
       toast.error(msg)
       return
@@ -245,9 +506,9 @@ export default function MovementModal({
     const isSalary = typeIsSalary(selectedType)
     const side = form.side || 'DEBIT'
     const postAsPayment = shouldPostAsPayment(side)
-    const postToInvoice = Boolean(hasInvoice && form.post_to_invoice)
-    // Χρέωση τιμολογίου → payroll.invoice_amount · Πίστωση → φυσικές credit στήλες
-    const invoiceAmount = postToInvoice && !postAsPayment ? amount : 0
+    // Κατηγορία=Τιμολόγιο → invoice στήλες (χωρίς checkbox)
+    const invoiceFlag = normalizeCategory(form.ledger_group) === 'INVOICE'
+    const invoiceAmount = invoiceFlag && !postAsPayment ? amount : 0
     const rawDescription = form.description?.trim() || ''
     const description =
       rawDescription && !isBareEuroText(rawDescription) ? rawDescription : null
@@ -261,7 +522,6 @@ export default function MovementModal({
       return
     }
 
-    // Λογιστική περίοδος UI (ανεξάρτητη από ημερομηνία συναλλαγής)
     const periodMonth =
       Number(presetMonth) ||
       Number(selectedRowData?.month) ||
@@ -284,7 +544,7 @@ export default function MovementModal({
           const credits = paymentCreditColumns({
             amount,
             paymentType,
-            postToInvoice,
+            postToInvoice: invoiceFlag,
             typeId: selectedType.id,
             ledgerGroup: selectedType.ledger_group,
           })
@@ -331,7 +591,7 @@ export default function MovementModal({
         const credits = paymentCreditColumns({
           amount,
           paymentType,
-          postToInvoice,
+          postToInvoice: invoiceFlag,
           typeId: selectedType.id,
           ledgerGroup: selectedType.ledger_group,
         })
@@ -461,12 +721,34 @@ export default function MovementModal({
 
   const displayError = saveError || externalError
   const formDisabled = typesLoading || types.length === 0 || saving || deleting
+  const saveDisabled =
+    formDisabled || noAvailableTypes || !selectedType || selectedTypeId == null
+
+  const typeSelectOptions = (() => {
+    if (noAvailableTypes) {
+      return [{ value: '', label: EMPTY_TYPE_PLACEHOLDER }]
+    }
+    const opts = filteredTypes.map((t) => ({
+      value: t.id,
+      label: t.description,
+    }))
+    if (
+      selectedType &&
+      !opts.some((o) => Number(o.value) === Number(selectedType.id))
+    ) {
+      opts.unshift({
+        value: selectedType.id,
+        label: isEdit ? `${selectedType.description} (τρέχον)` : selectedType.description,
+      })
+    }
+    return opts
+  })()
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <button
         type="button"
-        className="absolute inset-0 bg-slate-950/25 backdrop-blur-[1px]"
+        className="absolute inset-0 bg-slate-950/20 backdrop-blur-none"
         aria-label="Κλείσιμο"
         onClick={onClose}
         disabled={saving || deleting}
@@ -519,79 +801,61 @@ export default function MovementModal({
           )}
 
           <fieldset disabled={formDisabled} className="space-y-3 disabled:opacity-60">
-            <div className="grid grid-cols-2 gap-3">
-              <div className="col-span-2 sm:col-span-1">
-                <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
-                  Ημερομηνία
-                </label>
-                <GreekDateInput
-                  value={form.entry_date || ''}
-                  onChange={(iso) => patch('entry_date', iso)}
-                  className="mt-1 w-full rounded-xl border border-white/10 bg-slate-950/60 px-3 py-2 text-sm text-white"
-                />
-              </div>
-              <div className="col-span-2 sm:col-span-1">
-                <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
-                  Τύπος
-                </label>
-                <DarkSelect
-                  value={selectedTypeId ?? ''}
-                  onChange={(v) => handleTypeChange(v)}
-                  className="mt-1 w-full"
-                  options={
-                    types.length === 0
-                      ? [{ value: '', label: '—' }]
-                      : types.map((t) => ({
-                          value: t.id,
-                          label: `${t.description} · ${ledgerGroupLabel(t.ledger_group)}`,
-                        }))
-                  }
-                />
-              </div>
+            <div>
+              <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                Ημερομηνία
+              </label>
+              <GreekDateInput
+                value={form.entry_date || ''}
+                onChange={(iso) => patch('entry_date', iso)}
+                withPicker
+                className="w-full rounded-xl border border-white/10 bg-slate-950/60 px-3 py-2 text-sm text-white"
+              />
             </div>
 
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
-                  Στήλη (ledger_group)
+                  Κατηγορία
                 </label>
-                <div
-                  className={`mt-1 rounded-xl border px-3 py-2 text-sm font-semibold ${
-                    selectedType && typeIsSalary(selectedType)
-                      ? 'border-cyan-500/30 bg-cyan-500/10 text-cyan-100'
-                      : 'border-violet-500/30 bg-violet-500/10 text-violet-100'
-                  }`}
-                >
-                  {selectedType ? ledgerGroupLabel(selectedType.ledger_group) : '—'}
-                </div>
+                <DarkSelect
+                  value={uiCategory}
+                  onChange={(v) => handleCategoryChange(v)}
+                  className="mt-1 w-full"
+                  options={categoryOptions}
+                />
               </div>
               <div>
                 <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
-                  Χρέωση / Πίστωση
+                  Κατεύθυνση
                 </label>
                 <DarkSelect
                   value={form.side || 'DEBIT'}
-                  onChange={(v) => patch('side', v)}
+                  onChange={(v) => handleSideChange(v)}
                   className="mt-1 w-full"
-                  options={[
-                    { value: 'DEBIT', label: 'Χρέωση (Δεδουλευμένα)' },
-                    { value: 'CREDIT', label: 'Πίστωση (Πληρωμή)' },
-                  ]}
+                  options={SIDE_OPTIONS}
                 />
               </div>
             </div>
 
-            {hasInvoice === true && (
-              <label className="flex cursor-pointer items-center gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-100">
-                <input
-                  type="checkbox"
-                  checked={Boolean(form.post_to_invoice)}
-                  onChange={(e) => patch('post_to_invoice', e.target.checked)}
-                  className="h-4 w-4 rounded border-white/20 bg-slate-950 text-amber-500 focus:ring-amber-500/40"
-                />
-                Στήλη Τιμολόγιο Χρ.-Πιστ.
+            <div>
+              <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                Τύπος
               </label>
-            )}
+              <DarkSelect
+                value={noAvailableTypes ? '' : (selectedTypeId ?? '')}
+                onChange={(v) => handleTypeChange(v)}
+                className="mt-1 w-full"
+                options={typeSelectOptions}
+                disabled={typeSelectLocked || noAvailableTypes}
+                placeholder={EMPTY_TYPE_PLACEHOLDER}
+              />
+              {typeSelectLocked && (
+                <p className="mt-1 text-[10px] text-slate-500">
+                  Ο τύπος ορίστηκε αυτόματα και δεν αλλάζει χειροκίνητα.
+                </p>
+              )}
+            </div>
 
             {targetColumn && (
               <p className="rounded-lg border border-white/5 bg-slate-900/60 px-3 py-2 text-[11px] text-slate-400">
@@ -658,7 +922,7 @@ export default function MovementModal({
         <div className="mt-4 flex gap-2">
           <button
             type="submit"
-            disabled={formDisabled}
+            disabled={saveDisabled}
             className="flex-1 rounded-xl border border-emerald-500/40 bg-emerald-500/20 px-4 py-2.5 text-sm font-bold text-emerald-100 disabled:opacity-50"
           >
             {saving ? 'Αποθήκευση...' : typesLoading ? 'Φόρτωση...' : 'Αποθήκευση'}
@@ -688,7 +952,7 @@ export default function MovementModal({
         <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
           <button
             type="button"
-            className="absolute inset-0 bg-slate-950/60 backdrop-blur-[2px]"
+            className="absolute inset-0 bg-slate-950/25 backdrop-blur-none"
             aria-label="Κλείσιμο διαλόγου διαγραφής"
             onClick={() => !deleting && setLoanDeleteOpen(false)}
             disabled={deleting}
