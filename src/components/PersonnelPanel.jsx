@@ -447,7 +447,7 @@ export default function PersonnelPanel({
     <Wrapper
       className={
         isSidebar
-          ? `flex max-h-56 shrink-0 flex-col overflow-hidden rounded-2xl border border-white/10 bg-slate-900/75 shadow-xl backdrop-blur-md md:max-h-none md:self-stretch ${
+          ? `flex h-full min-h-0 max-h-56 shrink-0 flex-col overflow-hidden rounded-2xl border border-white/10 bg-slate-900/75 shadow-xl backdrop-blur-md md:max-h-full ${
               sidebarWidthStyle ? 'w-full' : 'w-full md:w-80'
             }`
           : inModal
@@ -546,7 +546,7 @@ export default function PersonnelPanel({
       <div
         className={
           isSidebar
-            ? 'min-h-0 flex-1 overflow-y-auto p-2'
+            ? 'min-h-0 flex-1 overflow-y-auto overscroll-contain p-2'
             : inModal
               ? 'min-h-0 flex-1 overflow-y-auto p-2'
               : 'max-h-[min(68vh,760px)] overflow-y-auto p-2'

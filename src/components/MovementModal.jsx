@@ -466,19 +466,6 @@ export default function MovementModal({
     )
   }
 
-  const handleSideChange = (value) => {
-    const side = String(value || 'DEBIT').toUpperCase() === 'CREDIT' ? 'CREDIT' : 'DEBIT'
-    const category = uiCategory
-    const nextFiltered = getFilteredMovementTypes(types, category, side, exceptionTypeId)
-    setForm((prev) => ({ ...prev, side }))
-    pickTypeForDrivers(
-      nextFiltered,
-      typeSelectLocked ? exceptionTypeId : selectedTypeId,
-      category,
-      side
-    )
-  }
-
   const handleTypeChange = (typeId) => {
     if (typeSelectLocked) return
     const id = Number(typeId)
@@ -852,10 +839,16 @@ export default function MovementModal({
                 </label>
                 <DarkSelect
                   value={form.side || 'DEBIT'}
-                  onChange={(v) => handleSideChange(v)}
+                  onChange={() => {}}
                   className="mt-1 w-full"
-                  options={SIDE_OPTIONS}
+                  options={SIDE_OPTIONS.filter(
+                    (o) => o.value === String(form.side || 'DEBIT').toUpperCase()
+                  )}
+                  disabled
                 />
+                <p className="mt-1 text-[10px] text-slate-500">
+                  Κλειδωμένη · ορίζεται αυτόματα (εισαγωγή / εξόφληση / υπάρχουσα εγγραφή).
+                </p>
               </div>
             </div>
 

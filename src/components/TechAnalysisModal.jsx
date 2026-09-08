@@ -60,8 +60,9 @@ import {
   paymentToDb,
   paymentTypeLabel,
 } from '../lib/techPayments'
-import { buildPaymentsDisplayList, isLoanInstallmentRow } from '../lib/loanUi'
+import { buildPaymentsDisplayList, isLoanDisbursementRow, isLoanInstallmentRow, loanRowAmount } from '../lib/loanUi'
 import { exportMonthPayrollToExcel } from '../lib/monthPayrollExport'
+import { exportMonthInvoicesToExcel } from '../lib/monthInvoiceExport'
 import {
   computeLedgerBalances,
   ledgerRowKey,
@@ -126,6 +127,7 @@ export default function TechAnalysisModal({
   const [analysisYear, setAnalysisYear] = useState(initialYear)
   const [selectedMonth, setSelectedMonth] = useState(initialMonth)
   const [monthExporting, setMonthExporting] = useState(false)
+  const [invoiceExporting, setInvoiceExporting] = useState(false)
   const [sidebarWidth, setSidebarWidth] = useState(() =>
     loadSidebarWidth(PERSONNEL_SIDEBAR_WIDTH_KEY, 320)
   )
@@ -824,6 +826,16 @@ export default function TechAnalysisModal({
     return buildLedgerYearMatrix(yearLedgerRows, analysisYear, yearPayrolls)
   }, [tech, analysisYear, yearLedgerRows, payrolls])
 
+  /** Σύνολο εκταμιεύσεων δανείου (τύπος 95) για το επιλεγμένο έτος. */
+  const yearLoanDisbursementsTotal = useMemo(() => {
+    let sum = 0
+    for (const row of yearLedgerRows || []) {
+      if (!isLoanDisbursementRow(row)) continue
+      sum += loanRowAmount(row)
+    }
+    return Math.round(sum * 100) / 100
+  }, [yearLedgerRows])
+
   const formatMatrixCell = (value) => {
     const n = Number(value) || 0
     if (!n) return '-'
@@ -878,6 +890,24 @@ export default function TechAnalysisModal({
       toast.error(msg || 'Αποτυχία εξαγωγής')
     } finally {
       setMonthExporting(false)
+    }
+  }
+
+  const handleInvoiceExcelExport = async () => {
+    if (invoiceExporting) return
+    setInvoiceExporting(true)
+    try {
+      const { rowCount, filename } = await exportMonthInvoicesToExcel({
+        month: selectedMonth,
+        year: analysisYear,
+        personnel,
+      })
+      toast.success(`Εξαγωγή τιμολογίων · ${rowCount} τεχνικοί · ${filename}`)
+    } catch (err) {
+      const msg = err?.message || String(err)
+      toast.error(msg || 'Αποτυχία εξαγωγής τιμολογίων')
+    } finally {
+      setInvoiceExporting(false)
     }
   }
 
@@ -1327,7 +1357,7 @@ export default function TechAnalysisModal({
       width={sidebarWidth}
     />
   ) : embedded && onTechChange ? (
-    <aside className="flex max-h-56 w-full shrink-0 flex-col overflow-hidden rounded-2xl border border-white/10 bg-slate-900/75 shadow-xl backdrop-blur-md md:max-h-none md:w-72 md:self-stretch lg:w-80">
+    <aside className="flex h-full min-h-0 max-h-56 w-full shrink-0 flex-col overflow-hidden rounded-2xl border border-white/10 bg-slate-900/75 shadow-xl backdrop-blur-md md:max-h-full md:w-72 lg:w-80">
       <div className="border-b border-white/10 px-3 py-3">
         <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-cyan-400/80">
           Προσωπικό
@@ -1425,7 +1455,7 @@ export default function TechAnalysisModal({
                 <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
                   Μήνας
                 </span>
-                <div className="inline-flex items-center gap-1.5 rounded-2xl border border-cyan-500/25 bg-gradient-to-b from-slate-900/90 to-slate-950/90 p-1.5 shadow-lg shadow-cyan-950/20">
+                <div className="inline-flex h-[38px] items-center gap-0.5 rounded-xl border border-cyan-500/25 bg-gradient-to-b from-slate-900/90 to-slate-950/90 p-0.5 shadow-lg shadow-cyan-950/20">
                   <button
                     type="button"
                     aria-label="Προηγούμενος μήνας"
@@ -1438,9 +1468,9 @@ export default function TechAnalysisModal({
                         setSelectedMonth((m) => Number(m) - 1)
                       }
                     }}
-                    className="inline-flex h-11 w-11 items-center justify-center rounded-xl border border-white/10 bg-white/5 text-cyan-200 shadow-inner transition hover:border-cyan-400/50 hover:bg-cyan-500/20 hover:text-white active:scale-95"
+                    className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-white/10 bg-white/5 text-cyan-200 shadow-inner transition hover:border-cyan-400/50 hover:bg-cyan-500/20 hover:text-white active:scale-95"
                   >
-                    <svg viewBox="0 0 20 20" fill="currentColor" className="h-6 w-6" aria-hidden>
+                    <svg viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4" aria-hidden>
                       <path
                         fillRule="evenodd"
                         d="M12.79 5.23a.75.75 0 01-.02 1.06L8.832 10l3.938 3.71a.75.75 0 11-1.04 1.08l-4.5-4.25a.75.75 0 010-1.08l4.5-4.25a.75.75 0 011.06.02z"
@@ -1450,7 +1480,7 @@ export default function TechAnalysisModal({
                   </button>
                   <span
                     id="analysis-month"
-                    className="min-w-[8.5rem] select-none px-1 text-center text-sm font-bold uppercase tracking-[0.12em] text-white"
+                    className="min-w-[7.5rem] select-none px-1 text-center text-xs font-bold uppercase leading-none tracking-[0.08em] text-white"
                   >
                     {greekCapsLabel(MONTH_LABELS[selectedMonth - 1] || '')}
                   </span>
@@ -1466,9 +1496,9 @@ export default function TechAnalysisModal({
                         setSelectedMonth((m) => Number(m) + 1)
                       }
                     }}
-                    className="inline-flex h-11 w-11 items-center justify-center rounded-xl border border-white/10 bg-white/5 text-cyan-200 shadow-inner transition hover:border-cyan-400/50 hover:bg-cyan-500/20 hover:text-white active:scale-95"
+                    className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-white/10 bg-white/5 text-cyan-200 shadow-inner transition hover:border-cyan-400/50 hover:bg-cyan-500/20 hover:text-white active:scale-95"
                   >
-                    <svg viewBox="0 0 20 20" fill="currentColor" className="h-6 w-6" aria-hidden>
+                    <svg viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4" aria-hidden>
                       <path
                         fillRule="evenodd"
                         d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z"
@@ -1482,15 +1512,51 @@ export default function TechAnalysisModal({
                 <label htmlFor="analysis-year" className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
                   Έτος
                 </label>
-                <input
-                  id="analysis-year"
-                  type="number"
-                  min={2020}
-                  max={2035}
-                  value={analysisYear}
-                  onChange={(e) => setAnalysisYear(Number(e.target.value) || initialYear)}
-                  className="w-24 rounded-xl border border-white/10 bg-slate-950/60 px-3 py-2 text-sm font-medium text-white"
-                />
+                <div className="inline-flex h-[38px] items-center gap-0.5 rounded-xl border border-cyan-500/25 bg-gradient-to-b from-slate-900/90 to-slate-950/90 p-0.5 shadow-lg shadow-cyan-950/20">
+                  <button
+                    type="button"
+                    aria-label="Προηγούμενο έτος"
+                    title="Προηγούμενο έτος"
+                    onClick={() =>
+                      setAnalysisYear((y) => Math.max(2020, Number(y) - 1))
+                    }
+                    className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-white/10 bg-white/5 text-cyan-200 shadow-inner transition hover:border-cyan-400/50 hover:bg-cyan-500/20 hover:text-white active:scale-95"
+                  >
+                    <svg viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4" aria-hidden>
+                      <path
+                        fillRule="evenodd"
+                        d="M12.79 5.23a.75.75 0 01-.02 1.06L8.832 10l3.938 3.71a.75.75 0 11-1.04 1.08l-4.5-4.25a.75.75 0 010-1.08l4.5-4.25a.75.75 0 011.06.02z"
+                        clipRule="evenodd"
+                      />
+                    </svg>
+                  </button>
+                  <input
+                    id="analysis-year"
+                    type="number"
+                    min={2020}
+                    max={2035}
+                    value={analysisYear}
+                    onChange={(e) => setAnalysisYear(Number(e.target.value) || initialYear)}
+                    className="w-[4.25rem] appearance-none border-0 bg-transparent px-0.5 text-center text-xs font-bold uppercase leading-none tracking-[0.08em] text-white outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                  />
+                  <button
+                    type="button"
+                    aria-label="Επόμενο έτος"
+                    title="Επόμενο έτος"
+                    onClick={() =>
+                      setAnalysisYear((y) => Math.min(2035, Number(y) + 1))
+                    }
+                    className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-white/10 bg-white/5 text-cyan-200 shadow-inner transition hover:border-cyan-400/50 hover:bg-cyan-500/20 hover:text-white active:scale-95"
+                  >
+                    <svg viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4" aria-hidden>
+                      <path
+                        fillRule="evenodd"
+                        d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z"
+                        clipRule="evenodd"
+                      />
+                    </svg>
+                  </button>
+                </div>
               </div>
               {showTechDropdown && (
                 <div className="flex flex-col gap-1">
@@ -1525,6 +1591,19 @@ export default function TechAnalysisModal({
 
             <div className="flex flex-col items-center gap-2 lg:items-end">
               <div className="flex flex-wrap items-center justify-end gap-1.5">
+                <button
+                  type="button"
+                  onClick={handleInvoiceExcelExport}
+                  disabled={invoiceExporting}
+                  title="Εξαγωγή Αξίας Τιμολογίου = Υπόλοιπο ΤΙΜ ÷ 0,8 (ίδιο με την προσαύξηση στην οθόνη)"
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-amber-500/40 bg-amber-500/15 px-3 py-1.5 text-xs font-bold text-amber-100 transition hover:bg-amber-500/25 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <svg viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4 shrink-0" aria-hidden>
+                    <path d="M10.75 2.75a.75.75 0 00-1.5 0v8.69L6.3 8.49a.75.75 0 00-1.1 1.02l4.25 4.5a.75.75 0 001.1 0l4.25-4.5a.75.75 0 10-1.1-1.02l-2.95 3.12V2.75z" />
+                    <path d="M3.5 12.75a.75.75 0 00-1.5 0v2.5A2.75 2.75 0 004.75 18h10.5A2.75 2.75 0 0018 15.25v-2.5a.75.75 0 00-1.5 0v2.5c0 .69-.56 1.25-1.25 1.25H4.75c-.69 0-1.25-.56-1.25-1.25v-2.5z" />
+                  </svg>
+                  {invoiceExporting ? 'Εξαγωγή...' : 'Εξαγωγή Τιμολογίων (Excel)'}
+                </button>
                 <button
                   type="button"
                   onClick={handleMonthExcelExport}
@@ -1579,15 +1658,25 @@ export default function TechAnalysisModal({
               {tab.label}
             </button>
           ))}
-          <button
-            type="button"
-            onClick={() => setLoanManagementOpen(true)}
-            disabled={!tech}
-            title="Διαχείριση δανείων τεχνικού"
-            className="ml-auto shrink-0 self-center rounded-xl border border-amber-500/40 bg-transparent px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-amber-100/90 transition hover:border-amber-400/60 hover:bg-amber-500/10 disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            Διαχείριση Δανείων
-          </button>
+          <div className="ml-auto flex shrink-0 flex-col items-end gap-0.5 self-center pr-1">
+            <button
+              type="button"
+              onClick={() => setLoanManagementOpen(true)}
+              disabled={!tech}
+              title="Διαχείριση δανείων τεχνικού"
+              className="rounded-xl border border-amber-500/40 bg-transparent px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-amber-100/90 transition hover:border-amber-400/60 hover:bg-amber-500/10 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              Διαχείριση Δανείων
+            </button>
+            {tech ? (
+              <p className="mr-2 max-w-[16rem] self-start text-left text-[11px] font-bold leading-tight text-slate-300">
+                Εκταμιεύσεις {analysisYear}:{' '}
+                <span className="font-mono tabular-nums text-amber-100/90">
+                  {formatEuro(yearLoanDisbursementsTotal)}
+                </span>
+              </p>
+            ) : null}
+          </div>
         </div>
 
         <LoanManagementModal
@@ -2920,7 +3009,7 @@ export default function TechAnalysisModal({
 
   const content = embedded ? (
     <div className="flex min-h-0 flex-1 flex-col gap-0 overflow-hidden md:flex-row md:items-stretch">
-      <div className="relative flex shrink-0 flex-col md:h-full">
+      <div className="relative flex h-auto max-h-56 min-h-0 shrink-0 flex-col overflow-hidden md:h-full md:max-h-full">
         {techSidebar}
         {usePersonnelSidebar && (
           <div

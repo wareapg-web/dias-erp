@@ -1,6 +1,6 @@
 /** Εξαγωγή δεδουλευμένων (χρεώσεις) μήνα σε Excel — όλο το προσωπικό. */
 
-import * as XLSX from 'xlsx'
+import * as XLSX from 'xlsx-js-style'
 import { diasClient, fetchAllRows } from './supabase'
 import { isTicketRestaurantRow } from './techLedger'
 import { isLoanDisbursementRow, isLoanInstallmentRow } from './loanUi'
@@ -8,6 +8,7 @@ import {
   earningsKeyFromLedgerRow,
   normalizeFixedExpenseSettings,
 } from './techEarnings'
+import { MONTH_LABELS } from './payrollAnalysis'
 
 function round2(n) {
   return Math.round((Number(n) || 0) * 100) / 100
@@ -49,6 +50,43 @@ function personnelNameByTechId(personnel = []) {
 }
 
 /**
+ * Ticket Restaurant ανά tech_id από payrolls (μήνας/έτος).
+ * Αν υπάρχουν πολλαπλά records, κρατάει το μεγαλύτερο ποσό.
+ * @returns {Promise<Map<string, number>>}
+ */
+export async function loadTicketByTechForMonth(month, year) {
+  const m = Number(month)
+  const y = Number(year)
+  const map = new Map()
+
+  let rows = []
+  try {
+    rows = await fetchAllRows(diasClient, 'payrolls', (q) =>
+      q.eq('month', m).eq('year', y)
+    )
+  } catch (err) {
+    // Fallback: φίλτρο μέσω period YYYY-MM αν λείπουν month/year columns
+    try {
+      const period = `${y}-${String(m).padStart(2, '0')}`
+      rows = await fetchAllRows(diasClient, 'payrolls', (q) => q.eq('period', period))
+    } catch (err2) {
+      console.warn('[month export] payrolls ticket', err2?.message || err?.message || err2)
+      return map
+    }
+  }
+
+  for (const p of rows || []) {
+    const techId = String(p.tech_id ?? '')
+    if (!techId) continue
+    const ticket = round2(Number(p.ticket_restaurant) || Number(p.ticket_amount) || 0)
+    if (ticket <= 0) continue
+    const prev = map.get(techId) || 0
+    if (ticket > prev) map.set(techId, ticket)
+  }
+  return map
+}
+
+/**
  * Φόρτωση fixed_expense_settings ανά tech_id από tech_earnings.
  * @returns {Map<string, object>}
  */
@@ -81,13 +119,15 @@ function isFixedForTech(settingsByTech, techId, earningsKey) {
  *   sumInvoice: number,
  *   sumFixed: number,
  *   sumVariable: number,
+ *   ticket: number,
  *   total: number
  * }>}
  */
 export function aggregateMonthDebits(
   ledgerRows = [],
   personnel = [],
-  fixedSettingsByTech = new Map()
+  fixedSettingsByTech = new Map(),
+  ticketByTech = new Map()
 ) {
   const names = personnelNameByTechId(personnel)
   const byTech = new Map()
@@ -110,6 +150,7 @@ export function aggregateMonthDebits(
         sumInvoice: 0,
         sumFixed: 0,
         sumVariable: 0,
+        ticket: 0,
         total: 0,
       }
       byTech.set(techId, slot)
@@ -131,7 +172,12 @@ export function aggregateMonthDebits(
       slot.sumVariable = round2(slot.sumVariable + debit)
     }
 
+    // Πληρωτέο = μόνο μετρητά (χωρίς Ticket)
     slot.total = round2(slot.sumSalary + slot.sumOther + slot.sumInvoice)
+  }
+
+  for (const slot of byTech.values()) {
+    slot.ticket = round2(ticketByTech.get(String(slot.techId)) || 0)
   }
 
   return Array.from(byTech.values())
@@ -157,16 +203,25 @@ export async function exportMonthPayrollToExcel({ month, year, personnel = [] })
     throw new Error('Μη έγκυρος μήνας/έτος για εξαγωγή')
   }
 
-  const [ledgerRows, fixedSettingsByTech] = await Promise.all([
+  const [ledgerRows, fixedSettingsByTech, ticketByTech] = await Promise.all([
     fetchAllRows(diasClient, 'tech_ledger_view', (q) => q.eq('month', m).eq('year', y)),
     loadFixedExpenseSettingsByTech().catch((err) => {
       // Αν λείπει η στήλη (migration 30), συνέχισε με defaults (Μισθός=βασικό)
       console.warn('[month export] fixed_expense_settings', err?.message || err)
       return new Map()
     }),
+    loadTicketByTechForMonth(m, y).catch((err) => {
+      console.warn('[month export] ticket payrolls', err?.message || err)
+      return new Map()
+    }),
   ])
 
-  const rows = aggregateMonthDebits(ledgerRows, personnel, fixedSettingsByTech)
+  const rows = aggregateMonthDebits(
+    ledgerRows,
+    personnel,
+    fixedSettingsByTech,
+    ticketByTech
+  )
   if (rows.length === 0) {
     throw new Error('Δεν βρέθηκαν χρεώσεις (δεδουλευμένα) για αυτόν τον μήνα')
   }
@@ -178,15 +233,30 @@ export async function exportMonthPayrollToExcel({ month, year, personnel = [] })
     'Χρέωση Τιμολογίου (€)',
     'Βασικά (€)',
     'Μεταβλητά (€)',
+    'Ticket Restaurant (€)',
     'Συνολικό Πληρωτέο (€)',
   ]
 
-  const aoa = [header]
+  const monthTitle = String(MONTH_LABELS[m - 1] || `Μήνας ${m}`)
+    .toLocaleUpperCase('el-GR')
+  const title = `${monthTitle} ${y}`
+
+  const titleCell = {
+    v: title,
+    t: 's',
+    s: {
+      font: { bold: true, sz: 18, name: 'Calibri' },
+      alignment: { horizontal: 'center', vertical: 'center', wrapText: false },
+    },
+  }
+
+  const aoa = [[titleCell], header]
   let totSalary = 0
   let totOther = 0
   let totInvoice = 0
   let totFixed = 0
   let totVariable = 0
+  let totTicket = 0
   let totAll = 0
 
   for (const r of rows) {
@@ -197,6 +267,7 @@ export async function exportMonthPayrollToExcel({ month, year, personnel = [] })
       r.sumInvoice,
       r.sumFixed,
       r.sumVariable,
+      r.ticket,
       r.total,
     ])
     totSalary = round2(totSalary + r.sumSalary)
@@ -204,6 +275,7 @@ export async function exportMonthPayrollToExcel({ month, year, personnel = [] })
     totInvoice = round2(totInvoice + r.sumInvoice)
     totFixed = round2(totFixed + r.sumFixed)
     totVariable = round2(totVariable + r.sumVariable)
+    totTicket = round2(totTicket + r.ticket)
     totAll = round2(totAll + r.total)
   }
 
@@ -214,14 +286,28 @@ export async function exportMonthPayrollToExcel({ month, year, personnel = [] })
     totInvoice,
     totFixed,
     totVariable,
+    totTicket,
     totAll,
   ])
 
   const sheet = XLSX.utils.aoa_to_sheet(aoa)
 
+  // Τίτλος μήνα/έτους: merged A1:H1, κεντραρισμένο, bold, μεγαλύτερη γραμματοσειρά
+  sheet['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 7 } }]
+  sheet['!rows'] = [{ hpt: 30 }]
+  sheet.A1 = {
+    v: title,
+    t: 's',
+    s: {
+      font: { bold: true, sz: 18, name: 'Calibri' },
+      alignment: { horizontal: 'center', vertical: 'center' },
+    },
+  }
+
   const lastRow = aoa.length
-  const numCols = ['B', 'C', 'D', 'E', 'F', 'G']
-  for (let r = 2; r <= lastRow; r += 1) {
+  const numCols = ['B', 'C', 'D', 'E', 'F', 'G', 'H']
+  // Δεδομένα από γραμμή 3 (1=τίτλος, 2=headers)
+  for (let r = 3; r <= lastRow; r += 1) {
     for (const col of numCols) {
       const addr = `${col}${r}`
       const cell = sheet[addr]
@@ -239,6 +325,7 @@ export async function exportMonthPayrollToExcel({ month, year, personnel = [] })
     { wch: 20 },
     { wch: 14 },
     { wch: 14 },
+    { wch: 20 },
     { wch: 20 },
   ]
 
