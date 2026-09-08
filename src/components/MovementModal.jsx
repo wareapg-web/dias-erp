@@ -27,6 +27,7 @@ import {
 import DarkSelect from './DarkSelect'
 import GreekDateInput from './GreekDateInput'
 import { parseToIsoDate } from '../lib/greekDate'
+import { useDraggableModal, MODAL_POS_KEYS } from '../lib/useDraggableModal'
 import {
   LOAN_DISBURSEMENT_TYPE_ID,
   LOAN_INSTALLMENT_TYPE_ID,
@@ -60,9 +61,10 @@ const CATEGORY_BASE = [
   { value: 'OTHER', label: 'Λοιπά' },
 ]
 
+/** Τιμολόγιο πρώτο — default για νέα χειροκίνητη Εισαγωγή. */
 const CATEGORY_WITH_INVOICE = [
-  ...CATEGORY_BASE,
   { value: 'INVOICE', label: 'Τιμολόγιο' },
+  ...CATEGORY_BASE,
 ]
 
 const SIDE_OPTIONS = [
@@ -214,6 +216,15 @@ export default function MovementModal({
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState(null)
   const [loanDeleteOpen, setLoanDeleteOpen] = useState(false)
+  const { panelStyle, dragHandleProps, dragHandleClassName } = useDraggableModal(
+    open,
+    MODAL_POS_KEYS.movement
+  )
+  const {
+    panelStyle: deletePanelStyle,
+    dragHandleProps: deleteDragHandleProps,
+    dragHandleClassName: deleteDragHandleClassName,
+  } = useDraggableModal(loanDeleteOpen, MODAL_POS_KEYS.movementLoanDelete)
   const [deleting, setDeleting] = useState(false)
   /** Edit τιμολογίου χωρίς hasInvoice: κράτα την επιλογή Κατηγορίας σε όλο το session. */
   const [allowInvoiceCategory, setAllowInvoiceCategory] = useState(false)
@@ -354,11 +365,17 @@ export default function MovementModal({
             base.post_to_invoice === true
           : presetPostToInvoice === true || base.post_to_invoice === true
 
-        const category = resolveUiCategory({
-          postToInvoice: postInvoiceFlag,
-          ledgerGroup: base.ledger_group,
-          type: match,
-        })
+        const category = (() => {
+          // Νέα Εισαγωγή (χωρίς edit / χωρίς preset τύπου): Τιμολόγιο πάνω-πάνω by default
+          if (!selectedRowData && presetTypeId == null && hasInvoice === true) {
+            return 'INVOICE'
+          }
+          return resolveUiCategory({
+            postToInvoice: postInvoiceFlag,
+            ledgerGroup: base.ledger_group,
+            type: match,
+          })
+        })()
 
         if (hasInvoice === true || category === 'INVOICE') {
           setAllowInvoiceCategory(true)
@@ -756,8 +773,12 @@ export default function MovementModal({
       <form
         onSubmit={handleSave}
         className="relative w-full max-w-lg rounded-2xl border border-white/10 bg-slate-900 p-5 shadow-2xl"
+        style={panelStyle}
       >
-        <div className="flex items-start justify-between gap-3">
+        <div
+          className={`flex items-start justify-between gap-3 ${dragHandleClassName}`}
+          {...dragHandleProps}
+        >
           <div>
             <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-cyan-400/80">
               Καρτέλα
@@ -921,11 +942,12 @@ export default function MovementModal({
 
         <div className="mt-4 flex gap-2">
           <button
-            type="submit"
-            disabled={saveDisabled}
-            className="flex-1 rounded-xl border border-emerald-500/40 bg-emerald-500/20 px-4 py-2.5 text-sm font-bold text-emerald-100 disabled:opacity-50"
+            type="button"
+            onClick={onClose}
+            disabled={saving || deleting}
+            className="rounded-xl border border-rose-500/40 bg-rose-500/15 px-4 py-2.5 text-sm font-bold text-rose-100 disabled:opacity-50"
           >
-            {saving ? 'Αποθήκευση...' : typesLoading ? 'Φόρτωση...' : 'Αποθήκευση'}
+            Έξοδος
           </button>
           {showLoanDelete && (
             <button
@@ -938,12 +960,11 @@ export default function MovementModal({
             </button>
           )}
           <button
-            type="button"
-            onClick={onClose}
-            disabled={saving || deleting}
-            className="rounded-xl border border-rose-500/40 bg-rose-500/15 px-4 py-2.5 text-sm font-bold text-rose-100 disabled:opacity-50"
+            type="submit"
+            disabled={saveDisabled}
+            className="flex-1 rounded-xl border border-emerald-500/40 bg-emerald-500/20 px-4 py-2.5 text-sm font-bold text-emerald-100 disabled:opacity-50"
           >
-            Έξοδος
+            {saving ? 'Αποθήκευση...' : typesLoading ? 'Φόρτωση...' : 'Αποθήκευση'}
           </button>
         </div>
       </form>
@@ -962,13 +983,16 @@ export default function MovementModal({
             aria-modal="true"
             aria-labelledby="delete-loan-title"
             className="relative w-full max-w-md rounded-2xl border border-white/10 bg-slate-900 p-5 shadow-2xl"
+            style={deletePanelStyle}
           >
+            <div className={deleteDragHandleClassName} {...deleteDragHandleProps}>
             <h3 id="delete-loan-title" className="text-lg font-bold text-white">
               Διαγραφή Δόσης Δανείου
             </h3>
             <p className="mt-2 text-sm text-slate-400">
               Επιλέξτε αν θέλετε να διαγραφεί μόνο η τρέχουσα δόση ή ολόκληρη η σειρά.
             </p>
+            </div>
             <div className="mt-4 flex flex-col gap-2">
               <button
                 type="button"

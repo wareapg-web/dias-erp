@@ -23,6 +23,7 @@ import {
 } from '../lib/loanUi'
 import { MONTH_LABELS } from '../lib/payrollAnalysis'
 import ErpWindow from './ErpWindow'
+import { useDraggableModal, MODAL_POS_KEYS } from '../lib/useDraggableModal'
 
 function money(n) {
   return `${formatElNumber(Number(n) || 0)} €`
@@ -111,6 +112,11 @@ export default function LoanManagementModal({
   const [deleteConfirmGroup, setDeleteConfirmGroup] = useState(null)
   const prevLoanCreateOpen = useRef(false)
   const menuRef = useRef(null)
+  const {
+    panelStyle: deletePanelStyle,
+    dragHandleProps: deleteDragHandleProps,
+    dragHandleClassName: deleteDragHandleClassName,
+  } = useDraggableModal(Boolean(deleteConfirmGroup), MODAL_POS_KEYS.loanMgmtDelete)
 
   const techId =
     tech?.id != null ? String(tech.id) : tech?.tech_id != null ? String(tech.tech_id) : null
@@ -596,6 +602,7 @@ export default function LoanManagementModal({
       />
       <ErpWindow
         className="!bg-slate-900"
+        storageKey={MODAL_POS_KEYS.loanMgmtWindow}
         titleBar={
           <div className="flex w-full min-w-0 items-start justify-between gap-3 pr-1">
             <div className="min-w-0">
@@ -992,19 +999,19 @@ export default function LoanManagementModal({
                         <div className="flex flex-wrap gap-2">
                           <button
                             type="button"
-                            onClick={() => handleSaveEdit(g)}
-                            disabled={saving}
-                            className="rounded-xl border border-emerald-500/40 bg-emerald-500/20 px-4 py-2 text-sm font-bold text-emerald-100 hover:bg-emerald-500/30 disabled:opacity-50"
-                          >
-                            {saving ? 'Αποθήκευση...' : 'Αποθήκευση'}
-                          </button>
-                          <button
-                            type="button"
                             onClick={cancelEdit}
                             disabled={saving}
                             className="rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-white/10 disabled:opacity-50"
                           >
                             Ακύρωση
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleSaveEdit(g)}
+                            disabled={saving}
+                            className="rounded-xl border border-emerald-500/40 bg-emerald-500/20 px-4 py-2 text-sm font-bold text-emerald-100 hover:bg-emerald-500/30 disabled:opacity-50"
+                          >
+                            {saving ? 'Αποθήκευση...' : 'Αποθήκευση'}
                           </button>
                         </div>
                       </div>
@@ -1155,19 +1162,19 @@ export default function LoanManagementModal({
                         <div className="flex flex-wrap gap-2">
                           <button
                             type="button"
-                            onClick={() => handleConfirmAdjust(g)}
-                            disabled={saving}
-                            className="rounded-xl border border-emerald-500/40 bg-emerald-500/20 px-4 py-2 text-sm font-bold text-emerald-100 hover:bg-emerald-500/30 disabled:opacity-50"
-                          >
-                            {saving ? 'Αποθήκευση...' : 'Επιβεβαίωση'}
-                          </button>
-                          <button
-                            type="button"
                             onClick={cancelAdjust}
                             disabled={saving}
                             className="rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-white/10 disabled:opacity-50"
                           >
                             Ακύρωση
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleConfirmAdjust(g)}
+                            disabled={saving}
+                            className="rounded-xl border border-emerald-500/40 bg-emerald-500/20 px-4 py-2 text-sm font-bold text-emerald-100 hover:bg-emerald-500/30 disabled:opacity-50"
+                          >
+                            {saving ? 'Αποθήκευση...' : 'Επιβεβαίωση'}
                           </button>
                         </div>
                       </div>
@@ -1182,19 +1189,19 @@ export default function LoanManagementModal({
           <div className="flex shrink-0 justify-end gap-2 border-t border-white/10 px-5 py-3">
             <button
               type="button"
-              onClick={loadLoans}
-              disabled={loading || saving || loanCreateOpen}
-              className="rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-white/10 disabled:opacity-50"
-            >
-              Ανανέωση
-            </button>
-            <button
-              type="button"
               onClick={onClose}
               disabled={saving}
               className="rounded-xl border border-rose-500/40 bg-rose-500/15 px-4 py-2 text-sm font-bold text-rose-100 disabled:opacity-50"
             >
               Έξοδος
+            </button>
+            <button
+              type="button"
+              onClick={loadLoans}
+              disabled={loading || saving || loanCreateOpen}
+              className="rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-white/10 disabled:opacity-50"
+            >
+              Ανανέωση
             </button>
           </div>
         </div>
@@ -1214,25 +1221,20 @@ export default function LoanManagementModal({
             aria-modal="true"
             aria-labelledby="loan-delete-title"
             className="relative w-full max-w-md rounded-2xl border border-rose-500/40 bg-slate-900 p-5 shadow-2xl"
+            style={deletePanelStyle}
           >
-            <h3 id="loan-delete-title" className="text-lg font-bold text-rose-100">
-              Διαγραφή δανείου
-            </h3>
-            <p className="mt-2 text-sm leading-relaxed text-slate-300">
-              <span className="font-semibold text-rose-200">ΠΡΟΣΟΧΗ:</span> Θα διαγραφεί πλήρως η
-              εκταμίευση και <span className="font-semibold">ΟΛΕΣ</span> οι δόσεις (παρελθοντικές και
-              μελλοντικές) του «{deleteConfirmGroup.label}». Η ενέργεια δεν αναιρείται. Είστε
-              σίγουροι;
-            </p>
+            <div className={deleteDragHandleClassName} {...deleteDragHandleProps}>
+              <h3 id="loan-delete-title" className="text-lg font-bold text-rose-100">
+                Διαγραφή δανείου
+              </h3>
+              <p className="mt-2 text-sm leading-relaxed text-slate-300">
+                <span className="font-semibold text-rose-200">ΠΡΟΣΟΧΗ:</span> Θα διαγραφεί πλήρως η
+                εκταμίευση και <span className="font-semibold">ΟΛΕΣ</span> οι δόσεις (παρελθοντικές και
+                μελλοντικές) του «{deleteConfirmGroup.label}». Η ενέργεια δεν αναιρείται. Είστε
+                σίγουροι;
+              </p>
+            </div>
             <div className="mt-4 flex flex-wrap gap-2">
-              <button
-                type="button"
-                onClick={handleConfirmDelete}
-                disabled={saving}
-                className="rounded-xl border border-rose-500/50 bg-rose-600/30 px-4 py-2.5 text-sm font-bold text-rose-100 hover:bg-rose-600/45 disabled:opacity-50"
-              >
-                {saving ? 'Διαγραφή...' : 'Ναι, διαγραφή όλων'}
-              </button>
               <button
                 type="button"
                 onClick={() => setDeleteConfirmGroup(null)}
@@ -1240,6 +1242,14 @@ export default function LoanManagementModal({
                 className="rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm font-semibold text-slate-200 hover:bg-white/10 disabled:opacity-50"
               >
                 Ακύρωση
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmDelete}
+                disabled={saving}
+                className="rounded-xl border border-rose-500/50 bg-rose-600/30 px-4 py-2.5 text-sm font-bold text-rose-100 hover:bg-rose-600/45 disabled:opacity-50"
+              >
+                {saving ? 'Διαγραφή...' : 'Ναι, διαγραφή όλων'}
               </button>
             </div>
           </div>

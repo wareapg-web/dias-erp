@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 import toast from 'react-hot-toast'
 import { adminClient, diasClient, safeQuery, isMissingTableError, formatSupabaseError } from '../lib/supabase'
 import {
@@ -13,7 +13,6 @@ import {
   MONTH_LABELS,
   MONTH_SHORT,
   splitTechName,
-  techHireDate,
   techPhotoUrl,
   estimateAmount,
   formatEuro,
@@ -88,6 +87,12 @@ import PersonnelPanel from './PersonnelPanel'
 import MovementModal from './MovementModal'
 import LoanModal from './LoanModal'
 import LoanManagementModal from './LoanManagementModal'
+import { useDraggableModal, MODAL_POS_KEYS } from '../lib/useDraggableModal'
+import {
+  loadSidebarWidth,
+  saveSidebarWidth,
+  PERSONNEL_SIDEBAR_WIDTH_KEY,
+} from '../lib/modalSize'
 import LedgerAnalysisGrid from './LedgerAnalysisGrid'
 import DarkSelect from './DarkSelect'
 
@@ -121,6 +126,15 @@ export default function TechAnalysisModal({
   const [analysisYear, setAnalysisYear] = useState(initialYear)
   const [selectedMonth, setSelectedMonth] = useState(initialMonth)
   const [monthExporting, setMonthExporting] = useState(false)
+  const [sidebarWidth, setSidebarWidth] = useState(() =>
+    loadSidebarWidth(PERSONNEL_SIDEBAR_WIDTH_KEY, 320)
+  )
+  const sidebarResizeRef = useRef(null)
+  const {
+    panelStyle: analysisPanelStyle,
+    dragHandleProps: analysisDragHandleProps,
+    dragHandleClassName: analysisDragHandleClassName,
+  } = useDraggableModal(!embedded, MODAL_POS_KEYS.techAnalysis)
   const [assignments, setAssignments] = useState([])
   const [jobs, setJobs] = useState([])
   const [dailyStatus, setDailyStatus] = useState([])
@@ -179,6 +193,32 @@ export default function TechAnalysisModal({
     setAnalysisYear(initialYear)
     setSelectedMonth(initialMonth)
   }, [tech?.id, initialYear, initialMonth])
+
+  useEffect(() => {
+    saveSidebarWidth(PERSONNEL_SIDEBAR_WIDTH_KEY, sidebarWidth)
+  }, [sidebarWidth])
+
+  useEffect(() => {
+    const onMove = (e) => {
+      const d = sidebarResizeRef.current
+      if (!d) return
+      const next = Math.min(520, Math.max(200, d.startWidth + (e.clientX - d.startX)))
+      setSidebarWidth(next)
+    }
+    const onUp = () => {
+      sidebarResizeRef.current = null
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+    }
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+    window.addEventListener('pointercancel', onUp)
+    return () => {
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+      window.removeEventListener('pointercancel', onUp)
+    }
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -997,7 +1037,6 @@ export default function TechAnalysisModal({
   const firstName = tech?.first_name || split.firstName
   const displayName = tech?.displayName || tech?.name || ''
   const photoUrl = tech ? techPhotoUrl(tech) : null
-  const hireDate = tech ? techHireDate(tech) : null
   const hasAdminHours = Boolean(tech?._adminTech || tech?.admin_tech_id)
   const issuesInvoice = personnelIssuesInvoice(tech)
 
@@ -1281,8 +1320,11 @@ export default function TechAnalysisModal({
     <PersonnelPanel
       variant="sidebar"
       personnel={personnel}
+      adminTechs={adminTechs}
       selectedId={selectedPersonId}
       onSelect={onPersonSelect}
+      onMutated={onPersonnelMutated}
+      width={sidebarWidth}
     />
   ) : embedded && onTechChange ? (
     <aside className="flex max-h-56 w-full shrink-0 flex-col overflow-hidden rounded-2xl border border-white/10 bg-slate-900/75 shadow-xl backdrop-blur-md md:max-h-none md:w-72 md:self-stretch lg:w-80">
@@ -1349,7 +1391,10 @@ export default function TechAnalysisModal({
   ) : (
     <div className={`relative flex min-w-0 flex-1 flex-col ${embedded ? 'space-y-4' : 'flex-1 overflow-hidden'}`}>
       {!embedded && (
-        <div className="relative flex items-center justify-between border-b border-white/10 px-5 py-3">
+        <div
+          className={`relative flex items-center justify-between border-b border-white/10 px-5 py-3 ${analysisDragHandleClassName}`}
+          {...analysisDragHandleProps}
+        >
           <div>
             <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-cyan-400/80">
               DIAS ERP · Legacy Bridge
@@ -1376,20 +1421,62 @@ export default function TechAnalysisModal({
         <div className="relative z-20 overflow-visible rounded-2xl border border-white/10 bg-slate-900/75 p-3 shadow-xl backdrop-blur-md sm:p-4">
           <div className="flex flex-col gap-3 overflow-visible lg:flex-row lg:items-center">
             <div className="flex flex-nowrap items-end gap-2 overflow-visible">
-              <div className="relative z-20 flex shrink-0 flex-col gap-1 overflow-visible">
-                <label htmlFor="analysis-month" className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+              <div className="flex shrink-0 flex-col gap-1">
+                <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
                   Μήνας
-                </label>
-                <DarkSelect
-                  id="analysis-month"
-                  value={selectedMonth}
-                  onChange={(v) => setSelectedMonth(Number(v))}
-                  options={MONTH_LABELS.map((label, i) => ({
-                    value: i + 1,
-                    label: greekCapsLabel(label),
-                  }))}
-                  className="min-w-[160px] shrink-0"
-                />
+                </span>
+                <div className="inline-flex items-center gap-1.5 rounded-2xl border border-cyan-500/25 bg-gradient-to-b from-slate-900/90 to-slate-950/90 p-1.5 shadow-lg shadow-cyan-950/20">
+                  <button
+                    type="button"
+                    aria-label="Προηγούμενος μήνας"
+                    title="Προηγούμενος μήνας"
+                    onClick={() => {
+                      if (selectedMonth <= 1) {
+                        setSelectedMonth(12)
+                        setAnalysisYear((y) => Number(y) - 1)
+                      } else {
+                        setSelectedMonth((m) => Number(m) - 1)
+                      }
+                    }}
+                    className="inline-flex h-11 w-11 items-center justify-center rounded-xl border border-white/10 bg-white/5 text-cyan-200 shadow-inner transition hover:border-cyan-400/50 hover:bg-cyan-500/20 hover:text-white active:scale-95"
+                  >
+                    <svg viewBox="0 0 20 20" fill="currentColor" className="h-6 w-6" aria-hidden>
+                      <path
+                        fillRule="evenodd"
+                        d="M12.79 5.23a.75.75 0 01-.02 1.06L8.832 10l3.938 3.71a.75.75 0 11-1.04 1.08l-4.5-4.25a.75.75 0 010-1.08l4.5-4.25a.75.75 0 011.06.02z"
+                        clipRule="evenodd"
+                      />
+                    </svg>
+                  </button>
+                  <span
+                    id="analysis-month"
+                    className="min-w-[8.5rem] select-none px-1 text-center text-sm font-bold uppercase tracking-[0.12em] text-white"
+                  >
+                    {greekCapsLabel(MONTH_LABELS[selectedMonth - 1] || '')}
+                  </span>
+                  <button
+                    type="button"
+                    aria-label="Επόμενος μήνας"
+                    title="Επόμενος μήνας"
+                    onClick={() => {
+                      if (selectedMonth >= 12) {
+                        setSelectedMonth(1)
+                        setAnalysisYear((y) => Number(y) + 1)
+                      } else {
+                        setSelectedMonth((m) => Number(m) + 1)
+                      }
+                    }}
+                    className="inline-flex h-11 w-11 items-center justify-center rounded-xl border border-white/10 bg-white/5 text-cyan-200 shadow-inner transition hover:border-cyan-400/50 hover:bg-cyan-500/20 hover:text-white active:scale-95"
+                  >
+                    <svg viewBox="0 0 20 20" fill="currentColor" className="h-6 w-6" aria-hidden>
+                      <path
+                        fillRule="evenodd"
+                        d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z"
+                        clipRule="evenodd"
+                      />
+                    </svg>
+                  </button>
+                </div>
               </div>
               <div className="flex flex-col gap-1">
                 <label htmlFor="analysis-year" className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
@@ -1404,24 +1491,6 @@ export default function TechAnalysisModal({
                   onChange={(e) => setAnalysisYear(Number(e.target.value) || initialYear)}
                   className="w-24 rounded-xl border border-white/10 bg-slate-950/60 px-3 py-2 text-sm font-medium text-white"
                 />
-              </div>
-              <div className="flex flex-col gap-1">
-                <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
-                  Export
-                </span>
-                <button
-                  type="button"
-                  onClick={handleMonthExcelExport}
-                  disabled={monthExporting}
-                  title="Εξαγωγή χρεώσεων (δεδουλευμένων) όλου του προσωπικού για τον επιλεγμένο μήνα"
-                  className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-500/40 bg-emerald-500/15 px-3 py-2 text-xs font-bold text-emerald-100 transition hover:bg-emerald-500/25 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  <svg viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4 shrink-0" aria-hidden>
-                    <path d="M10.75 2.75a.75.75 0 00-1.5 0v8.69L6.3 8.49a.75.75 0 00-1.1 1.02l4.25 4.5a.75.75 0 001.1 0l4.25-4.5a.75.75 0 10-1.1-1.02l-2.95 3.12V2.75z" />
-                    <path d="M3.5 12.75a.75.75 0 00-1.5 0v2.5A2.75 2.75 0 004.75 18h10.5A2.75 2.75 0 0018 15.25v-2.5a.75.75 0 00-1.5 0v2.5c0 .69-.56 1.25-1.25 1.25H4.75c-.69 0-1.25-.56-1.25-1.25v-2.5z" />
-                  </svg>
-                  {monthExporting ? 'Εξαγωγή...' : 'Εξαγωγή Μήνα (Excel)'}
-                </button>
               </div>
               {showTechDropdown && (
                 <div className="flex flex-col gap-1">
@@ -1445,15 +1514,30 @@ export default function TechAnalysisModal({
               )}
             </div>
 
-            <div className="grid min-w-0 flex-1 grid-cols-2 gap-2 sm:grid-cols-4">
-              <InfoField label="Κωδικός" value={tech.code || tech.id} />
-              <InfoField label="Επώνυμο" value={lastName} />
-              <InfoField label="Όνομα" value={firstName} />
-              <InfoField label="Πρόσληψη" value={hireDate || '—'} />
+            <div className="flex min-w-0 flex-1 flex-col items-center justify-center px-2 text-center">
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                Υπάλληλος
+              </p>
+              <p className="mt-0.5 truncate text-lg font-bold tracking-wide text-white sm:text-xl">
+                {[lastName, firstName].filter(Boolean).join(' ') || displayName || '—'}
+              </p>
             </div>
 
             <div className="flex flex-col items-center gap-2 lg:items-end">
-              <div className="flex flex-wrap justify-end gap-1">
+              <div className="flex flex-wrap items-center justify-end gap-1.5">
+                <button
+                  type="button"
+                  onClick={handleMonthExcelExport}
+                  disabled={monthExporting}
+                  title="Εξαγωγή χρεώσεων (δεδουλευμένων) όλου του προσωπικού για τον επιλεγμένο μήνα"
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-500/40 bg-emerald-500/15 px-3 py-1.5 text-xs font-bold text-emerald-100 transition hover:bg-emerald-500/25 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <svg viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4 shrink-0" aria-hidden>
+                    <path d="M10.75 2.75a.75.75 0 00-1.5 0v8.69L6.3 8.49a.75.75 0 00-1.1 1.02l4.25 4.5a.75.75 0 001.1 0l4.25-4.5a.75.75 0 10-1.1-1.02l-2.95 3.12V2.75z" />
+                    <path d="M3.5 12.75a.75.75 0 00-1.5 0v2.5A2.75 2.75 0 004.75 18h10.5A2.75 2.75 0 0018 15.25v-2.5a.75.75 0 00-1.5 0v2.5c0 .69-.56 1.25-1.25 1.25H4.75c-.69 0-1.25-.56-1.25-1.25v-2.5z" />
+                  </svg>
+                  {monthExporting ? 'Εξαγωγή...' : 'Εξαγωγή Μήνα (Excel)'}
+                </button>
                 {tech.employment_type && (
                   <span className="rounded-lg border border-cyan-500/30 bg-cyan-500/10 px-2 py-0.5 text-[10px] font-semibold text-cyan-100">
                     {employmentLabel(tech.employment_type)}
@@ -2799,6 +2883,18 @@ export default function TechAnalysisModal({
       </div>
 
       <div className="relative flex flex-wrap items-center gap-2 border-t border-white/10 bg-slate-950/70 px-4 py-3 backdrop-blur-md">
+        {(onClose || embedded) && (
+          <button
+            type="button"
+            onClick={() => {
+              if (onClose) onClose()
+              else toast('Έξοδος — κλείσε από τη γραμμή τίτλου του παραθύρου', { icon: 'ℹ️' })
+            }}
+            className="inline-flex items-center rounded-xl border border-rose-500/40 bg-rose-500/15 px-4 py-2 text-sm font-bold text-rose-100 transition hover:bg-rose-500/25 active:scale-95"
+          >
+            Έξοδος
+          </button>
+        )}
         <ActionButton
           tone="slate"
           disabled={hoursTransferSaving || loading || !tech}
@@ -2813,29 +2909,43 @@ export default function TechAnalysisModal({
           Εκτύπωση
         </ActionButton>
         <div className="mx-1 hidden h-6 w-px bg-white/10 sm:block" />
-        <ActionButton tone="emerald" disabled={saving || loading} onClick={handleSave}>
-          {saving ? 'Αποθήκευση...' : 'Οριστική Αποθήκευση ERP'}
-        </ActionButton>
-        {(onClose || embedded) && (
-          <button
-            type="button"
-            onClick={() => {
-              if (onClose) onClose()
-              else toast('Έξοδος — κλείσε από τη γραμμή τίτλου του παραθύρου', { icon: 'ℹ️' })
-            }}
-            className="ml-auto inline-flex items-center rounded-xl border border-rose-500/40 bg-rose-500/15 px-4 py-2 text-sm font-bold text-rose-100 transition hover:bg-rose-500/25 active:scale-95"
-          >
-            Έξοδος
-          </button>
-        )}
+        <div className="ml-auto">
+          <ActionButton tone="emerald" disabled={saving || loading} onClick={handleSave}>
+            {saving ? 'Αποθήκευση...' : 'Οριστική Αποθήκευση ERP'}
+          </ActionButton>
+        </div>
       </div>
     </div>
   )
 
   const content = embedded ? (
-    <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden md:flex-row md:items-stretch">
-      {techSidebar}
-      <div className="min-h-0 min-w-0 flex-1 overflow-y-auto">{mainPanel}</div>
+    <div className="flex min-h-0 flex-1 flex-col gap-0 overflow-hidden md:flex-row md:items-stretch">
+      <div className="relative flex shrink-0 flex-col md:h-full">
+        {techSidebar}
+        {usePersonnelSidebar && (
+          <div
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Αλλαγή πλάτους λίστας προσωπικού"
+            title="Σύρε για αλλαγή πλάτους"
+            onPointerDown={(e) => {
+              if (e.button !== 0) return
+              e.preventDefault()
+              e.stopPropagation()
+              sidebarResizeRef.current = {
+                startX: e.clientX,
+                startWidth: sidebarWidth,
+              }
+              document.body.style.cursor = 'col-resize'
+              document.body.style.userSelect = 'none'
+            }}
+            className="absolute inset-y-2 -right-1 z-30 hidden w-2 cursor-col-resize touch-none md:block"
+          >
+            <span className="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-white/15 transition hover:bg-cyan-400/60" />
+          </div>
+        )}
+      </div>
+      <div className="min-h-0 min-w-0 flex-1 overflow-y-auto md:pl-2">{mainPanel}</div>
     </div>
   ) : (
     mainPanel
@@ -2851,7 +2961,10 @@ export default function TechAnalysisModal({
         className="absolute inset-0 bg-slate-950/20 backdrop-blur-none"
         onClick={onClose}
       />
-      <div className="relative flex max-h-[94vh] w-full max-w-[1920px] flex-col overflow-hidden rounded-2xl border border-white/10 bg-gradient-to-br from-slate-950 via-slate-900 to-indigo-950 shadow-2xl">
+      <div
+        className="relative flex max-h-[94vh] w-full max-w-[1920px] flex-col overflow-hidden rounded-2xl border border-white/10 bg-gradient-to-br from-slate-950 via-slate-900 to-indigo-950 shadow-2xl"
+        style={analysisPanelStyle}
+      >
         <div
           className="pointer-events-none absolute inset-0 opacity-30"
           aria-hidden
