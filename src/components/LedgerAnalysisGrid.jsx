@@ -512,6 +512,14 @@ export default function LedgerAnalysisGrid({
                       label="Υπόλοιπο (ΤΙΜ)"
                       value={footerBalances.invoice}
                       tone="amber"
+                      taxMarkup={
+                        invoiceGuideData && Number(invoiceGuideData.netAmount) !== 0
+                          ? {
+                              netAmount: Number(invoiceGuideData.netAmount) || 0,
+                              taxPercent: Number(invoiceGuideData.taxPercent) || 20,
+                            }
+                          : null
+                      }
                     />
                     {invoiceGuideData && Number(invoiceGuideData.netAmount) !== 0 ? (
                       <InvoiceGuideCard
@@ -532,18 +540,39 @@ export default function LedgerAnalysisGrid({
   )
 }
 
-function BalanceChip({ label, value, tone = 'slate' }) {
+function BalanceChip({ label, value, tone = 'slate', taxMarkup = null }) {
   const tones = {
     slate: 'border-white/10 bg-slate-900/80 text-slate-100',
     cyan: 'border-cyan-500/35 bg-cyan-500/10 text-cyan-50',
     amber: 'border-amber-500/40 bg-amber-500/10 text-amber-50',
   }
+
+  const pct = Number(taxMarkup?.taxPercent) || 20
+  const net = Number(taxMarkup?.netAmount) || 0
+  const factor = 1 - pct / 100
+  const grossed = taxMarkup && factor > 0 ? net / factor : null
+  const factorLabel =
+    factor > 0
+      ? factor.toLocaleString('el-GR', { minimumFractionDigits: 1, maximumFractionDigits: 2 })
+      : null
+
   return (
     <div
       className={`min-w-[7.5rem] rounded-xl border px-3 py-2 shadow-sm shadow-black/20 ${tones[tone] || tones.slate}`}
     >
       <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">{label}</p>
       <p className="mt-0.5 font-mono text-sm font-bold tabular-nums tracking-tight">{value}</p>
+      {grossed != null && factorLabel ? (
+        <div className="mt-1.5 border-t border-amber-500/20 pt-1.5 text-center">
+          <p className="text-[9px] font-medium leading-tight text-amber-200/55">
+            Προσαύξηση φόρου {pct}%
+          </p>
+          <p className="mt-0.5 text-[9px] tabular-nums text-amber-200/45">/ {factorLabel}</p>
+          <p className="mt-0.5 font-mono text-sm font-bold tabular-nums tracking-tight text-amber-50">
+            {formatEuro(grossed)}
+          </p>
+        </div>
+      ) : null}
     </div>
   )
 }
@@ -552,9 +581,11 @@ function BalanceChip({ label, value, tone = 'slate' }) {
 function InvoiceGuideCard({ netAmount, taxPercent }) {
   const net = Number(netAmount) || 0
   const pct = Number(taxPercent) || 20
-  const vat = net * 0.24
-  const withholding = net * (pct / 100)
-  const payable = net + vat - withholding
+  const factor = 1 - pct / 100
+  const gross = factor > 0 ? net / factor : net
+  const vat = gross * 0.24
+  const tax = gross * (pct / 100)
+  const payable = gross + vat - tax
 
   return (
     <div className="w-full max-w-xs rounded-xl border border-slate-700/50 bg-slate-800/60 p-3 text-xs shadow-sm shadow-black/20">
@@ -563,7 +594,7 @@ function InvoiceGuideCard({ netAmount, taxPercent }) {
       </p>
       <div className="flex justify-between gap-3 py-1 text-slate-300">
         <span>Αξία Τιμολογίου</span>
-        <span className="font-mono tabular-nums">{formatEuro(net)}</span>
+        <span className="font-mono tabular-nums">{formatEuro(gross)}</span>
       </div>
       <div className="flex justify-between gap-3 py-1 text-slate-300">
         <span>ΦΠΑ 24%</span>
@@ -571,7 +602,7 @@ function InvoiceGuideCard({ netAmount, taxPercent }) {
       </div>
       <div className="flex justify-between gap-3 py-1 text-slate-300">
         <span>Παρακρ. Φόρου ({pct}%)</span>
-        <span className="font-mono tabular-nums">− {formatEuro(withholding)}</span>
+        <span className="font-mono tabular-nums">− {formatEuro(tax)}</span>
       </div>
       <hr className="my-1 border-slate-600" />
       <div className="flex justify-between gap-3 py-1 font-bold text-slate-100">
