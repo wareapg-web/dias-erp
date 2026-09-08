@@ -18,6 +18,7 @@ import {
   saveModalSize,
   PERSONNEL_CATALOG_MODAL_SIZE_KEY,
 } from './lib/modalSize'
+import { useDraggableModal, MODAL_POS_KEYS } from './lib/useDraggableModal'
 
 const CATALOG_MODAL_MIN_W = 480
 const CATALOG_MODAL_MIN_H = 320
@@ -62,6 +63,16 @@ export default function App() {
   const catalogFrameRef = useRef(null)
   const [adminSession, setAdminSession] = useState(null)
   const [authLoading, setAuthLoading] = useState(true)
+  const {
+    panelStyle: catalogPanelStyle,
+    dragHandleProps: catalogDragHandleProps,
+    dragHandleClassName: catalogDragHandleClassName,
+  } = useDraggableModal(personnelModalOpen, MODAL_POS_KEYS.personnelCatalog)
+  const {
+    panelStyle: settingsPanelStyle,
+    dragHandleProps: settingsDragHandleProps,
+    dragHandleClassName: settingsDragHandleClassName,
+  } = useDraggableModal(settingsOpen, MODAL_POS_KEYS.settings)
 
   const period = formatPeriod(selectedYear, selectedMonth)
 
@@ -334,6 +345,7 @@ export default function App() {
       />
 
       <ErpWindow
+        storageKey="dias-erp:modal-pos:main-window"
         titleBar={
           <div className="flex w-full min-w-0 items-center gap-3 pr-2">
             <div className="min-w-0 shrink-0">
@@ -410,8 +422,9 @@ export default function App() {
                     height: catalogSize.height,
                     maxWidth: 'calc(100vw - 1.5rem)',
                     maxHeight: 'min(85vh, calc(100vh - 1.5rem))',
+                    ...catalogPanelStyle,
                   }
-                : undefined
+                : { ...catalogPanelStyle }
             }
           >
             {catalogResizeHandle('n', 'ns-resize', 'left-2 right-2 top-0 h-2')}
@@ -423,7 +436,10 @@ export default function App() {
             {catalogResizeHandle('sw', 'nesw-resize', 'bottom-0 left-0 h-3 w-3')}
             {catalogResizeHandle('se', 'nwse-resize', 'bottom-0 right-0 h-4 w-4')}
 
-            <div className="flex shrink-0 items-center justify-between border-b border-white/10 px-4 py-3">
+            <div
+              className={`flex shrink-0 items-center justify-between border-b border-white/10 px-4 py-3 ${catalogDragHandleClassName}`}
+              {...catalogDragHandleProps}
+            >
               <div>
                 <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-cyan-400/80">
                   Προσωπικο DIAS
@@ -470,11 +486,16 @@ export default function App() {
             aria-label="Κλείσιμο"
             onClick={() => setSettingsOpen(false)}
           />
-          <div className="relative w-full max-w-md rounded-2xl border border-white/10 bg-slate-900/95 p-6 shadow-2xl backdrop-blur-md">
-            <h3 className="text-lg font-bold text-white">Γενικές Παράμετροι</h3>
-            <p className="mt-2 text-sm text-slate-400">
-              Οι παράμετροι μισθοδοσίας του DIAS ERP θα ρυθμίζονται εδώ.
-            </p>
+          <div
+            className="relative w-full max-w-md rounded-2xl border border-white/10 bg-slate-900/95 p-6 shadow-2xl backdrop-blur-md"
+            style={settingsPanelStyle}
+          >
+            <div className={settingsDragHandleClassName} {...settingsDragHandleProps}>
+              <h3 className="text-lg font-bold text-white">Γενικές Παράμετροι</h3>
+              <p className="mt-2 text-sm text-slate-400">
+                Οι παράμετροι μισθοδοσίας του DIAS ERP θα ρυθμίζονται εδώ.
+              </p>
+            </div>
             <div className="mt-4 rounded-xl border border-white/10 bg-slate-950/60 px-3 py-2 text-xs text-slate-500">
               Περίοδος εργασίας: <span className="font-mono text-cyan-300">{period}</span>
             </div>

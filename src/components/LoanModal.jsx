@@ -12,6 +12,7 @@ import {
   generateLoanBatchId,
   periodAfterOffset,
 } from '../lib/loanUi'
+import { useDraggableModal, MODAL_POS_KEYS } from '../lib/useDraggableModal'
 
 const CATEGORY_OPTIONS = [
   { value: 'salary', label: 'Μισθός' },
@@ -56,6 +57,10 @@ export default function LoanModal({
 }) {
   const [form, setForm] = useState(() => emptyLoanForm(selectedMonth, analysisYear))
   const [saving, setSaving] = useState(false)
+  const { panelStyle, dragHandleProps, dragHandleClassName } = useDraggableModal(
+    open,
+    MODAL_POS_KEYS.loan
+  )
 
   useEffect(() => {
     if (!open) return
@@ -267,8 +272,12 @@ export default function LoanModal({
       <form
         onSubmit={handleSave}
         className="relative w-full max-w-lg rounded-2xl border border-white/10 bg-slate-900 p-5 shadow-2xl"
+        style={panelStyle}
       >
-        <div className="flex items-start justify-between gap-3">
+        <div
+          className={`flex items-start justify-between gap-3 ${dragHandleClassName}`}
+          {...dragHandleProps}
+        >
           <div>
             <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-cyan-400/80">
               Καρτέλα

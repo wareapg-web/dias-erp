@@ -27,6 +27,7 @@ import {
   saveModalSize,
   PERSONNEL_FORM_MODAL_SIZE_KEY,
 } from '../lib/modalSize'
+import { useDraggableModal, MODAL_POS_KEYS } from '../lib/useDraggableModal'
 import DarkSelect from './DarkSelect'
 import GreekDateInput from './GreekDateInput'
 import {
@@ -52,6 +53,8 @@ export default function PersonnelPanel({
   onListFilterChange,
   typeFilter,
   onTypeFilterChange,
+  /** Πλάτος sidebar σε px (όταν ελέγχεται από parent resize). */
+  width = null,
 }) {
   const isSidebar = variant === 'sidebar'
   const [formOpen, setFormOpen] = useState(false)
@@ -67,6 +70,10 @@ export default function PersonnelPanel({
   const formResizeRef = useRef(null)
   const [formSize, setFormSize] = useState(() =>
     loadModalSize(PERSONNEL_FORM_MODAL_SIZE_KEY, defaultFormModalSize)
+  )
+  const { panelStyle, dragHandleProps, dragHandleClassName } = useDraggableModal(
+    formOpen,
+    MODAL_POS_KEYS.personnelForm
   )
 
   useEffect(() => {
@@ -431,16 +438,23 @@ export default function PersonnelPanel({
   }
 
   const Wrapper = isSidebar ? 'aside' : 'section'
+  const sidebarWidthStyle =
+    isSidebar && Number.isFinite(Number(width))
+      ? { width: Number(width), maxWidth: '100%' }
+      : undefined
 
   return (
     <Wrapper
       className={
         isSidebar
-          ? 'flex max-h-56 w-full shrink-0 flex-col overflow-hidden rounded-2xl border border-white/10 bg-slate-900/75 shadow-xl backdrop-blur-md md:max-h-none md:w-80 md:self-stretch'
+          ? `flex max-h-56 shrink-0 flex-col overflow-hidden rounded-2xl border border-white/10 bg-slate-900/75 shadow-xl backdrop-blur-md md:max-h-none md:self-stretch ${
+              sidebarWidthStyle ? 'w-full' : 'w-full md:w-80'
+            }`
           : inModal
             ? 'flex h-full min-h-0 flex-col overflow-hidden'
             : 'flex w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-white/10 bg-slate-900/75 shadow-xl backdrop-blur-md'
       }
+      style={sidebarWidthStyle}
     >
       <div className={`border-b border-white/10 px-3 ${isSidebar ? 'py-3' : 'pb-3 pt-2'}`}>
         {isSidebar ? (
@@ -556,6 +570,12 @@ export default function PersonnelPanel({
                 key={p.id}
                 type="button"
                 onClick={() => onSelect?.(p)}
+                onDoubleClick={(e) => {
+                  e.preventDefault()
+                  e.stopPropagation()
+                  openEdit(p)
+                }}
+                title="Κλικ: επιλογή · Διπλό κλικ: καρτέλα υπαλλήλου"
                 className={`mb-1 flex w-full items-center gap-2.5 rounded-xl border px-2.5 py-2 text-left transition ${
                   selected
                     ? 'border-cyan-500/40 bg-cyan-500/15 text-cyan-100'
@@ -678,8 +698,7 @@ export default function PersonnelPanel({
           : `${filtered.length} εμφανίζονται · ${(personnel || []).length} σύνολο`}
       </div>
 
-      {!isSidebar &&
-        formOpen &&
+      {formOpen &&
         createPortal(
         <div className="fixed inset-0 z-[80] flex items-center justify-center p-4">
           <button
@@ -695,6 +714,7 @@ export default function PersonnelPanel({
               height: formSize.height,
               maxWidth: 'calc(100vw - 1.5rem)',
               maxHeight: 'calc(100vh - 1.5rem)',
+              ...panelStyle,
             }}
           >
             {formResizeHandle('n', 'ns-resize', 'left-2 right-2 top-0 h-2')}
@@ -706,7 +726,10 @@ export default function PersonnelPanel({
             {formResizeHandle('sw', 'nesw-resize', 'bottom-0 left-0 h-3 w-3')}
             {formResizeHandle('se', 'nwse-resize', 'bottom-0 right-0 h-4 w-4')}
 
-            <div className="shrink-0 border-b border-white/10 px-5 py-4">
+            <div
+              className={`shrink-0 border-b border-white/10 px-5 py-4 ${dragHandleClassName}`}
+              {...dragHandleProps}
+            >
               <h3 className="text-lg font-bold text-white">
                 {editingId ? 'Επεξεργασία υπαλλήλου' : 'Νέος υπάλληλος'}
               </h3>
@@ -1178,18 +1201,18 @@ export default function PersonnelPanel({
               <div className="flex gap-2">
                 <button
                   type="button"
+                  onClick={() => setFormOpen(false)}
+                  className="rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-white"
+                >
+                  Άκυρο
+                </button>
+                <button
+                  type="button"
                   onClick={handleSave}
                   disabled={saving || Boolean(periodsOverlapError)}
                   className="flex-1 rounded-xl border border-emerald-500/40 bg-emerald-500/20 px-4 py-2 text-sm font-bold text-emerald-100 disabled:opacity-50"
                 >
                   {saving ? 'Αποθήκευση...' : 'Αποθήκευση'}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setFormOpen(false)}
-                  className="rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-white"
-                >
-                  Άκυρο
                 </button>
               </div>
             </div>

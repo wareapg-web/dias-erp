@@ -3,6 +3,8 @@ import React, { useCallback, useEffect, useRef, useState } from 'react'
 const MIN_W = 720
 const MIN_H = 420
 
+const boundsMemory = new Map()
+
 function clamp(n, min, max) {
   return Math.min(max, Math.max(min, n))
 }
@@ -21,15 +23,58 @@ function defaultBounds() {
   }
 }
 
+function loadBounds(storageKey) {
+  if (!storageKey) return defaultBounds()
+  if (boundsMemory.has(storageKey)) return boundsMemory.get(storageKey)
+  try {
+    const raw = localStorage.getItem(storageKey)
+    if (!raw) return defaultBounds()
+    const parsed = JSON.parse(raw)
+    const vw = window.innerWidth
+    const vh = window.innerHeight
+    const width = clamp(Number(parsed?.width) || MIN_W, MIN_W, vw - 8)
+    const height = clamp(Number(parsed?.height) || MIN_H, MIN_H, vh - 8)
+    const next = {
+      width,
+      height,
+      x: clamp(Number(parsed?.x) || 0, 0, Math.max(0, vw - 80)),
+      y: clamp(Number(parsed?.y) || 0, 0, Math.max(0, vh - 48)),
+    }
+    boundsMemory.set(storageKey, next)
+    return next
+  } catch {
+    return defaultBounds()
+  }
+}
+
+function saveBounds(storageKey, bounds) {
+  if (!storageKey || !bounds) return
+  const next = {
+    x: Math.round(bounds.x),
+    y: Math.round(bounds.y),
+    width: Math.round(bounds.width),
+    height: Math.round(bounds.height),
+  }
+  boundsMemory.set(storageKey, next)
+  try {
+    localStorage.setItem(storageKey, JSON.stringify(next))
+  } catch {
+    /* ignore */
+  }
+}
+
 /**
  * Windows-like floating window: drag title bar, resize edges/corners, maximize.
+ * @param {string} [storageKey] — κρατάει θέση/μέγεθος σε μνήμη + localStorage
  */
-export default function ErpWindow({ titleBar, children, className = '' }) {
-  const [bounds, setBounds] = useState(defaultBounds)
+export default function ErpWindow({ titleBar, children, className = '', storageKey = null }) {
+  const [bounds, setBounds] = useState(() => loadBounds(storageKey))
   const [maximized, setMaximized] = useState(false)
   const restoreRef = useRef(null)
   const dragRef = useRef(null)
   const frameRef = useRef(null)
+  const boundsRef = useRef(bounds)
+  boundsRef.current = bounds
 
   useEffect(() => {
     const onResize = () => {
@@ -39,17 +84,19 @@ export default function ErpWindow({ titleBar, children, className = '' }) {
         const vh = window.innerHeight
         const width = clamp(b.width, MIN_W, vw - 8)
         const height = clamp(b.height, MIN_H, vh - 8)
-        return {
+        const next = {
           width,
           height,
           x: clamp(b.x, 0, Math.max(0, vw - width)),
           y: clamp(b.y, 0, Math.max(0, vh - height)),
         }
+        saveBounds(storageKey, next)
+        return next
       })
     }
     window.addEventListener('resize', onResize)
     return () => window.removeEventListener('resize', onResize)
-  }, [maximized])
+  }, [maximized, storageKey])
 
   const toggleMaximize = useCallback(() => {
     setMaximized((m) => {
@@ -150,7 +197,9 @@ export default function ErpWindow({ titleBar, children, className = '' }) {
     }
 
     const onUp = () => {
+      if (!dragRef.current) return
       dragRef.current = null
+      if (!maximized) saveBounds(storageKey, boundsRef.current)
     }
 
     window.addEventListener('pointermove', onMove)
@@ -161,7 +210,7 @@ export default function ErpWindow({ titleBar, children, className = '' }) {
       window.removeEventListener('pointerup', onUp)
       window.removeEventListener('pointercancel', onUp)
     }
-  }, [])
+  }, [storageKey, maximized])
 
   const style = maximized
     ? { left: 0, top: 0, width: '100vw', height: '100vh', borderRadius: 0 }
@@ -238,4 +287,3 @@ export default function ErpWindow({ titleBar, children, className = '' }) {
     </div>
   )
 }
-

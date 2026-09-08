@@ -38,3 +38,26 @@ export function saveModalSize(storageKey, size) {
 
 export const PERSONNEL_FORM_MODAL_SIZE_KEY = 'dias-erp:personnel-form-modal-size'
 export const PERSONNEL_CATALOG_MODAL_SIZE_KEY = 'dias-erp:personnel-catalog-modal-size'
+export const PERSONNEL_SIDEBAR_WIDTH_KEY = 'dias-erp:personnel-sidebar-width'
+
+export function loadSidebarWidth(storageKey, fallback = 320) {
+  if (typeof window === 'undefined') return fallback
+  try {
+    const raw = localStorage.getItem(storageKey)
+    if (raw == null || raw === '') return fallback
+    const n = Number(raw)
+    if (!Number.isFinite(n)) return fallback
+    return Math.min(520, Math.max(200, Math.round(n)))
+  } catch {
+    return fallback
+  }
+}
+
+export function saveSidebarWidth(storageKey, width) {
+  if (typeof window === 'undefined' || !Number.isFinite(width)) return
+  try {
+    localStorage.setItem(storageKey, String(Math.round(width)))
+  } catch {
+    /* ignore */
+  }
+}
