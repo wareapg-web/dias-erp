@@ -52,6 +52,7 @@
 - `supabase/28_uncheck_bonus_plus_transfer.sql` (ξετικάρισμα Bonus+ auto_transfer)
 - `supabase/29_loan_batch_id.sql` (`payment_entries.loan_batch_id` + view · σειρά δανείου)
 - `supabase/30_fixed_expense_settings.sql` (JSONB Βασικό/Μεταβλητό στις Αποδοχές)
+- `supabase/31_tech_agreement_versions.sql` (Master snapshots συμφωνιών + RPC create/patch toggles)
 
 ### Φωτογραφίες προφίλ (Cloudflare R2 μέσω Edge Function)
 
