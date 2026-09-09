@@ -16,22 +16,12 @@ import {
   techPhotoUrl,
   estimateAmount,
   formatEuro,
-  formatEuroPlain,
   formatMatrixLoan,
   formatMatrixTicket,
 } from '../lib/payrollAnalysis'
 import {
-  EARNINGS_AMOUNT_ONLY_DEFS,
-  amountOnlyField,
-  autoTransferKeyForRow,
   emptyEarningsForm,
   earningsFromDb,
-  earningsRateRowDefs,
-  earningsRowHasAutoTransfer,
-  earningsToDb,
-  earningsTotal,
-  earningsTransferRowDefs,
-  isFixedExpense,
 } from '../lib/techEarnings'
 import { fromElInputValue, parseElNumber, toElInputDisplay, formatElNumber } from '../lib/numberFormat'
 import {
@@ -47,12 +37,15 @@ import {
   upsertWorkHours,
 } from '../lib/workHours'
 import {
-  AGREEMENT_TYPES,
-  agreementRpcArgs,
-  agreementTypeLabel,
-  emptyAgreementForm,
-  formatAgreementAmount,
-} from '../lib/techAgreements'
+  agreementStatusLabel,
+  createAgreementVersionAndSyncMirror,
+  ensureActiveAgreementFromEarnings,
+  findActiveAgreement,
+  isAgreementActive,
+  loadAgreementVersions,
+  patchActiveAgreementToggles,
+  snapshotToForm,
+} from '../lib/techAgreementVersions'
 import {
   PAYMENT_TYPES,
   emptyPaymentForm,
@@ -88,6 +81,8 @@ import PersonnelPanel from './PersonnelPanel'
 import MovementModal from './MovementModal'
 import LoanModal from './LoanModal'
 import LoanManagementModal from './LoanManagementModal'
+import EarningsPackageForm from './EarningsPackageForm'
+import GreekDateInput from './GreekDateInput'
 import { useDraggableModal, MODAL_POS_KEYS } from '../lib/useDraggableModal'
 import {
   loadSidebarWidth,
@@ -151,12 +146,18 @@ export default function TechAnalysisModal({
   const [earningsError, setEarningsError] = useState(null)
   const [earningsMissing, setEarningsMissing] = useState(false)
   const [earningsDirty, setEarningsDirty] = useState(false)
-  const [agreements, setAgreements] = useState([])
+  const [agreementVersions, setAgreementVersions] = useState([])
   const [agreementsLoading, setAgreementsLoading] = useState(false)
   const [agreementsSaving, setAgreementsSaving] = useState(false)
   const [agreementsError, setAgreementsError] = useState(null)
   const [agreementsMissing, setAgreementsMissing] = useState(false)
-  const [agreementForm, setAgreementForm] = useState(emptyAgreementForm)
+  const [agreementEditorOpen, setAgreementEditorOpen] = useState(false)
+  const [agreementViewOpen, setAgreementViewOpen] = useState(false)
+  const [agreementViewRow, setAgreementViewRow] = useState(null)
+  const [agreementDraftForm, setAgreementDraftForm] = useState(() => emptyEarningsForm())
+  const [agreementStartDate, setAgreementStartDate] = useState(() =>
+    new Date().toISOString().slice(0, 10)
+  )
   const [payments, setPayments] = useState([])
   const [paymentsLoading, setPaymentsLoading] = useState(false)
   const [paymentsSaving, setPaymentsSaving] = useState(false)
@@ -350,6 +351,11 @@ export default function TechAnalysisModal({
           setEarningsMissing(false)
           setEarningsForm(earningsFromDb(data))
           setEarningsRecordId(data?.id || null)
+          if (data) {
+            void ensureActiveAgreementFromEarnings(tech, data).then(() => {
+              if (!cancelled) void loadAgreements()
+            })
+          }
         }
       } catch (err) {
         if (!cancelled) {
@@ -374,42 +380,34 @@ export default function TechAnalysisModal({
 
   const loadAgreements = async () => {
     if (!tech?.id) {
-      setAgreements([])
+      setAgreementVersions([])
       return
     }
     setAgreementsLoading(true)
     setAgreementsError(null)
     try {
-      const { data, error } = await diasClient
-        .from('tech_agreements')
-        .select('*')
-        .eq('tech_id', String(tech.id))
-        .eq('is_active', true)
-        .order('type_code', { ascending: true })
-
-      if (error) {
-        setAgreementsMissing(isMissingTableError(error))
-        setAgreementsError(
-          formatSupabaseError(error, { table: 'tech_agreements', clientLabel: 'DIAS ERP' })
-        )
-        setAgreements([])
-      } else {
-        setAgreementsMissing(false)
-        setAgreements(data || [])
-      }
+      const { rows, missingTable, error } = await loadAgreementVersions(tech.id)
+      setAgreementsMissing(missingTable)
+      setAgreementsError(error)
+      setAgreementVersions(rows)
     } catch (err) {
       setAgreementsMissing(isMissingTableError(err))
       setAgreementsError(
-        formatSupabaseError(err, { table: 'tech_agreements', clientLabel: 'DIAS ERP' })
+        formatSupabaseError(err, {
+          table: 'tech_agreement_versions',
+          clientLabel: 'DIAS ERP',
+        })
       )
-      setAgreements([])
+      setAgreementVersions([])
     } finally {
       setAgreementsLoading(false)
     }
   }
 
   useEffect(() => {
-    setAgreementForm(emptyAgreementForm())
+    setAgreementEditorOpen(false)
+    setAgreementViewOpen(false)
+    setAgreementViewRow(null)
     loadAgreements()
     // eslint-disable-next-line react-hooks/exhaustive-deps -- reload when tech changes
   }, [tech?.id])
@@ -747,7 +745,7 @@ export default function TechAnalysisModal({
         year: analysisYear,
         month: selectedMonth,
         earningsForm,
-        agreements,
+        agreements: agreementVersions,
         transactionTypes,
         existingLedgerRows: ledgerRows,
       })
@@ -1178,95 +1176,142 @@ export default function TechAnalysisModal({
     setEarningsSaving(true)
     setEarningsError(null)
     try {
-      const payload = earningsToDb(earningsForm, tech)
-      const query = earningsRecordId
-        ? diasClient.from('tech_earnings').update(payload).eq('id', earningsRecordId).select('*').single()
-        : diasClient.from('tech_earnings').upsert(payload, { onConflict: 'tech_id' }).select('*').single()
-
-      const { data, error } = await query
+      await patchActiveAgreementToggles({
+        techId: tech.id,
+        form: earningsForm,
+      })
+      const { data, error } = await diasClient
+        .from('tech_earnings')
+        .select('*')
+        .eq('tech_id', String(tech.id))
+        .maybeSingle()
       if (error) throw error
-      setEarningsForm(earningsFromDb(data))
-      setEarningsRecordId(data?.id || null)
+      if (data) {
+        setEarningsForm(earningsFromDb(data))
+        setEarningsRecordId(data.id || null)
+      }
       setEarningsDirty(false)
-      toast.success('Οι αποδοχές αποθηκεύτηκαν.')
+      await loadAgreements()
+      toast.success('Οι λειτουργικές ρυθμίσεις αποθηκεύτηκαν.')
     } catch (err) {
-      setEarningsMissing(isMissingTableError(err))
-      const msg = formatSupabaseError(err, { table: 'tech_earnings', clientLabel: 'DIAS ERP' })
-      setEarningsError(msg)
-      toast.error(msg || 'Αποτυχία αποθήκευσης αποδοχών.')
+      if (isMissingTableError(err) || String(err?.message || '').includes('patch_active_agreement')) {
+        setAgreementsMissing(true)
+        const msg =
+          'Λείπει tech_agreement_versions / RPC. Τρέξε supabase/31_tech_agreement_versions.sql στο DIAS.'
+        setEarningsError(msg)
+        toast.error(msg)
+      } else {
+        setEarningsMissing(isMissingTableError(err))
+        const msg =
+          formatSupabaseError(err, {
+            table: 'tech_earnings',
+            clientLabel: 'DIAS ERP',
+          }) || err?.message
+        setEarningsError(msg)
+        toast.error(msg || 'Αποτυχία αποθήκευσης ρυθμίσεων.')
+      }
     } finally {
       setEarningsSaving(false)
     }
   }
 
   const handleResetEarnings = () => {
-    setEarningsForm(emptyEarningsForm())
-    setEarningsDirty(true)
+    toast('Τα ποσά αλλάζουν μόνο με Νέα Συμφωνία.', { icon: 'ℹ️' })
   }
 
   const handleDeleteEarnings = async () => {
-    if (!tech || !earningsRecordId) {
-      handleResetEarnings()
+    toast('Η διαγραφή πακέτου γίνεται μέσω νέας συμφωνίας / ιστορικού.', { icon: 'ℹ️' })
+  }
+
+  const activeAgreement = useMemo(
+    () => findActiveAgreement(agreementVersions),
+    [agreementVersions]
+  )
+
+  const openNewAgreement = () => {
+    const prefill = activeAgreement
+      ? snapshotToForm(activeAgreement.earnings_snapshot)
+      : earningsForm
+    setAgreementDraftForm(prefill)
+    setAgreementStartDate(new Date().toISOString().slice(0, 10))
+    setAgreementEditorOpen(true)
+  }
+
+  const openViewAgreement = (row) => {
+    setAgreementViewRow(row)
+    setAgreementViewOpen(true)
+  }
+
+  const patchAgreementDraft = (field, value) => {
+    setAgreementDraftForm((prev) => ({ ...prev, [field]: value }))
+  }
+
+  const patchAgreementDraftAuto = (transferKey, checked) => {
+    if (!transferKey) return
+    setAgreementDraftForm((prev) => ({
+      ...prev,
+      auto_transfer_settings: {
+        ...(prev.auto_transfer_settings || {}),
+        [transferKey]: Boolean(checked),
+      },
+    }))
+  }
+
+  const patchAgreementDraftFixed = (earningsKey, checked) => {
+    if (!earningsKey) return
+    setAgreementDraftForm((prev) => ({
+      ...prev,
+      fixed_expense_settings: {
+        ...(prev.fixed_expense_settings || {}),
+        [earningsKey]: Boolean(checked),
+      },
+    }))
+  }
+
+  const handleSaveNewAgreement = async () => {
+    if (!tech?.id || agreementsMissing) return
+    if (!agreementStartDate) {
+      toast.error('Συμπλήρωσε ημερομηνία έναρξης.')
       return
     }
-    if (!window.confirm(`Διαγραφή αποδοχών για ${tech.name};`)) return
-    setEarningsSaving(true)
-    setEarningsError(null)
-    try {
-      const { error } = await diasClient.from('tech_earnings').delete().eq('id', earningsRecordId)
-      if (error) throw error
-      setEarningsForm(emptyEarningsForm())
-      setEarningsRecordId(null)
-      setEarningsDirty(false)
-      toast.success('Οι αποδοχές διαγράφηκαν.')
-    } catch (err) {
-      const msg = formatSupabaseError(err, { table: 'tech_earnings', clientLabel: 'DIAS ERP' })
-      setEarningsError(msg)
-      toast.error(msg || 'Αποτυχία διαγραφής αποδοχών.')
-    } finally {
-      setEarningsSaving(false)
-    }
-  }
-
-  const earningsSum = earningsTotal(earningsForm)
-
-  const patchAgreement = (field, value) => {
-    setAgreementForm((prev) => ({ ...prev, [field]: value }))
-  }
-
-  const handleSaveAgreement = async (e) => {
-    e?.preventDefault?.()
-    if (!tech?.id || agreementsMissing) return
     setAgreementsSaving(true)
     setAgreementsError(null)
     try {
-      const args = agreementRpcArgs(agreementForm, tech.id)
-      const { data, error } = await diasClient.rpc('add_tech_agreement', args)
-      if (error) throw error
-      void data
-      setAgreementForm((prev) => ({
-        ...emptyAgreementForm(),
-        type_code: prev.type_code,
-        valid_from: new Date().toISOString().slice(0, 10),
-      }))
+      const { earnings } = await createAgreementVersionAndSyncMirror({
+        tech,
+        startDate: agreementStartDate,
+        form: agreementDraftForm,
+        earningsRecordId,
+      })
+      setEarningsForm(earningsFromDb(earnings))
+      setEarningsRecordId(earnings?.id || null)
+      setEarningsDirty(false)
+      setAgreementEditorOpen(false)
       await loadAgreements()
-      toast.success('Η συμφωνία αποθηκεύτηκε.')
+      toast.success('Η νέα συμφωνία αποθηκεύτηκε και συγχρονίστηκε στις Αποδοχές.')
     } catch (err) {
       const msg = String(err?.message || err || '')
       let display
-      if (msg.includes('add_tech_agreement') || msg.includes('function') || isMissingTableError(err)) {
+      if (
+        msg.includes('create_tech_agreement_version') ||
+        msg.includes('tech_agreement_versions') ||
+        isMissingTableError(err)
+      ) {
         setAgreementsMissing(true)
         display =
-          'Λείπει πίνακας/RPC tech_agreements. Τρέξε supabase/03_tech_agreements.sql στο DIAS.'
+          'Λείπει πίνακας/RPC tech_agreement_versions. Τρέξε supabase/31_tech_agreement_versions.sql στο DIAS.'
       } else if (msg.includes('foreign key') || msg.includes('personnel')) {
         display =
           'Ο υπάλληλος πρέπει να υπάρχει στο DIAS personnel (tech_id). Αποθήκευσε/εισήγαγε πρώτα το προσωπικό.'
       } else {
         display =
-          formatSupabaseError(err, { table: 'tech_agreements', clientLabel: 'DIAS ERP' }) || msg
+          formatSupabaseError(err, {
+            table: 'tech_agreement_versions',
+            clientLabel: 'DIAS ERP',
+          }) || msg
       }
       setAgreementsError(display)
-      toast.error(display)
+      toast.error(display || 'Αποτυχία αποθήκευσης συμφωνίας.')
     } finally {
       setAgreementsSaving(false)
     }
@@ -1978,6 +2023,16 @@ export default function TechAnalysisModal({
 
         {activeTab === 'earnings' && (
           <div className="space-y-3">
+            <div className="rounded-xl border border-cyan-500/30 bg-cyan-500/10 px-4 py-2.5">
+              <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-cyan-400/90">
+                Ενεργή Συμφωνία
+              </p>
+              <p className="mt-0.5 text-sm text-cyan-50">
+                {activeAgreement?.start_date
+                  ? `Από ${new Date(activeAgreement.start_date).toLocaleDateString('el-GR')} · ποσά μόνο μέσω Νέας Συμφωνίας`
+                  : 'Δεν υπάρχει ακόμα ιστορικό συμφωνίας — αποθήκευσε Νέα Συμφωνία ή Αποδοχές για seed.'}
+              </p>
+            </div>
             {earningsMissing && (
               <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
                 Λείπει ο πίνακας <code className="rounded bg-black/30 px-1">tech_earnings</code> στο DIAS
@@ -1992,267 +2047,28 @@ export default function TechAnalysisModal({
             )}
 
             <div className="flex flex-col gap-4 lg:flex-row lg:items-start">
-              <div className="min-w-0 flex-1 overflow-hidden rounded-2xl border border-white/10 bg-slate-900/75 shadow-xl backdrop-blur-md">
+              <div className="min-w-0 flex-1">
                 {earningsLoading ? (
-                  <div className="px-4 py-12 text-center text-slate-400">Φόρτωση αποδοχών...</div>
-                ) : (
-                  <div className="overflow-x-auto">
-                    <table className="w-full min-w-[560px] border-collapse text-left text-sm">
-                      <thead>
-                        <tr className="border-b border-white/10 bg-slate-950/60 text-[10px] uppercase tracking-wider text-slate-400">
-                          <th
-                            className="w-14 px-2 py-2.5 text-center font-semibold"
-                            title="Βασικό/στάνταρ μηνιαίο έξοδο (τικ) · μεταβλητό (κενό)"
-                          >
-                            Βασικό
-                          </th>
-                          <th className="px-4 py-2.5 font-semibold">Τύπος</th>
-                          <th
-                            className="w-16 px-1 py-2.5 text-center font-semibold text-cyan-400/90"
-                            title="Συμπερίληψη στη Δημιουργία μήνα"
-                          >
-                            Δημιουργία
-                          </th>
-                          <th className="px-3 py-2.5 text-right font-semibold">Ποσό</th>
-                          <th className="px-3 py-2.5 text-right font-semibold">&gt; από</th>
-                          <th className="px-3 py-2.5 text-right font-semibold">Ελάχιστο</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {earningsTransferRowDefs().map((def, idx) => {
-                          const transferKey = autoTransferKeyForRow(def)
-                          const showTransfer = earningsRowHasAutoTransfer(def)
-                          const transferOn =
-                            showTransfer &&
-                            earningsForm.auto_transfer_settings?.[transferKey] === true
-                          const fixedOn = isFixedExpense(earningsForm, def.key)
-                          return (
-                          <tr
-                            key={def.key}
-                            className={`border-b border-white/5 ${idx % 2 === 0 ? 'bg-white/[0.02]' : ''}`}
-                          >
-                            <td className="px-2 py-1.5 text-center">
-                              <label
-                                className="group relative inline-flex cursor-pointer items-center justify-center"
-                                title={
-                                  fixedOn
-                                    ? 'Βασικό/στάνταρ μηνιαίο έξοδο'
-                                    : 'Μεταβλητό έξοδο'
-                                }
-                              >
-                                <input
-                                  type="checkbox"
-                                  checked={fixedOn}
-                                  onChange={(e) =>
-                                    patchFixedExpense(def.key, e.target.checked)
-                                  }
-                                  disabled={earningsMissing}
-                                  className="peer h-3.5 w-3.5 cursor-pointer appearance-none rounded border border-amber-400/40 bg-slate-950/80 transition checked:border-amber-400/70 checked:bg-amber-500/80 disabled:opacity-50"
-                                />
-                                <span className="pointer-events-none absolute inset-0 flex items-center justify-center text-[9px] font-bold text-slate-950 opacity-0 peer-checked:opacity-100">
-                                  ✓
-                                </span>
-                              </label>
-                            </td>
-                            <td className="px-4 py-1.5 font-medium text-white">{def.label}</td>
-                            <td className="px-1 py-1.5 text-center">
-                              {showTransfer ? (
-                                <label
-                                  className="group relative inline-flex cursor-pointer items-center justify-center"
-                                  title="Συμπερίληψη στη Δημιουργία"
-                                >
-                                  <input
-                                    type="checkbox"
-                                    checked={transferOn}
-                                    onChange={(e) =>
-                                      patchAutoTransfer(transferKey, e.target.checked)
-                                    }
-                                    disabled={earningsMissing}
-                                    className="peer h-3.5 w-3.5 cursor-pointer appearance-none rounded border border-white/25 bg-slate-950/80 transition checked:border-cyan-400/60 checked:bg-cyan-500/80 disabled:opacity-50"
-                                  />
-                                  <span className="pointer-events-none absolute inset-0 flex items-center justify-center text-[9px] font-bold text-slate-950 opacity-0 peer-checked:opacity-100">
-                                    ✓
-                                  </span>
-                                </label>
-                              ) : null}
-                            </td>
-                            {['amount', 'from', 'min'].map((suffix) => {
-                              const field = `${def.key}_${suffix}`
-                              return (
-                                <td key={field} className="px-2 py-1">
-                                  <input
-                                    type="text"
-                                    inputMode="decimal"
-                                    autoComplete="off"
-                                    value={toElInputDisplay(earningsForm[field] ?? '')}
-                                    onChange={(e) =>
-                                      patchEarnings(field, fromElInputValue(e.target.value))
-                                    }
-                                    disabled={earningsMissing}
-                                    className="w-full min-w-0 rounded-lg border border-white/10 bg-slate-950/60 px-2 py-1.5 text-right font-mono text-sm text-white disabled:opacity-50"
-                                  />
-                                </td>
-                              )
-                            })}
-                          </tr>
-                          )
-                        })}
-                        {EARNINGS_AMOUNT_ONLY_DEFS.filter(
-                          (def) => !def.invoiceOnly || issuesInvoice
-                        ).map((def, idx) => {
-                          const field = amountOnlyField(def)
-                          const transferKey = autoTransferKeyForRow(def)
-                          const showTransfer = earningsRowHasAutoTransfer(def)
-                          const transferOn =
-                            showTransfer &&
-                            earningsForm.auto_transfer_settings?.[transferKey] === true
-                          const fixedOn = isFixedExpense(earningsForm, def.key)
-                          return (
-                            <tr
-                              key={def.key}
-                              className={`border-b border-white/5 ${(earningsTransferRowDefs().length + idx) % 2 === 0 ? 'bg-white/[0.02]' : ''}`}
-                            >
-                              <td className="px-2 py-1.5 text-center">
-                                <label
-                                  className="group relative inline-flex cursor-pointer items-center justify-center"
-                                  title={
-                                    fixedOn
-                                      ? 'Βασικό/στάνταρ μηνιαίο έξοδο'
-                                      : 'Μεταβλητό έξοδο'
-                                  }
-                                >
-                                  <input
-                                    type="checkbox"
-                                    checked={fixedOn}
-                                    onChange={(e) =>
-                                      patchFixedExpense(def.key, e.target.checked)
-                                    }
-                                    disabled={earningsMissing}
-                                    className="peer h-3.5 w-3.5 cursor-pointer appearance-none rounded border border-amber-400/40 bg-slate-950/80 transition checked:border-amber-400/70 checked:bg-amber-500/80 disabled:opacity-50"
-                                  />
-                                  <span className="pointer-events-none absolute inset-0 flex items-center justify-center text-[9px] font-bold text-slate-950 opacity-0 peer-checked:opacity-100">
-                                    ✓
-                                  </span>
-                                </label>
-                              </td>
-                              <td className="px-4 py-1.5 font-medium text-white">{def.label}</td>
-                              <td className="px-1 py-1.5 text-center">
-                                {showTransfer ? (
-                                  <label
-                                    className="group relative inline-flex cursor-pointer items-center justify-center"
-                                    title="Συμπερίληψη στη Δημιουργία"
-                                  >
-                                    <input
-                                      type="checkbox"
-                                      checked={transferOn}
-                                      onChange={(e) =>
-                                        patchAutoTransfer(transferKey, e.target.checked)
-                                      }
-                                      disabled={earningsMissing}
-                                      className="peer h-3.5 w-3.5 cursor-pointer appearance-none rounded border border-white/25 bg-slate-950/80 transition checked:border-cyan-400/60 checked:bg-cyan-500/80 disabled:opacity-50"
-                                    />
-                                    <span className="pointer-events-none absolute inset-0 flex items-center justify-center text-[9px] font-bold text-slate-950 opacity-0 peer-checked:opacity-100">
-                                      ✓
-                                    </span>
-                                  </label>
-                                ) : null}
-                              </td>
-                              <td className="px-2 py-1">
-                                <input
-                                  type="text"
-                                  inputMode="decimal"
-                                  autoComplete="off"
-                                  value={toElInputDisplay(earningsForm[field] ?? '')}
-                                  onChange={(e) =>
-                                    patchEarnings(field, fromElInputValue(e.target.value))
-                                  }
-                                  disabled={earningsMissing}
-                                  className="w-full min-w-0 rounded-lg border border-white/10 bg-slate-950/60 px-2 py-1.5 text-right font-mono text-sm text-white disabled:opacity-50"
-                                />
-                              </td>
-                              <td className="px-2 py-1" />
-                              <td className="px-2 py-1" />
-                            </tr>
-                          )
-                        })}
-                        {earningsRateRowDefs().map((def, idx) => {
-                          const baseIdx =
-                            earningsTransferRowDefs().length +
-                            EARNINGS_AMOUNT_ONLY_DEFS.filter(
-                              (d) => !d.invoiceOnly || issuesInvoice
-                            ).length +
-                            idx
-                          const fixedOn = isFixedExpense(earningsForm, def.key)
-                          return (
-                          <tr
-                            key={def.key}
-                            className={`border-b border-white/5 ${baseIdx % 2 === 0 ? 'bg-white/[0.02]' : ''}`}
-                          >
-                            <td className="px-2 py-1.5 text-center">
-                              <label
-                                className="group relative inline-flex cursor-pointer items-center justify-center"
-                                title={
-                                  fixedOn
-                                    ? 'Βασικό/στάνταρ μηνιαίο έξοδο'
-                                    : 'Μεταβλητό έξοδο'
-                                }
-                              >
-                                <input
-                                  type="checkbox"
-                                  checked={fixedOn}
-                                  onChange={(e) =>
-                                    patchFixedExpense(def.key, e.target.checked)
-                                  }
-                                  disabled={earningsMissing}
-                                  className="peer h-3.5 w-3.5 cursor-pointer appearance-none rounded border border-amber-400/40 bg-slate-950/80 transition checked:border-amber-400/70 checked:bg-amber-500/80 disabled:opacity-50"
-                                />
-                                <span className="pointer-events-none absolute inset-0 flex items-center justify-center text-[9px] font-bold text-slate-950 opacity-0 peer-checked:opacity-100">
-                                  ✓
-                                </span>
-                              </label>
-                            </td>
-                            <td className="px-4 py-1.5 font-medium text-white">{def.label}</td>
-                            <td className="px-1 py-1.5" />
-                            {['amount', 'from', 'min'].map((suffix) => {
-                              const field = `${def.key}_${suffix}`
-                              return (
-                                <td key={field} className="px-2 py-1">
-                                  <input
-                                    type="text"
-                                    inputMode="decimal"
-                                    autoComplete="off"
-                                    value={toElInputDisplay(earningsForm[field] ?? '')}
-                                    onChange={(e) =>
-                                      patchEarnings(field, fromElInputValue(e.target.value))
-                                    }
-                                    disabled={earningsMissing}
-                                    className="w-full min-w-0 rounded-lg border border-white/10 bg-slate-950/60 px-2 py-1.5 text-right font-mono text-sm text-white disabled:opacity-50"
-                                  />
-                                </td>
-                              )
-                            })}
-                          </tr>
-                          )
-                        })}
-                      </tbody>
-                      <tfoot>
-                        <tr className="border-t border-white/10 bg-slate-950/70">
-                          <td />
-                          <td className="px-4 py-2.5 text-sm font-bold text-cyan-200">Σύνολο</td>
-                          <td />
-                          <td className="px-3 py-2.5 text-right font-mono text-sm font-bold text-white">
-                            {formatEuroPlain(earningsSum) || '0,00'}
-                          </td>
-                          <td colSpan={2} />
-                        </tr>
-                      </tfoot>
-                    </table>
+                  <div className="rounded-2xl border border-white/10 bg-slate-900/75 px-4 py-12 text-center text-slate-400">
+                    Φόρτωση αποδοχών...
                   </div>
+                ) : (
+                  <EarningsPackageForm
+                    form={earningsForm}
+                    editMode="toggles-only"
+                    issuesInvoice={issuesInvoice}
+                    disabled={earningsMissing}
+                    tech={tech}
+                    onPatchField={patchEarnings}
+                    onPatchAutoTransfer={patchAutoTransfer}
+                    onPatchFixedExpense={patchFixedExpense}
+                    footerNote={
+                      earningsDirty
+                        ? 'Κίτρινο ✓ = Βασικό · κυανό ✓ = Δημιουργία · μη αποθηκευμένες αλλαγές ρυθμίσεων'
+                        : 'Κίτρινο ✓ = Βασικό · κυανό ✓ = Δημιουργία · αποθηκευμένο'
+                    }
+                  />
                 )}
-                <p className="border-t border-white/5 px-4 py-2 text-[11px] text-slate-500">
-                  Αποδοχές ανά υπάλληλο στο DIAS · κίτρινο ✓ = Βασικό · κυανό ✓ = Δημιουργία
-                  {earningsDirty ? ' · μη αποθηκευμένες αλλαγές' : ' · αποθηκευμένο'}
-                </p>
               </div>
 
               <div className="flex shrink-0 flex-row gap-2 lg:w-36 lg:flex-col">
@@ -2267,7 +2083,7 @@ export default function TechAnalysisModal({
                 <button
                   type="button"
                   onClick={handleSaveEarnings}
-                  disabled={earningsMissing || earningsSaving || earningsLoading}
+                  disabled={earningsMissing || earningsSaving || earningsLoading || !earningsDirty}
                   className="shrink-0 rounded-xl border border-emerald-500/40 bg-emerald-500/15 px-3 py-2.5 text-left text-xs font-semibold text-emerald-100 transition hover:bg-emerald-500/25 disabled:opacity-50 lg:w-full"
                 >
                   {earningsSaving ? 'Αποθήκευση...' : 'Αποθήκευση'}
@@ -2281,86 +2097,6 @@ export default function TechAnalysisModal({
                   Διαγραφή
                 </button>
               </div>
-
-              <div className="flex w-full shrink-0 flex-col gap-3 lg:w-72">
-                <div className="rounded-2xl border border-white/10 bg-slate-900/75 p-4 shadow-xl backdrop-blur-md">
-                  <p className="mb-3 text-[10px] font-semibold uppercase tracking-[0.18em] text-cyan-400/80">
-                    Στοιχεία
-                  </p>
-                  <div className="space-y-3">
-                    <div>
-                      <label
-                        htmlFor="earnings-iban"
-                        className="text-[10px] font-semibold uppercase tracking-wider text-slate-400"
-                      >
-                        Αρ. Λογαριασμού
-                      </label>
-                      <input
-                        id="earnings-iban"
-                        type="text"
-                        value={tech?.iban || ''}
-                        readOnly
-                        disabled
-                        placeholder="από καρτέλα υπαλλήλου"
-                        title="Επεξεργασία μόνο από την καρτέλα Υπάλληλοι"
-                        className="mt-1 w-full cursor-not-allowed rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 font-mono text-sm text-slate-300 placeholder:text-slate-600 opacity-80"
-                      />
-                    </div>
-                    <div>
-                      <label
-                        htmlFor="earnings-bank"
-                        className="text-[10px] font-semibold uppercase tracking-wider text-slate-400"
-                      >
-                        Τράπεζα
-                      </label>
-                      <input
-                        id="earnings-bank"
-                        type="text"
-                        value={tech?.bank_name || ''}
-                        readOnly
-                        disabled
-                        placeholder="από καρτέλα υπαλλήλου"
-                        title="Επεξεργασία μόνο από την καρτέλα Υπάλληλοι"
-                        className="mt-1 w-full cursor-not-allowed rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-300 placeholder:text-slate-600 opacity-80"
-                      />
-                    </div>
-                  </div>
-                </div>
-
-                <div className="rounded-2xl border border-white/10 bg-slate-900/75 p-4 shadow-xl backdrop-blur-md">
-                  <p className="mb-3 text-[10px] font-semibold uppercase tracking-[0.18em] text-cyan-400/80">
-                    Παραστατικό
-                  </p>
-                  <p
-                    title="Ορίζεται από Πληρωμή / παραστατικό στην καρτέλα υπαλλήλου"
-                    className={
-                      issuesInvoice
-                        ? 'text-sm font-medium text-cyan-200/90'
-                        : 'text-sm font-medium text-slate-400'
-                    }
-                  >
-                    {issuesInvoice ? 'Με τιμολόγιο' : 'Χωρίς τιμολόγιο'}
-                  </p>
-                  {issuesInvoice ? (
-                    <div className="mt-3 flex items-center gap-2">
-                      <label
-                        htmlFor="earnings-extra"
-                        className="shrink-0 text-[10px] font-semibold uppercase tracking-wider text-slate-400"
-                      >
-                        Παρακράτηση Φόρου (%)
-                      </label>
-                      <input
-                        id="earnings-extra"
-                        type="text"
-                        value={earningsForm.extra}
-                        onChange={(e) => patchEarnings('extra', e.target.value)}
-                        disabled={earningsMissing}
-                        className="w-full rounded-xl border border-white/10 bg-slate-950/60 px-3 py-2 font-mono text-sm text-white disabled:opacity-50"
-                      />
-                    </div>
-                  ) : null}
-                </div>
-              </div>
             </div>
           </div>
         )}
@@ -2369,10 +2105,10 @@ export default function TechAnalysisModal({
           <div className="space-y-3">
             {agreementsMissing && (
               <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
-                Λείπει ο πίνακας / RPC <code className="rounded bg-black/30 px-1">tech_agreements</code>.
-                Τρέξε το SQL από{' '}
-                <code className="rounded bg-black/30 px-1">supabase/03_tech_agreements.sql</code> στο DIAS
-                SQL Editor.
+                Λείπει ο πίνακας / RPC{' '}
+                <code className="rounded bg-black/30 px-1">tech_agreement_versions</code>. Τρέξε{' '}
+                <code className="rounded bg-black/30 px-1">supabase/31_tech_agreement_versions.sql</code>{' '}
+                στο DIAS SQL Editor.
               </div>
             )}
             {agreementsError && !agreementsMissing && (
@@ -2381,165 +2117,86 @@ export default function TechAnalysisModal({
               </div>
             )}
 
-            <div className="flex flex-col gap-4 lg:flex-row lg:items-start">
-              <div className="min-w-0 flex-1 overflow-hidden rounded-2xl border border-white/10 bg-slate-900/75 shadow-xl backdrop-blur-md">
-                <div className="border-b border-white/10 px-4 py-3">
-                  <h3 className="text-sm font-semibold text-white">Ενεργές συμφωνίες</h3>
+            <div className="overflow-hidden rounded-2xl border border-white/10 bg-slate-900/75 shadow-xl backdrop-blur-md">
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/10 px-4 py-3">
+                <div>
+                  <h3 className="text-sm font-semibold text-white">Ιστορικό συμφωνιών</h3>
                   <p className="text-xs text-slate-400">
-                    Mirror APG EMPLOEE_MISTO — μόνο <code className="text-slate-300">is_active = true</code>. Νέα
-                    τιμή ίδιου τύπου απενεργοποιεί την παλιά (ιστορικό).
+                    Master πακέτο αποδοχών · το tab Αποδοχές καθρεφτίζει την ενεργή έκδοση.
                   </p>
                 </div>
-                {agreementsLoading ? (
-                  <div className="px-4 py-12 text-center text-slate-400">Φόρτωση συμφωνιών...</div>
-                ) : (
-                  <div className="overflow-x-auto">
-                    <table className="w-full min-w-[560px] border-collapse text-left text-sm">
-                      <thead>
-                        <tr className="border-b border-white/10 bg-slate-950/60 text-[10px] uppercase tracking-wider text-slate-400">
-                          <th className="px-4 py-2.5 font-semibold">Τύπος</th>
-                          <th className="px-3 py-2.5 text-right font-semibold">Ποσό</th>
-                          <th className="px-3 py-2.5 text-right font-semibold">Από (up_from)</th>
-                          <th className="px-3 py-2.5 text-right font-semibold">Ελάχιστο</th>
-                          <th className="px-3 py-2.5 font-semibold">Ισχύει από</th>
+                <button
+                  type="button"
+                  onClick={openNewAgreement}
+                  disabled={!tech || agreementsMissing || agreementsSaving}
+                  className="rounded-xl border border-emerald-500/40 bg-emerald-500/15 px-3 py-2 text-xs font-semibold text-emerald-100 transition hover:bg-emerald-500/25 disabled:opacity-50"
+                >
+                  Νέα Συμφωνία
+                </button>
+              </div>
+              {agreementsLoading ? (
+                <div className="px-4 py-12 text-center text-slate-400">Φόρτωση συμφωνιών...</div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full min-w-[560px] border-collapse text-left text-sm">
+                    <thead>
+                      <tr className="border-b border-white/10 bg-slate-950/60 text-[10px] uppercase tracking-wider text-slate-400">
+                        <th className="px-4 py-2.5 font-semibold">Ημ. Έναρξης</th>
+                        <th className="px-3 py-2.5 font-semibold">Ημ. Λήξης</th>
+                        <th className="px-3 py-2.5 font-semibold">Κατάσταση</th>
+                        <th className="px-3 py-2.5 text-right font-semibold">Ενέργεια</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {agreementVersions.length === 0 ? (
+                        <tr>
+                          <td colSpan={4} className="px-4 py-10 text-center text-sm text-slate-500">
+                            Καμία συμφωνία — πάτα «Νέα Συμφωνία» για το πρώτο πακέτο.
+                          </td>
                         </tr>
-                      </thead>
-                      <tbody>
-                        {agreements.length === 0 ? (
-                          <tr>
-                            <td colSpan={5} className="px-4 py-10 text-center text-sm text-slate-500">
-                              Καμία ενεργή συμφωνία — πρόσθεσε από τη φόρμα δεξιά.
-                            </td>
-                          </tr>
-                        ) : (
-                          agreements.map((row) => (
-                            <tr
-                              key={row.id}
-                              className="border-b border-white/5 hover:bg-slate-800/40"
-                            >
-                              <td className="px-4 py-2.5 font-medium text-white">
-                                {agreementTypeLabel(row.type_code)}
-                                <span className="mt-0.5 block font-mono text-[10px] text-slate-500">
-                                  {row.type_code}
-                                </span>
-                              </td>
-                              <td className="px-3 py-2.5 text-right font-mono text-cyan-100">
-                                {formatAgreementAmount(row.amount)}
-                              </td>
-                              <td className="px-3 py-2.5 text-right font-mono text-slate-300">
-                                {row.up_from != null ? row.up_from : '—'}
-                              </td>
-                              <td className="px-3 py-2.5 text-right font-mono text-slate-300">
-                                {row.minimum != null ? row.minimum : '—'}
-                              </td>
-                              <td className="px-3 py-2.5 text-slate-300">
-                                {row.valid_from
-                                  ? new Date(row.valid_from).toLocaleDateString('el-GR')
+                      ) : (
+                        agreementVersions.map((row) => {
+                          const active = isAgreementActive(row)
+                          return (
+                            <tr key={row.id} className="border-b border-white/5 hover:bg-slate-800/40">
+                              <td className="px-4 py-2.5 text-white">
+                                {row.start_date
+                                  ? new Date(row.start_date).toLocaleDateString('el-GR')
                                   : '—'}
                               </td>
+                              <td className="px-3 py-2.5 text-slate-300">
+                                {row.end_date
+                                  ? new Date(row.end_date).toLocaleDateString('el-GR')
+                                  : '—'}
+                              </td>
+                              <td className="px-3 py-2.5">
+                                <span
+                                  className={
+                                    active
+                                      ? 'rounded-lg border border-emerald-500/40 bg-emerald-500/15 px-2 py-0.5 text-[11px] font-semibold text-emerald-100'
+                                      : 'rounded-lg border border-white/10 bg-white/5 px-2 py-0.5 text-[11px] font-semibold text-slate-400'
+                                  }
+                                >
+                                  {agreementStatusLabel(row)}
+                                </span>
+                              </td>
+                              <td className="px-3 py-2.5 text-right">
+                                <button
+                                  type="button"
+                                  onClick={() => openViewAgreement(row)}
+                                  className="rounded-lg border border-cyan-500/40 bg-cyan-500/10 px-2.5 py-1 text-[11px] font-semibold text-cyan-100 hover:bg-cyan-500/20"
+                                >
+                                  Προβολή
+                                </button>
+                              </td>
                             </tr>
-                          ))
-                        )}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-              </div>
-
-              <form
-                onSubmit={handleSaveAgreement}
-                className="w-full shrink-0 space-y-3 rounded-2xl border border-white/10 bg-slate-900/75 p-4 shadow-xl backdrop-blur-md lg:w-80"
-              >
-                <h3 className="text-sm font-semibold text-white">Νέα συμφωνία</h3>
-                <p className="text-[11px] text-slate-400">
-                  Αποθήκευση μέσω RPC <code className="text-slate-300">add_tech_agreement</code>
-                </p>
-
-                <div>
-                  <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
-                    Τύπος αμοιβής
-                  </label>
-                  <DarkSelect
-                    value={agreementForm.type_code}
-                    onChange={(v) => patchAgreement('type_code', v)}
-                    disabled={agreementsMissing || agreementsSaving}
-                    options={AGREEMENT_TYPES.map((t) => ({
-                      value: t.value,
-                      label: t.label,
-                    }))}
-                    className="mt-1 w-full"
-                  />
+                          )
+                        })
+                      )}
+                    </tbody>
+                  </table>
                 </div>
-
-                <div>
-                  <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
-                    Ποσό (€)
-                  </label>
-                  <input
-                    type="text"
-                    inputMode="decimal"
-                    autoComplete="off"
-                    required
-                    value={toElInputDisplay(agreementForm.amount)}
-                    onChange={(e) => patchAgreement('amount', fromElInputValue(e.target.value))}
-                    disabled={agreementsMissing || agreementsSaving}
-                    className="mt-1 w-full rounded-xl border border-white/10 bg-slate-950/60 px-3 py-2 font-mono text-sm text-white disabled:opacity-50"
-                  />
-                </div>
-
-                <div className="grid grid-cols-2 gap-2">
-                  <div>
-                    <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
-                      Από (up_from)
-                    </label>
-                    <input
-                      type="text"
-                      inputMode="decimal"
-                      autoComplete="off"
-                      value={toElInputDisplay(agreementForm.up_from)}
-                      onChange={(e) => patchAgreement('up_from', fromElInputValue(e.target.value))}
-                      disabled={agreementsMissing || agreementsSaving}
-                      placeholder="π.χ. 8"
-                      className="mt-1 w-full rounded-xl border border-white/10 bg-slate-950/60 px-3 py-2 font-mono text-sm text-white placeholder:text-slate-600 disabled:opacity-50"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
-                      Ελάχιστο
-                    </label>
-                    <input
-                      type="text"
-                      inputMode="decimal"
-                      autoComplete="off"
-                      value={toElInputDisplay(agreementForm.minimum)}
-                      onChange={(e) => patchAgreement('minimum', fromElInputValue(e.target.value))}
-                      disabled={agreementsMissing || agreementsSaving}
-                      className="mt-1 w-full rounded-xl border border-white/10 bg-slate-950/60 px-3 py-2 font-mono text-sm text-white disabled:opacity-50"
-                    />
-                  </div>
-                </div>
-
-                <div>
-                  <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
-                    Ισχύει από
-                  </label>
-                  <input
-                    type="date"
-                    value={agreementForm.valid_from}
-                    onChange={(e) => patchAgreement('valid_from', e.target.value)}
-                    disabled={agreementsMissing || agreementsSaving}
-                    className="mt-1 w-full rounded-xl border border-white/10 bg-slate-950/60 px-3 py-2 text-sm text-white disabled:opacity-50"
-                  />
-                </div>
-
-                <button
-                  type="submit"
-                  disabled={agreementsMissing || agreementsSaving || !tech}
-                  className="w-full rounded-xl border border-emerald-500/40 bg-emerald-500/20 px-4 py-2.5 text-sm font-bold text-emerald-100 transition hover:bg-emerald-500/30 disabled:opacity-50"
-                >
-                  {agreementsSaving ? 'Αποθήκευση...' : 'Αποθήκευση συμφωνίας'}
-                </button>
-              </form>
+              )}
             </div>
           </div>
         )}
@@ -3007,7 +2664,122 @@ export default function TechAnalysisModal({
     </div>
   )
 
-  const content = embedded ? (
+
+  const agreementViewForm = agreementViewRow
+    ? snapshotToForm(agreementViewRow.earnings_snapshot)
+    : emptyEarningsForm()
+
+  const agreementModals = (
+    <>
+      {agreementEditorOpen ? (
+        <div className="fixed inset-0 z-[80] flex items-center justify-center p-3 sm:p-6">
+          <button
+            type="button"
+            aria-label="Κλείσιμο"
+            className="absolute inset-0 bg-slate-950/60"
+            onClick={() => !agreementsSaving && setAgreementEditorOpen(false)}
+          />
+          <div className="relative z-10 flex max-h-[92vh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl border border-white/10 bg-slate-950 shadow-2xl">
+            <div className="flex shrink-0 flex-wrap items-end justify-between gap-3 border-b border-white/10 px-4 py-3">
+              <div>
+                <h3 className="text-sm font-semibold text-white">Νέα Συμφωνία</h3>
+                <p className="text-xs text-slate-400">
+                  Κλείνει την προηγούμενη ενεργή και συγχρονίζει το Mirror Αποδοχών.
+                </p>
+              </div>
+              <div className="w-44">
+                <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                  Ημ. Έναρξης
+                </label>
+                <GreekDateInput
+                  value={agreementStartDate}
+                  onChange={setAgreementStartDate}
+                  withPicker
+                  className="mt-1 w-full rounded-xl border border-white/10 bg-slate-950/60 px-3 py-2 text-sm text-white"
+                />
+              </div>
+            </div>
+            <div className="min-h-0 flex-1 overflow-y-auto p-4">
+              <EarningsPackageForm
+                form={agreementDraftForm}
+                editMode="full"
+                issuesInvoice={issuesInvoice}
+                tech={tech}
+                onPatchField={patchAgreementDraft}
+                onPatchAutoTransfer={patchAgreementDraftAuto}
+                onPatchFixedExpense={patchAgreementDraftFixed}
+              />
+            </div>
+            <div className="flex shrink-0 justify-between gap-2 border-t border-white/10 px-4 py-3">
+              <button
+                type="button"
+                disabled={agreementsSaving}
+                onClick={() => setAgreementEditorOpen(false)}
+                className="rounded-xl border border-white/10 bg-slate-900 px-4 py-2 text-sm font-semibold text-slate-200"
+              >
+                Ακύρωση
+              </button>
+              <button
+                type="button"
+                disabled={agreementsSaving || !tech}
+                onClick={handleSaveNewAgreement}
+                className="rounded-xl border border-emerald-500/40 bg-emerald-500/20 px-4 py-2 text-sm font-bold text-emerald-100 disabled:opacity-50"
+              >
+                {agreementsSaving ? 'Αποθήκευση...' : 'Αποθήκευση συμφωνίας'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {agreementViewOpen && agreementViewRow ? (
+        <div className="fixed inset-0 z-[80] flex items-center justify-center p-3 sm:p-6">
+          <button
+            type="button"
+            aria-label="Κλείσιμο"
+            className="absolute inset-0 bg-slate-950/60"
+            onClick={() => setAgreementViewOpen(false)}
+          />
+          <div className="relative z-10 flex max-h-[92vh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl border border-white/10 bg-slate-950 shadow-2xl">
+            <div className="flex shrink-0 items-center justify-between gap-3 border-b border-white/10 px-4 py-3">
+              <div>
+                <h3 className="text-sm font-semibold text-white">Προβολή συμφωνίας</h3>
+                <p className="text-xs text-slate-400">
+                  {agreementViewRow.start_date
+                    ? new Date(agreementViewRow.start_date).toLocaleDateString('el-GR')
+                    : '—'}
+                  {' → '}
+                  {agreementViewRow.end_date
+                    ? new Date(agreementViewRow.end_date).toLocaleDateString('el-GR')
+                    : 'ενεργή'}
+                  {' · '}
+                  {agreementStatusLabel(agreementViewRow)}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setAgreementViewOpen(false)}
+                className="rounded-xl border border-white/10 bg-slate-900 px-3 py-1.5 text-sm font-semibold text-slate-200"
+              >
+                Κλείσιμο
+              </button>
+            </div>
+            <div className="min-h-0 flex-1 overflow-y-auto p-4">
+              <EarningsPackageForm
+                form={agreementViewForm}
+                editMode="none"
+                issuesInvoice={issuesInvoice}
+                tech={tech}
+              />
+            </div>
+          </div>
+        </div>
+      ) : null}
+    </>
+  )
+
+
+    const content = embedded ? (
     <div className="flex min-h-0 flex-1 flex-col gap-0 overflow-hidden md:flex-row md:items-stretch">
       <div className="relative flex h-auto max-h-56 min-h-0 shrink-0 flex-col overflow-hidden md:h-full md:max-h-full">
         {techSidebar}
@@ -3040,7 +2812,14 @@ export default function TechAnalysisModal({
     mainPanel
   )
 
-  if (embedded) return content
+  if (embedded) {
+    return (
+      <>
+        {content}
+        {agreementModals}
+      </>
+    )
+  }
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6">
@@ -3063,6 +2842,7 @@ export default function TechAnalysisModal({
           }}
         />
         {content}
+        {agreementModals}
       </div>
     </div>
   )
