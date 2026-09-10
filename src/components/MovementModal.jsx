@@ -28,6 +28,7 @@ import DarkSelect from './DarkSelect'
 import GreekDateInput from './GreekDateInput'
 import { parseToIsoDate } from '../lib/greekDate'
 import { useDraggableModal, MODAL_POS_KEYS } from '../lib/useDraggableModal'
+import { getLedgerCategoryPolicy } from '../lib/personnel'
 import {
   LOAN_DISBURSEMENT_TYPE_ID,
   LOAN_INSTALLMENT_TYPE_ID,
@@ -237,8 +238,28 @@ export default function MovementModal({
   const postToInvoice = uiCategory === 'INVOICE'
 
   const showInvoiceCategory = hasInvoice === true || allowInvoiceCategory
+  const categoryPolicy = useMemo(() => getLedgerCategoryPolicy(tech), [tech])
 
-  const categoryOptions = showInvoiceCategory ? CATEGORY_WITH_INVOICE : CATEGORY_BASE
+  const categoryOptions = useMemo(() => {
+    const labelByValue = new Map(
+      [...CATEGORY_WITH_INVOICE, ...CATEGORY_BASE].map((o) => [o.value, o])
+    )
+    let values = [...categoryPolicy.allowedCategories]
+    // Μόνιμος + edit παλιού τιμολογίου χωρίς flag: κράτα INVOICE στη λίστα
+    if (!categoryPolicy.temporary && showInvoiceCategory && !values.includes('INVOICE')) {
+      values = ['INVOICE', ...values]
+    }
+    // Ιστορική εγγραφή με απαγορευμένη πλέον κατηγορία: εμφάνιση (locked) χωρίς crash
+    if (isEdit && uiCategory && !values.includes(uiCategory)) {
+      values = [...values, uiCategory]
+    }
+    return values.map((v) => labelByValue.get(v)).filter(Boolean)
+  }, [categoryPolicy, showInvoiceCategory, isEdit, uiCategory])
+
+  const categorySelectLocked =
+    categoryPolicy.temporary &&
+    (categoryPolicy.allowedCategories.length <= 1 ||
+      (isEdit && !categoryPolicy.allowedCategories.includes(uiCategory)))
 
   /** Edit / settlement preset: κράτα excluded τύπο ορατό & κλειδωμένο. */
   const exceptionTypeId = useMemo(() => {
@@ -365,19 +386,35 @@ export default function MovementModal({
             base.post_to_invoice === true
           : presetPostToInvoice === true || base.post_to_invoice === true
 
+        const policy = getLedgerCategoryPolicy(tech)
         const category = (() => {
-          // Νέα Εισαγωγή (χωρίς edit / χωρίς preset τύπου): Τιμολόγιο πάνω-πάνω by default
-          if (!selectedRowData && presetTypeId == null && hasInvoice === true) {
-            return 'INVOICE'
+          // Νέα Εισαγωγή (χωρίς edit / χωρίς preset τύπου): default από ledger policy
+          let cat
+          if (!selectedRowData && presetTypeId == null) {
+            if (policy.temporary) cat = policy.defaultCategory
+            else if (hasInvoice === true) cat = 'INVOICE'
+            else {
+              cat = resolveUiCategory({
+                postToInvoice: postInvoiceFlag,
+                ledgerGroup: base.ledger_group,
+                type: match,
+              })
+            }
+          } else {
+            cat = resolveUiCategory({
+              postToInvoice: postInvoiceFlag,
+              ledgerGroup: base.ledger_group,
+              type: match,
+            })
           }
-          return resolveUiCategory({
-            postToInvoice: postInvoiceFlag,
-            ledgerGroup: base.ledger_group,
-            type: match,
-          })
+          // Νέα κίνηση έκτακτου: ποτέ απαγορευμένη κατηγορία στο dropdown
+          if (policy.temporary && !selectedRowData && !policy.allowedCategories.includes(cat)) {
+            cat = policy.defaultCategory
+          }
+          return cat
         })()
 
-        if (hasInvoice === true || category === 'INVOICE') {
+        if (hasInvoice === true || category === 'INVOICE' || policy.allowInvoice) {
           setAllowInvoiceCategory(true)
         }
 
@@ -443,14 +480,21 @@ export default function MovementModal({
     return () => {
       cancelled = true
     }
-  }, [open, selectedRowData, presetTypeId, presetSide, presetDescription, presetAmount, presetPostToInvoice, hasInvoice])
+  }, [open, selectedRowData, presetTypeId, presetSide, presetDescription, presetAmount, presetPostToInvoice, hasInvoice, tech])
 
   if (!open) return null
 
   const patch = (field, value) => setForm((prev) => ({ ...prev, [field]: value }))
 
   const handleCategoryChange = (value) => {
+    if (categorySelectLocked) return
     const category = normalizeCategory(value)
+    if (
+      categoryPolicy.temporary &&
+      !categoryPolicy.allowedCategories.includes(category)
+    ) {
+      return
+    }
     const side = form.side || 'DEBIT'
     const nextFiltered = getFilteredMovementTypes(types, category, side, exceptionTypeId)
     setForm((prev) => ({
@@ -495,6 +539,20 @@ export default function MovementModal({
       setSaveError(msg)
       toast.error(msg)
       return
+    }
+
+    // Νέες κινήσεις: αυστηρό φίλτρο κατηγορίας για έκτακτους (ιστορικά edits επιτρέπονται)
+    if (!isEdit && categoryPolicy.temporary) {
+      const cat = normalizeCategory(form.ledger_group)
+      if (!categoryPolicy.allowedCategories.includes(cat)) {
+        const msg =
+          categoryPolicy.allowInvoice
+            ? 'Για έκτακτους με τιμολόγιο επιτρέπεται μόνο η κατηγορία Τιμολόγιο'
+            : 'Για έκτακτους χωρίς τιμολόγιο επιτρέπεται μόνο η κατηγορία Λοιπά'
+        setSaveError(msg)
+        toast.error(msg)
+        return
+      }
     }
 
     let amount
@@ -831,6 +889,7 @@ export default function MovementModal({
                   onChange={(v) => handleCategoryChange(v)}
                   className="mt-1 w-full"
                   options={categoryOptions}
+                  disabled={categorySelectLocked}
                 />
               </div>
               <div>
@@ -852,24 +911,26 @@ export default function MovementModal({
               </div>
             </div>
 
-            <div>
-              <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
-                Τύπος
-              </label>
-              <DarkSelect
-                value={noAvailableTypes ? '' : (selectedTypeId ?? '')}
-                onChange={(v) => handleTypeChange(v)}
-                className="mt-1 w-full"
-                options={typeSelectOptions}
-                disabled={typeSelectLocked || noAvailableTypes}
-                placeholder={EMPTY_TYPE_PLACEHOLDER}
-              />
-              {typeSelectLocked && (
-                <p className="mt-1 text-[10px] text-slate-500">
-                  Ο τύπος ορίστηκε αυτόματα και δεν αλλάζει χειροκίνητα.
-                </p>
-              )}
-            </div>
+            {!categoryPolicy.temporary ? (
+              <div>
+                <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                  Τύπος
+                </label>
+                <DarkSelect
+                  value={noAvailableTypes ? '' : (selectedTypeId ?? '')}
+                  onChange={(v) => handleTypeChange(v)}
+                  className="mt-1 w-full"
+                  options={typeSelectOptions}
+                  disabled={typeSelectLocked || noAvailableTypes}
+                  placeholder={EMPTY_TYPE_PLACEHOLDER}
+                />
+                {typeSelectLocked && (
+                  <p className="mt-1 text-[10px] text-slate-500">
+                    Ο τύπος ορίστηκε αυτόματα και δεν αλλάζει χειροκίνητα.
+                  </p>
+                )}
+              </div>
+            ) : null}
 
             {targetColumn && (
               <p className="rounded-lg border border-white/5 bg-slate-900/60 px-3 py-2 text-[11px] text-slate-400">
@@ -906,12 +967,12 @@ export default function MovementModal({
               />
             </div>
 
-            {selectedType && !typesLoading && (
+            {selectedType && !typesLoading && !categoryPolicy.temporary ? (
               <p className="text-[11px] text-slate-500">
                 id={selectedType.id} · {ledgerGroupLabel(selectedType.ledger_group)} · is_for_sum=
                 {String(selectedType.is_for_sum)}
               </p>
-            )}
+            ) : null}
 
             <div>
               <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">

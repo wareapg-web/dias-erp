@@ -3,15 +3,17 @@ import { createPortal } from 'react-dom'
 import { diasClient, formatSupabaseError, isMissingTableError } from '../lib/supabase'
 import {
   EMPLOYMENT_TYPES,
-  PAYMENT_METHODS,
   MARITAL_STATUSES,
   BANKS,
   buildFullName,
   emptyPersonnelForm,
   employmentLabel,
   paymentMethodLabel,
+  paymentMethodsForEmployment,
+  normalizePaymentMethodForEmployment,
   personnelFromDb,
   personnelToDb,
+  personnelIssuesInvoice,
   shiftPersonnelPositionsFrom,
 } from '../lib/personnel'
 import { splitTechName } from '../lib/payrollAnalysis'
@@ -55,8 +57,12 @@ export default function PersonnelPanel({
   onTypeFilterChange,
   /** Πλάτος sidebar σε px (όταν ελέγχεται από parent resize). */
   width = null,
+  /** Sidebar tab: permanent | temporary — lift στο parent για toolbar. */
+  onSidebarKindChange = null,
 }) {
   const isSidebar = variant === 'sidebar'
+  /** Sidebar: permanent | temporary — ίδιο πεδίο με κατάλογο (employment_type). */
+  const [sidebarKind, setSidebarKind] = useState('permanent')
   const [formOpen, setFormOpen] = useState(false)
   const [form, setForm] = useState(emptyPersonnelForm())
   const [editingId, setEditingId] = useState(null)
@@ -75,6 +81,11 @@ export default function PersonnelPanel({
     formOpen,
     MODAL_POS_KEYS.personnelForm
   )
+
+  useEffect(() => {
+    if (!isSidebar || typeof onSidebarKindChange !== 'function') return
+    onSidebarKindChange(sidebarKind)
+  }, [isSidebar, sidebarKind, onSidebarKindChange])
 
   useEffect(() => {
     saveModalSize(PERSONNEL_FORM_MODAL_SIZE_KEY, formSize)
@@ -138,7 +149,9 @@ export default function PersonnelPanel({
   const filtered = useMemo(() => {
     let list = [...(personnel || [])]
     if (isSidebar) {
-      list = list.filter((p) => p.is_active !== false && p.employment_type === 'permanent')
+      list = list.filter(
+        (p) => p.is_active !== false && p.employment_type === sidebarKind
+      )
     } else {
       if (listFilter === 'active') {
         list = list.filter((p) => p.is_active !== false && p.employment_type !== 'temporary')
@@ -168,7 +181,16 @@ export default function PersonnelPanel({
       return String(a.tech_name || '').localeCompare(String(b.tech_name || ''), 'el')
     })
     return list
-  }, [personnel, listFilter, typeFilter, search, isSidebar])
+  }, [personnel, listFilter, typeFilter, search, isSidebar, sidebarKind])
+
+  // Sidebar: αν ο επιλεγμένος δεν ανήκει στην κατηγορία, διάλεξε τον πρώτο της λίστας
+  useEffect(() => {
+    if (!isSidebar || !onSelect) return
+    const stillVisible = filtered.some((p) => String(p.id) === String(selectedId))
+    if (!stillVisible && filtered[0]) {
+      onSelect(filtered[0])
+    }
+  }, [isSidebar, sidebarKind, filtered, selectedId, onSelect])
 
   const periodsOverlapError = useMemo(
     () => findPeriodOverlapError(form.periods),
@@ -202,6 +224,10 @@ export default function PersonnelPanel({
       periods,
       hire_date: mirrored.hire_date || base.hire_date,
       end_date: mirrored.end_date || base.end_date,
+      payment_method: normalizePaymentMethodForEmployment(
+        base.employment_type,
+        base.payment_method
+      ),
     })
     setFormOpen(true)
   }
@@ -222,6 +248,13 @@ export default function PersonnelPanel({
           next.hire_date,
           next.end_date,
           next.employment_type
+        )
+      }
+      // Έκτακτος: χωρίς Μικτό · αν ήταν mixed → invoice
+      if (field === 'employment_type') {
+        next.payment_method = normalizePaymentMethodForEmployment(
+          value,
+          next.payment_method
         )
       }
       return next
@@ -459,10 +492,40 @@ export default function PersonnelPanel({
       <div className={`border-b border-white/10 px-3 ${isSidebar ? 'py-3' : 'pb-3 pt-2'}`}>
         {isSidebar ? (
           <>
-            <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-cyan-400/80">
-              Προσωπικο DIAS
+            <p className="text-[10px] font-semibold tracking-[0.18em] text-cyan-400/80">
+              {greekCapsLabel('Προσωπικό DIAS')}
             </p>
-            <p className="mt-0.5 text-sm font-semibold text-white">Ενεργοί μόνιμοι</p>
+            <p className="mt-0.5 text-sm font-semibold text-white">
+              {sidebarKind === 'temporary' ? 'Ενεργοί έκτακτοι' : 'Ενεργοί μόνιμοι'}
+            </p>
+            <div
+              className="mt-2 flex gap-0.5 rounded-xl border border-white/10 bg-slate-950/50 p-0.5"
+              role="tablist"
+              aria-label="Κατηγορία προσωπικού"
+            >
+              {[
+                { id: 'permanent', label: 'Μόνιμοι' },
+                { id: 'temporary', label: 'Έκτακτοι' },
+              ].map((tab) => {
+                const active = sidebarKind === tab.id
+                return (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    role="tab"
+                    aria-selected={active}
+                    onClick={() => setSidebarKind(tab.id)}
+                    className={`flex-1 rounded-lg px-2 py-1.5 text-[10px] font-bold tracking-wide transition ${
+                      active
+                        ? 'bg-cyan-500/25 text-cyan-100 shadow-sm shadow-cyan-950/30'
+                        : 'text-slate-400 hover:bg-white/5 hover:text-slate-200'
+                    }`}
+                  >
+                    {greekCapsLabel(tab.label)}
+                  </button>
+                )
+              })}
+            </div>
           </>
         ) : null}
 
@@ -555,7 +618,9 @@ export default function PersonnelPanel({
         {filtered.length === 0 ? (
           <p className="px-2 py-6 text-center text-xs text-slate-500">
             {isSidebar
-              ? 'Δεν υπάρχουν ενεργοί μόνιμοι υπάλληλοι.'
+              ? sidebarKind === 'temporary'
+                ? 'Δεν υπάρχουν ενεργοί έκτακτοι υπάλληλοι.'
+                : 'Δεν υπάρχουν ενεργοί μόνιμοι υπάλληλοι.'
               : 'Κενό προσωπικό DIAS. Πρόσθεσε υπάλληλο ή εισήγαγε από Admin (βάρδιες).'}
           </p>
         ) : (
@@ -565,6 +630,7 @@ export default function PersonnelPanel({
             const avatarTone = selected
               ? 'bg-cyan-500/25 text-cyan-100'
               : 'bg-slate-800 text-slate-300'
+            const showInvoiceMark = personnelIssuesInvoice(p)
             return isSidebar ? (
               <button
                 key={p.id}
@@ -576,12 +642,25 @@ export default function PersonnelPanel({
                   openEdit(p)
                 }}
                 title="Κλικ: επιλογή · Διπλό κλικ: καρτέλα υπαλλήλου"
-                className={`mb-1 flex w-full items-center gap-2.5 rounded-xl border px-2.5 py-2 text-left transition ${
+                className={`mb-0.5 flex w-full items-center gap-1.5 rounded-xl border px-2 py-1.5 text-left transition ${
                   selected
                     ? 'border-cyan-500/40 bg-cyan-500/15 text-cyan-100'
                     : 'border-transparent text-slate-300 hover:bg-white/5 hover:text-white'
                 }`}
               >
+                <span
+                  className="flex w-2.5 shrink-0 items-center justify-center"
+                  aria-hidden={!showInvoiceMark}
+                >
+                  {showInvoiceMark ? (
+                    <span
+                      title="Κόβει τιμολόγιο"
+                      className="flex h-2.5 w-2.5 items-center justify-center rounded-[2px] bg-amber-500 text-[6px] font-bold leading-none text-slate-950"
+                    >
+                      Τ
+                    </span>
+                  ) : null}
+                </span>
                 <PersonAvatar
                   photoUrl={p.photo_url}
                   initials={initials}
@@ -598,7 +677,7 @@ export default function PersonnelPanel({
             ) : (
               <div
                 key={p.id}
-                className={`mb-1 flex w-full items-center justify-between gap-2 rounded-xl border py-1 pl-1.5 pr-3 ${
+                className={`mb-0.5 flex w-full items-center justify-between gap-2 rounded-xl border py-0.5 pl-1.5 pr-3 ${
                   selected
                     ? 'border-cyan-500/40 bg-cyan-500/15'
                     : 'border-transparent hover:bg-white/5'
@@ -607,13 +686,26 @@ export default function PersonnelPanel({
                 <button
                   type="button"
                   onClick={() => onSelect?.(p)}
-                  className="flex min-w-0 flex-1 items-center gap-2.5 py-1.5 text-left"
+                  className="flex min-w-0 flex-1 items-center gap-1.5 py-1 text-left"
                 >
+                  <span
+                    className="flex w-2.5 shrink-0 items-center justify-center"
+                    aria-hidden={!showInvoiceMark}
+                  >
+                    {showInvoiceMark ? (
+                      <span
+                        title="Κόβει τιμολόγιο"
+                        className="flex h-2.5 w-2.5 items-center justify-center rounded-[2px] bg-amber-500 text-[6px] font-bold leading-none text-slate-950"
+                      >
+                        Τ
+                      </span>
+                    ) : null}
+                  </span>
                   <PersonAvatar
                     photoUrl={p.photo_url}
                     initials={initials}
                     name={p.tech_name}
-                    className={`h-10 w-10 ${avatarTone}`}
+                    className={`h-9 w-9 ${avatarTone}`}
                   />
                   <span className="min-w-0 flex-1">
                     <span className="block truncate text-sm font-semibold text-white">
@@ -694,7 +786,7 @@ export default function PersonnelPanel({
 
       <div className="border-t border-white/10 px-3 py-2 text-[10px] text-slate-500">
         {isSidebar
-          ? `${filtered.length} ενεργοί μόνιμοι`
+          ? `${filtered.length} ενεργοί ${sidebarKind === 'temporary' ? 'έκτακτοι' : 'μόνιμοι'}`
           : `${filtered.length} εμφανίζονται · ${(personnel || []).length} σύνολο`}
       </div>
 
@@ -792,7 +884,10 @@ export default function PersonnelPanel({
                   value={form.payment_method}
                   onChange={(v) => patch('payment_method', v)}
                   className="w-full"
-                  options={PAYMENT_METHODS.map((t) => ({ value: t.value, label: t.label }))}
+                  options={paymentMethodsForEmployment(form.employment_type).map((t) => ({
+                    value: t.value,
+                    label: t.label,
+                  }))}
                 />
               </Field>
               <div className="col-span-2 grid grid-cols-2 gap-3 sm:col-span-4">
@@ -1187,7 +1282,8 @@ export default function PersonnelPanel({
 
             {form.payment_method && (
               <p className="mt-2 text-[11px] text-slate-500">
-                {paymentMethodLabel(form.payment_method)} · εμφανίζεται στις Αποδοχές (μόνο ανάγνωση)
+                {paymentMethodLabel(form.payment_method, form.employment_type)} · εμφανίζεται στις
+                Αποδοχές (μόνο ανάγνωση)
               </p>
             )}
             </div>
@@ -1256,11 +1352,13 @@ function PersonAvatar({ photoUrl, initials, name, className = '' }) {
   const src = String(photoUrl || '').trim()
   if (src) {
     return (
-      <span className={`relative shrink-0 overflow-hidden rounded-full border border-white/10 ${className}`}>
+      <span
+        className={`relative inline-block shrink-0 overflow-hidden rounded-full border border-white/10 ${className}`}
+      >
         <img
           src={src}
           alt={name || 'Φωτογραφία'}
-          className="h-full w-full object-cover"
+          className="absolute inset-0 block h-full w-full object-cover"
           loading="lazy"
         />
       </span>
@@ -1268,7 +1366,7 @@ function PersonAvatar({ photoUrl, initials, name, className = '' }) {
   }
   return (
     <span
-      className={`flex shrink-0 items-center justify-center overflow-hidden rounded-full text-xs font-bold ${className}`}
+      className={`inline-flex shrink-0 items-center justify-center overflow-hidden rounded-full text-xs font-bold ${className}`}
       aria-hidden={!name}
       title={name || undefined}
     >

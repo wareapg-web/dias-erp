@@ -178,6 +178,8 @@ export default function LedgerAnalysisGrid({
   typeLookup,
   monthContext = null,
   hasInvoice = false,
+  showSalaryBalance = true,
+  showOtherBalance = true,
   footerBalances = null,
   invoiceGuideData = null,
   onSelectRow,
@@ -490,17 +492,21 @@ export default function LedgerAnalysisGrid({
                   <BalanceChip label="Υπόλοιπο" value={footerBalances.balance} tone="cyan" />
                 </div>
               </td>
-              {/* Μισθός Χρ. + Μισθός Πιστ. */}
+              {/* Μισθός Χρ. + Μισθός Πιστ. — κενό κελί αν κρυφό (κρατάει colspan) */}
               <td colSpan={2} className="box-border border-r border-white/10 px-2 py-3 align-middle">
-                <div className="flex justify-center">
-                  <BalanceChip label="Υπόλοιπο (Μ)" value={footerBalances.balance1} />
-                </div>
+                {showSalaryBalance ? (
+                  <div className="flex justify-center">
+                    <BalanceChip label="Υπόλοιπο (Μ)" value={footerBalances.balance1} />
+                  </div>
+                ) : null}
               </td>
               {/* Λοιπά Χρ. + Λοιπά Πιστ. */}
               <td colSpan={2} className="box-border border-r border-white/10 px-2 py-3 align-middle">
-                <div className="flex justify-center">
-                  <BalanceChip label="Υπόλοιπο (Λ)" value={footerBalances.balance2} />
-                </div>
+                {showOtherBalance ? (
+                  <div className="flex justify-center">
+                    <BalanceChip label="Υπόλοιπο (Λ)" value={footerBalances.balance2} />
+                  </div>
+                ) : null}
               </td>
               {showInvoice ? (
                 <td
@@ -513,7 +519,9 @@ export default function LedgerAnalysisGrid({
                       value={footerBalances.invoice}
                       tone="amber"
                       taxMarkup={
-                        invoiceGuideData && Number(invoiceGuideData.netAmount) !== 0
+                        invoiceGuideData &&
+                        Number(invoiceGuideData.netAmount) !== 0 &&
+                        !invoiceGuideData.simpleVatOnly
                           ? {
                               netAmount: Number(invoiceGuideData.netAmount) || 0,
                               taxPercent: Number(invoiceGuideData.taxPercent) || 20,
@@ -525,6 +533,7 @@ export default function LedgerAnalysisGrid({
                       <InvoiceGuideCard
                         netAmount={Number(invoiceGuideData.netAmount) || 0}
                         taxPercent={Number(invoiceGuideData.taxPercent) || 20}
+                        simpleVatOnly={invoiceGuideData.simpleVatOnly === true}
                       />
                     ) : null}
                   </div>
@@ -578,8 +587,34 @@ function BalanceChip({ label, value, tone = 'slate', taxMarkup = null }) {
 }
 
 /** Τοπικό σκονάκι έκδοσης τιμολογίου — δεν αγγίζει computeLedgerBalances. */
-function InvoiceGuideCard({ netAmount, taxPercent }) {
+function InvoiceGuideCard({ netAmount, taxPercent, simpleVatOnly = false }) {
   const net = Number(netAmount) || 0
+
+  if (simpleVatOnly) {
+    const vat = net * 0.24
+    const payable = net + vat
+    return (
+      <div className="w-full max-w-xs rounded-xl border border-slate-700/50 bg-slate-800/60 p-3 text-xs shadow-sm shadow-black/20">
+        <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+          Οδηγός τιμολογίου
+        </p>
+        <div className="flex justify-between gap-3 py-1 text-slate-300">
+          <span>Αξία Τιμολογίου</span>
+          <span className="font-mono tabular-nums">{formatEuro(net)}</span>
+        </div>
+        <div className="flex justify-between gap-3 py-1 text-slate-300">
+          <span>ΦΠΑ 24%</span>
+          <span className="font-mono tabular-nums">+ {formatEuro(vat)}</span>
+        </div>
+        <hr className="my-1 border-slate-600" />
+        <div className="flex justify-between gap-3 py-1 font-bold text-slate-100">
+          <span>Πληρωτέο</span>
+          <span className="font-mono tabular-nums">{formatEuro(payable)}</span>
+        </div>
+      </div>
+    )
+  }
+
   const pct = Number(taxPercent) || 20
   const factor = 1 - pct / 100
   const gross = factor > 0 ? net / factor : net

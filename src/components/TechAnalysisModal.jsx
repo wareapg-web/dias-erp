@@ -16,6 +16,7 @@ import {
   techPhotoUrl,
   estimateAmount,
   formatEuro,
+  formatEuroPlain,
   formatMatrixLoan,
   formatMatrixTicket,
 } from '../lib/payrollAnalysis'
@@ -55,7 +56,7 @@ import {
 } from '../lib/techPayments'
 import { buildPaymentsDisplayList, isLoanDisbursementRow, isLoanInstallmentRow, loanRowAmount } from '../lib/loanUi'
 import { exportMonthPayrollToExcel } from '../lib/monthPayrollExport'
-import { exportMonthInvoicesToExcel } from '../lib/monthInvoiceExport'
+import { exportMonthInvoicesToExcel, exportMonthTemporaryToExcel } from '../lib/monthInvoiceExport'
 import {
   computeLedgerBalances,
   ledgerRowKey,
@@ -76,11 +77,14 @@ import {
   fetchTransactionTypes,
   resolveTransactionType,
 } from '../lib/transactionTypes'
-import { employmentLabel, personnelIssuesInvoice } from '../lib/personnel'
+import { employmentLabel, personnelIssuesInvoice, getLedgerCategoryPolicy, isTemporaryPersonnel } from '../lib/personnel'
 import PersonnelPanel from './PersonnelPanel'
 import MovementModal from './MovementModal'
 import LoanModal from './LoanModal'
 import LoanManagementModal from './LoanManagementModal'
+import TemporaryPayablesModal, {
+  fetchTemporaryPayablesSummary,
+} from './TemporaryPayablesModal'
 import EarningsPackageForm from './EarningsPackageForm'
 import GreekDateInput from './GreekDateInput'
 import { useDraggableModal, MODAL_POS_KEYS } from '../lib/useDraggableModal'
@@ -123,6 +127,14 @@ export default function TechAnalysisModal({
   const [selectedMonth, setSelectedMonth] = useState(initialMonth)
   const [monthExporting, setMonthExporting] = useState(false)
   const [invoiceExporting, setInvoiceExporting] = useState(false)
+  const [temporaryExporting, setTemporaryExporting] = useState(false)
+  const [personnelSidebarKind, setPersonnelSidebarKind] = useState('permanent')
+  const [temporaryPayablesOpen, setTemporaryPayablesOpen] = useState(false)
+  const [temporaryPayablesHint, setTemporaryPayablesHint] = useState({
+    totalInvoice: 0,
+    totalCash: 0,
+  })
+  const [temporaryPayablesHintLoading, setTemporaryPayablesHintLoading] = useState(false)
   const [sidebarWidth, setSidebarWidth] = useState(() =>
     loadSidebarWidth(PERSONNEL_SIDEBAR_WIDTH_KEY, 320)
   )
@@ -603,6 +615,14 @@ export default function TechAnalysisModal({
     setMovementPresetPostToInvoice(null)
   }, [activeTab])
 
+  // Έκτακτοι: χωρίς Αποδοχές / Συμφωνίες / Αναλυτικά — fallback στο analysis
+  useEffect(() => {
+    if (!isTemporaryPersonnel(tech)) return
+    if (activeTab === 'earnings' || activeTab === 'agreements' || activeTab === 'movements') {
+      setActiveTab('analysis')
+    }
+  }, [tech?.id, tech?.employment_type, activeTab])
+
   const typeLookup = useMemo(() => buildTypeLookup(transactionTypes), [transactionTypes])
 
   const sortedTransactionTypes = useMemo(
@@ -909,6 +929,26 @@ export default function TechAnalysisModal({
     }
   }
 
+  const handleTemporaryExcelExport = async () => {
+    if (temporaryExporting) return
+    setTemporaryExporting(true)
+    try {
+      const { rowCount, invoiceCount, cashCount, filename } = await exportMonthTemporaryToExcel({
+        month: selectedMonth,
+        year: analysisYear,
+        personnel,
+      })
+      toast.success(
+        `Εξαγωγή έκτακτων · ${rowCount} γραμμές (ΤΙΜ ${invoiceCount} · μετρητά ${cashCount}) · ${filename}`
+      )
+    } catch (err) {
+      const msg = err?.message || String(err)
+      toast.error(msg || 'Αποτυχία εξαγωγής έκτακτων')
+    } finally {
+      setTemporaryExporting(false)
+    }
+  }
+
   const handleTransferHours = async () => {
     if (!tech?.id || hoursTransferSaving) return
     setHoursTransferSaving(true)
@@ -989,7 +1029,7 @@ export default function TechAnalysisModal({
 
   /** Δεξιά στήλη ενεργειών — ΚΕΦΑΛΑΙΑ χωρίς τόνους · εξοφλήσεις autofill από υπόλοιπα. */
   const ledgerActionButtons = useMemo(() => {
-    const showTim = personnelIssuesInvoice(tech)
+    const policy = getLedgerCategoryPolicy(tech)
     const bal1 = Number(ledgerBalances?.balance1) || 0
     const bal2 = Number(ledgerBalances?.balance2) || 0
     const balInv = Number(ledgerBalances?.invoice) || 0
@@ -1000,7 +1040,9 @@ export default function TechAnalysisModal({
         disabled: !selectedLedgerRowKey,
       },
       { label: 'ΠΛΗΡΩΜΗ', tab: 'payments' },
-      {
+    ]
+    if (policy.allowSalary) {
+      items.push({
         label: 'ΕΞΟΦΛΗΣΗ(Μ)',
         typeId: 91,
         side: 'CREDIT',
@@ -1010,8 +1052,10 @@ export default function TechAnalysisModal({
           bal1 <= 0
             ? 'Δεν υπάρχει υπόλοιπο μισθού για εξόφληση'
             : 'Εξοφληση μισθου (Μισθος Πιστ.)',
-      },
-      {
+      })
+    }
+    if (policy.allowOther) {
+      items.push({
         label: 'ΕΞΟΦΛΗΣΗ(Λ)',
         typeId: 92,
         side: 'CREDIT',
@@ -1021,9 +1065,9 @@ export default function TechAnalysisModal({
           bal2 <= 0
             ? 'Δεν υπάρχει υπόλοιπο λοιπών για εξόφληση'
             : 'Εξοφληση λοιπων (Λοιπα Πιστ.)',
-      },
-    ]
-    if (showTim) {
+      })
+    }
+    if (policy.allowInvoice) {
       items.push({
         label: 'ΕΞΟΦΛΗΣΗ(ΤΙΜ)',
         typeId: 93,
@@ -1039,6 +1083,41 @@ export default function TechAnalysisModal({
     }
     return items
   }, [tech, selectedLedgerRowKey, ledgerBalances])
+
+  const ledgerCategoryPolicy = useMemo(() => getLedgerCategoryPolicy(tech), [tech])
+  const techIsTemporary = isTemporaryPersonnel(tech)
+  /** Toolbar Excel/οφειλές: ακολουθεί το tab αριστερά (Έκτακτοι). */
+  const showTemporaryToolbar =
+    embedded && typeof onPersonSelect === 'function'
+      ? personnelSidebarKind === 'temporary'
+      : techIsTemporary
+
+  useEffect(() => {
+    if (!showTemporaryToolbar) {
+      setTemporaryPayablesHint({ totalInvoice: 0, totalCash: 0 })
+      setTemporaryPayablesHintLoading(false)
+      return
+    }
+    let cancelled = false
+    setTemporaryPayablesHintLoading(true)
+    fetchTemporaryPayablesSummary(personnel)
+      .then((summary) => {
+        if (cancelled) return
+        setTemporaryPayablesHint({
+          totalInvoice: summary.totalInvoice || 0,
+          totalCash: summary.totalCash || 0,
+        })
+      })
+      .catch(() => {
+        if (!cancelled) setTemporaryPayablesHint({ totalInvoice: 0, totalCash: 0 })
+      })
+      .finally(() => {
+        if (!cancelled) setTemporaryPayablesHintLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [showTemporaryToolbar, personnel, temporaryPayablesOpen, yearLedgerRows])
 
   const filteredTechList = useMemo(() => {
     const list = Array.isArray(techList) ? techList : []
@@ -1387,7 +1466,10 @@ export default function TechAnalysisModal({
     { id: 'agreements', label: 'Συμφωνίες (Agreements)' },
     { id: 'payments', label: 'Πληρωμές (Payments)' },
     { id: 'movements', label: 'Αναλυτικά στοιχεία' },
-  ]
+  ].filter((tab) => {
+    if (!techIsTemporary) return true
+    return tab.id !== 'earnings' && tab.id !== 'agreements' && tab.id !== 'movements'
+  })
 
   const usePersonnelSidebar = embedded && typeof onPersonSelect === 'function'
 
@@ -1399,6 +1481,7 @@ export default function TechAnalysisModal({
       selectedId={selectedPersonId}
       onSelect={onPersonSelect}
       onMutated={onPersonnelMutated}
+      onSidebarKindChange={setPersonnelSidebarKind}
       width={sidebarWidth}
     />
   ) : embedded && onTechChange ? (
@@ -1626,61 +1709,114 @@ export default function TechAnalysisModal({
             </div>
 
             <div className="flex min-w-0 flex-1 flex-col items-center justify-center px-2 text-center">
-              <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
-                Υπάλληλος
+              <p className="text-[10px] font-semibold tracking-wider text-slate-500">
+                {greekCapsLabel('Υπάλληλος')}
               </p>
               <p className="mt-0.5 truncate text-lg font-bold tracking-wide text-white sm:text-xl">
                 {[lastName, firstName].filter(Boolean).join(' ') || displayName || '—'}
               </p>
             </div>
 
-            <div className="flex flex-col items-center gap-2 lg:items-end">
-              <div className="flex flex-wrap items-center justify-end gap-1.5">
-                <button
-                  type="button"
-                  onClick={handleInvoiceExcelExport}
-                  disabled={invoiceExporting}
-                  title="Εξαγωγή Αξίας Τιμολογίου = Υπόλοιπο ΤΙΜ ÷ 0,8 (ίδιο με την προσαύξηση στην οθόνη)"
-                  className="inline-flex items-center gap-1.5 rounded-xl border border-amber-500/40 bg-amber-500/15 px-3 py-1.5 text-xs font-bold text-amber-100 transition hover:bg-amber-500/25 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  <svg viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4 shrink-0" aria-hidden>
-                    <path d="M10.75 2.75a.75.75 0 00-1.5 0v8.69L6.3 8.49a.75.75 0 00-1.1 1.02l4.25 4.5a.75.75 0 001.1 0l4.25-4.5a.75.75 0 10-1.1-1.02l-2.95 3.12V2.75z" />
-                    <path d="M3.5 12.75a.75.75 0 00-1.5 0v2.5A2.75 2.75 0 004.75 18h10.5A2.75 2.75 0 0018 15.25v-2.5a.75.75 0 00-1.5 0v2.5c0 .69-.56 1.25-1.25 1.25H4.75c-.69 0-1.25-.56-1.25-1.25v-2.5z" />
-                  </svg>
-                  {invoiceExporting ? 'Εξαγωγή...' : 'Εξαγωγή Τιμολογίων (Excel)'}
-                </button>
-                <button
-                  type="button"
-                  onClick={handleMonthExcelExport}
-                  disabled={monthExporting}
-                  title="Εξαγωγή χρεώσεων (δεδουλευμένων) όλου του προσωπικού για τον επιλεγμένο μήνα"
-                  className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-500/40 bg-emerald-500/15 px-3 py-1.5 text-xs font-bold text-emerald-100 transition hover:bg-emerald-500/25 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  <svg viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4 shrink-0" aria-hidden>
-                    <path d="M10.75 2.75a.75.75 0 00-1.5 0v8.69L6.3 8.49a.75.75 0 00-1.1 1.02l4.25 4.5a.75.75 0 001.1 0l4.25-4.5a.75.75 0 10-1.1-1.02l-2.95 3.12V2.75z" />
-                    <path d="M3.5 12.75a.75.75 0 00-1.5 0v2.5A2.75 2.75 0 004.75 18h10.5A2.75 2.75 0 0018 15.25v-2.5a.75.75 0 00-1.5 0v2.5c0 .69-.56 1.25-1.25 1.25H4.75c-.69 0-1.25-.56-1.25-1.25v-2.5z" />
-                  </svg>
-                  {monthExporting ? 'Εξαγωγή...' : 'Εξαγωγή Μήνα (Excel)'}
-                </button>
+            <div className="flex items-start justify-end gap-2">
+              {showTemporaryToolbar ? (
+                <div className="flex flex-col items-center gap-1">
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={handleTemporaryExcelExport}
+                      disabled={temporaryExporting}
+                      title="Εξαγωγή έκτακτων μήνα: φύλλο Τιμολόγια (καθαρό + ΦΠΑ) και φύλλο Μετρητά (ποσό)"
+                      className="inline-flex items-center gap-1.5 rounded-xl border border-amber-500/40 bg-amber-500/15 px-3 py-1.5 text-xs font-bold text-amber-100 transition hover:bg-amber-500/25 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      <svg viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4 shrink-0" aria-hidden>
+                        <path d="M10.75 2.75a.75.75 0 00-1.5 0v8.69L6.3 8.49a.75.75 0 00-1.1 1.02l4.25 4.5a.75.75 0 001.1 0l4.25-4.5a.75.75 0 10-1.1-1.02l-2.95 3.12V2.75z" />
+                        <path d="M3.5 12.75a.75.75 0 00-1.5 0v2.5A2.75 2.75 0 004.75 18h10.5A2.75 2.75 0 0018 15.25v-2.5a.75.75 0 00-1.5 0v2.5c0 .69-.56 1.25-1.25 1.25H4.75c-.69 0-1.25-.56-1.25-1.25v-2.5z" />
+                      </svg>
+                      {temporaryExporting ? 'Εξαγωγή...' : 'Εξαγωγή Έκτακτων (Excel)'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setTemporaryPayablesOpen(true)}
+                      title="Συγκεντρωτικές οφειλές έκτακτων (all-time υπόλοιπο)"
+                      className="inline-flex items-center gap-1.5 rounded-xl border border-cyan-500/40 bg-cyan-500/15 px-3 py-1.5 text-xs font-bold text-cyan-100 transition hover:bg-cyan-500/25"
+                    >
+                      Διαχείριση Οφειλών
+                    </button>
+                    {!hasAdminHours && (
+                      <span className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[10px] font-semibold text-amber-100">
+                        Χωρίς ώρες Admin
+                      </span>
+                    )}
+                  </div>
+                  {!temporaryPayablesHintLoading &&
+                  (temporaryPayablesHint.totalInvoice > 0.005 ||
+                    temporaryPayablesHint.totalCash > 0.005) ? (
+                    <button
+                      type="button"
+                      onClick={() => setTemporaryPayablesOpen(true)}
+                      title="Άνοιγμα διαχείρισης οφειλών"
+                      className="rounded-md border border-amber-500/20 bg-amber-500/10 px-2 py-0.5 text-center text-[10px] font-semibold leading-tight text-amber-100/90 transition hover:bg-amber-500/15"
+                    >
+                      <span className="font-mono tabular-nums">
+                        ΤΙΜ: {formatEuroPlain(temporaryPayablesHint.totalInvoice)} €
+                      </span>
+                      <span className="text-amber-100/40"> · </span>
+                      <span className="font-mono tabular-nums">
+                        ΜΕΤΡ: {formatEuroPlain(temporaryPayablesHint.totalCash)} €
+                      </span>
+                    </button>
+                  ) : null}
+                </div>
+              ) : (
+                <div className="flex flex-wrap items-center justify-end gap-1.5">
+                  <button
+                    type="button"
+                    onClick={handleInvoiceExcelExport}
+                    disabled={invoiceExporting}
+                    title="Εξαγωγή Αξίας Τιμολογίου = Υπόλοιπο ΤΙΜ ÷ 0,8 (ίδιο με την προσαύξηση στην οθόνη)"
+                    className="inline-flex items-center gap-1.5 rounded-xl border border-amber-500/40 bg-amber-500/15 px-3 py-1.5 text-xs font-bold text-amber-100 transition hover:bg-amber-500/25 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <svg viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4 shrink-0" aria-hidden>
+                      <path d="M10.75 2.75a.75.75 0 00-1.5 0v8.69L6.3 8.49a.75.75 0 00-1.1 1.02l4.25 4.5a.75.75 0 001.1 0l4.25-4.5a.75.75 0 10-1.1-1.02l-2.95 3.12V2.75z" />
+                      <path d="M3.5 12.75a.75.75 0 00-1.5 0v2.5A2.75 2.75 0 004.75 18h10.5A2.75 2.75 0 0018 15.25v-2.5a.75.75 0 00-1.5 0v2.5c0 .69-.56 1.25-1.25 1.25H4.75c-.69 0-1.25-.56-1.25-1.25v-2.5z" />
+                    </svg>
+                    {invoiceExporting ? 'Εξαγωγή...' : 'Εξαγωγή Τιμολογίων (Excel)'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleMonthExcelExport}
+                    disabled={monthExporting}
+                    title="Εξαγωγή χρεώσεων (δεδουλευμένων) όλου του προσωπικού για τον επιλεγμένο μήνα"
+                    className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-500/40 bg-emerald-500/15 px-3 py-1.5 text-xs font-bold text-emerald-100 transition hover:bg-emerald-500/25 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <svg viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4 shrink-0" aria-hidden>
+                      <path d="M10.75 2.75a.75.75 0 00-1.5 0v8.69L6.3 8.49a.75.75 0 00-1.1 1.02l4.25 4.5a.75.75 0 001.1 0l4.25-4.5a.75.75 0 10-1.1-1.02l-2.95 3.12V2.75z" />
+                      <path d="M3.5 12.75a.75.75 0 00-1.5 0v2.5A2.75 2.75 0 004.75 18h10.5A2.75 2.75 0 0018 15.25v-2.5a.75.75 0 00-1.5 0v2.5c0 .69-.56 1.25-1.25 1.25H4.75c-.69 0-1.25-.56-1.25-1.25v-2.5z" />
+                    </svg>
+                    {monthExporting ? 'Εξαγωγή...' : 'Εξαγωγή Μήνα (Excel)'}
+                  </button>
+                  {!hasAdminHours && (
+                    <span className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[10px] font-semibold text-amber-100">
+                      Χωρίς ώρες Admin
+                    </span>
+                  )}
+                </div>
+              )}
+              <div className="flex flex-col items-center gap-1">
                 {tech.employment_type && (
                   <span className="rounded-lg border border-cyan-500/30 bg-cyan-500/10 px-2 py-0.5 text-[10px] font-semibold text-cyan-100">
                     {employmentLabel(tech.employment_type)}
                   </span>
                 )}
-                {!hasAdminHours && (
-                  <span className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[10px] font-semibold text-amber-100">
-                    Χωρίς ώρες Admin
-                  </span>
-                )}
-              </div>
-              <div className="h-20 w-20 shrink-0 overflow-hidden rounded-xl border border-white/10 bg-slate-800">
-                {photoUrl ? (
-                  <img src={photoUrl} alt={displayName} className="h-full w-full object-cover" />
-                ) : (
-                  <div className="flex h-full w-full items-center justify-center text-2xl font-bold text-cyan-300/80">
-                    {(tech.initials || lastName.slice(0, 2)).toUpperCase()}
-                  </div>
-                )}
+                <div className="h-20 w-20 shrink-0 overflow-hidden rounded-xl border border-white/10 bg-slate-800">
+                  {photoUrl ? (
+                    <img src={photoUrl} alt={displayName} className="h-full w-full object-cover" />
+                  ) : (
+                    <div className="flex h-full w-full items-center justify-center text-2xl font-bold text-cyan-300/80">
+                      {(tech.initials || lastName.slice(0, 2)).toUpperCase()}
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
           </div>
@@ -1703,45 +1839,58 @@ export default function TechAnalysisModal({
               {tab.label}
             </button>
           ))}
-          <div className="ml-auto flex shrink-0 flex-col items-end gap-0.5 self-center pr-1">
-            <button
-              type="button"
-              onClick={() => setLoanManagementOpen(true)}
-              disabled={!tech}
-              title="Διαχείριση δανείων τεχνικού"
-              className="rounded-xl border border-amber-500/40 bg-transparent px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-amber-100/90 transition hover:border-amber-400/60 hover:bg-amber-500/10 disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              Διαχείριση Δανείων
-            </button>
-            {tech ? (
-              <p className="mr-2 max-w-[16rem] self-start text-left text-[11px] font-bold leading-tight text-slate-300">
-                Εκταμιεύσεις {analysisYear}:{' '}
-                <span className="font-mono tabular-nums text-amber-100/90">
-                  {formatEuro(yearLoanDisbursementsTotal)}
-                </span>
-              </p>
-            ) : null}
-          </div>
+          {!techIsTemporary ? (
+            <div className="ml-auto flex shrink-0 flex-col items-end gap-0.5 self-center pr-1">
+              <button
+                type="button"
+                onClick={() => setLoanManagementOpen(true)}
+                disabled={!tech}
+                title="Διαχείριση δανείων τεχνικού"
+                className="rounded-xl border border-amber-500/40 bg-transparent px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-amber-100/90 transition hover:border-amber-400/60 hover:bg-amber-500/10 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                Διαχείριση Δανείων
+              </button>
+              {tech ? (
+                <p className="mr-2 max-w-[16rem] self-start text-left text-[11px] font-bold leading-tight text-slate-300">
+                  Εκταμιεύσεις {analysisYear}:{' '}
+                  <span className="font-mono tabular-nums text-amber-100/90">
+                    {formatEuro(yearLoanDisbursementsTotal)}
+                  </span>
+                </p>
+              ) : null}
+            </div>
+          ) : null}
         </div>
 
-        <LoanManagementModal
-          open={loanManagementOpen}
-          tech={tech}
-          selectedMonth={selectedMonth}
-          analysisYear={analysisYear}
-          onClose={() => setLoanManagementOpen(false)}
-          onSaved={handleMovementSaved}
-          onOpenNewLoan={() => setLoanOpen(true)}
-          loanCreateOpen={loanOpen}
-        />
+        {!techIsTemporary ? (
+          <>
+            <LoanManagementModal
+              open={loanManagementOpen}
+              tech={tech}
+              selectedMonth={selectedMonth}
+              analysisYear={analysisYear}
+              onClose={() => setLoanManagementOpen(false)}
+              onSaved={handleMovementSaved}
+              onOpenNewLoan={() => setLoanOpen(true)}
+              loanCreateOpen={loanOpen}
+            />
 
-        <LoanModal
-          open={loanOpen}
-          tech={tech}
-          selectedMonth={selectedMonth}
-          analysisYear={analysisYear}
-          onClose={() => setLoanOpen(false)}
-          onSaved={handleMovementSaved}
+            <LoanModal
+              open={loanOpen}
+              tech={tech}
+              selectedMonth={selectedMonth}
+              analysisYear={analysisYear}
+              onClose={() => setLoanOpen(false)}
+              onSaved={handleMovementSaved}
+            />
+          </>
+        ) : null}
+
+        <TemporaryPayablesModal
+          open={temporaryPayablesOpen}
+          personnel={personnel}
+          onClose={() => setTemporaryPayablesOpen(false)}
+          onSelectPerson={onPersonSelect}
         />
 
         {loadError && (
@@ -1758,7 +1907,11 @@ export default function TechAnalysisModal({
                   Ετήσια Μήτρα Απολαβών · {analysisYear}
                 </h3>
                 <p className="text-xs text-slate-400">
-                  Σ = απολαβές (Χρ.) · Π = πληρωμές (Πιστ.) · Υ(Μ)/Υ(Λ)/Υ(ΤΙΜ) = υπόλοιπα — από tech_ledger_view
+                  {techIsTemporary
+                    ? ledgerCategoryPolicy.allowInvoice
+                      ? 'Σ = απολαβές (Χρ.) · Π = πληρωμές (Πιστ.) · Υ(ΤΙΜ) = υπόλοιπο — από tech_ledger_view'
+                      : 'Π = πληρωμές (Πιστ.) · Υ(Λ) = υπόλοιπο λοιπών — από tech_ledger_view'
+                    : 'Σ = απολαβές (Χρ.) · Π = πληρωμές (Πιστ.) · Υ(Μ)/Υ(Λ)/Υ(ΤΙΜ) = υπόλοιπα — από tech_ledger_view'}
                 </p>
               </div>
               {loading ? (
@@ -1795,14 +1948,16 @@ export default function TechAnalysisModal({
                       </tr>
                     </thead>
                     <tbody>
-                      <MatrixRow
-                        label="Σ"
-                        hint="Απολαβές"
-                        selectedMonth={selectedMonth}
-                        onSelectMonth={setSelectedMonth}
-                        values={salaryMatrix.months.map((m) => formatMatrixCell(m.sigma))}
-                        total={formatMatrixCell(salaryMatrix.totals.sigma)}
-                      />
+                      {!techIsTemporary || ledgerCategoryPolicy.allowInvoice ? (
+                        <MatrixRow
+                          label="Σ"
+                          hint="Απολαβές"
+                          selectedMonth={selectedMonth}
+                          onSelectMonth={setSelectedMonth}
+                          values={salaryMatrix.months.map((m) => formatMatrixCell(m.sigma))}
+                          total={formatMatrixCell(salaryMatrix.totals.sigma)}
+                        />
+                      ) : null}
                       <MatrixRow
                         label="Π"
                         hint="Πληρωμές"
@@ -1811,48 +1966,58 @@ export default function TechAnalysisModal({
                         values={salaryMatrix.months.map((m) => formatMatrixCell(m.pi))}
                         total={formatMatrixCell(salaryMatrix.totals.pi)}
                       />
-                      <MatrixRow
-                        label="Υ (Μ)"
-                        hint="Υπόλοιπο Μισθού"
-                        selectedMonth={selectedMonth}
-                        onSelectMonth={setSelectedMonth}
-                        values={salaryMatrix.months.map((m) => formatMatrixBalance(m.yM))}
-                        total={formatMatrixBalance(salaryMatrix.totals.yM)}
-                      />
-                      <MatrixRow
-                        label="Υ (Λ)"
-                        hint="Υπόλοιπο Λοιπών"
-                        selectedMonth={selectedMonth}
-                        onSelectMonth={setSelectedMonth}
-                        values={salaryMatrix.months.map((m) => formatMatrixBalance(m.yL))}
-                        total={formatMatrixBalance(salaryMatrix.totals.yL)}
-                      />
-                      <MatrixRow
-                        label="Υ (ΤΙΜ)"
-                        hint="Υπόλοιπο Τιμολογίου"
-                        selectedMonth={selectedMonth}
-                        onSelectMonth={setSelectedMonth}
-                        values={salaryMatrix.months.map((m) => formatMatrixBalance(m.yTim))}
-                        total={formatMatrixBalance(salaryMatrix.totals.yTim)}
-                      />
-                      <MatrixRow
-                        label="Ticket Restaurant"
-                        hint=""
-                        selectedMonth={selectedMonth}
-                        onSelectMonth={setSelectedMonth}
-                        values={salaryMatrix.months.map((m) => formatMatrixTicket(m.ticket))}
-                        total={formatMatrixTicket(salaryMatrix.totals.ticket)}
-                      />
-                      <MatrixRow
-                        label="Δάνειο"
-                        hint=""
-                        selectedMonth={selectedMonth}
-                        onSelectMonth={setSelectedMonth}
-                        values={salaryMatrix.months.map((m) =>
-                          formatMatrixLoan(m.loan, m.loanCount)
-                        )}
-                        total={formatMatrixLoan(salaryMatrix.totals.loan)}
-                      />
+                      {!techIsTemporary ? (
+                        <MatrixRow
+                          label="Υ (Μ)"
+                          hint="Υπόλοιπο Μισθού"
+                          selectedMonth={selectedMonth}
+                          onSelectMonth={setSelectedMonth}
+                          values={salaryMatrix.months.map((m) => formatMatrixBalance(m.yM))}
+                          total={formatMatrixBalance(salaryMatrix.totals.yM)}
+                        />
+                      ) : null}
+                      {!techIsTemporary || ledgerCategoryPolicy.allowOther ? (
+                        <MatrixRow
+                          label="Υ (Λ)"
+                          hint="Υπόλοιπο Λοιπών"
+                          selectedMonth={selectedMonth}
+                          onSelectMonth={setSelectedMonth}
+                          values={salaryMatrix.months.map((m) => formatMatrixBalance(m.yL))}
+                          total={formatMatrixBalance(salaryMatrix.totals.yL)}
+                        />
+                      ) : null}
+                      {!techIsTemporary || ledgerCategoryPolicy.allowInvoice ? (
+                        <MatrixRow
+                          label="Υ (ΤΙΜ)"
+                          hint="Υπόλοιπο Τιμολογίου"
+                          selectedMonth={selectedMonth}
+                          onSelectMonth={setSelectedMonth}
+                          values={salaryMatrix.months.map((m) => formatMatrixBalance(m.yTim))}
+                          total={formatMatrixBalance(salaryMatrix.totals.yTim)}
+                        />
+                      ) : null}
+                      {!techIsTemporary ? (
+                        <MatrixRow
+                          label="Ticket Restaurant"
+                          hint=""
+                          selectedMonth={selectedMonth}
+                          onSelectMonth={setSelectedMonth}
+                          values={salaryMatrix.months.map((m) => formatMatrixTicket(m.ticket))}
+                          total={formatMatrixTicket(salaryMatrix.totals.ticket)}
+                        />
+                      ) : null}
+                      {!techIsTemporary ? (
+                        <MatrixRow
+                          label="Δάνειο"
+                          hint=""
+                          selectedMonth={selectedMonth}
+                          onSelectMonth={setSelectedMonth}
+                          values={salaryMatrix.months.map((m) =>
+                            formatMatrixLoan(m.loan, m.loanCount)
+                          )}
+                          total={formatMatrixLoan(salaryMatrix.totals.loan)}
+                        />
+                      ) : null}
                     </tbody>
                   </table>
                 </div>
@@ -1915,6 +2080,8 @@ export default function TechAnalysisModal({
                   typeLookup={typeLookup}
                   monthContext={ledgerMonthContext}
                   hasInvoice={ledgerMonthContext.hasInvoice}
+                  showSalaryBalance={ledgerCategoryPolicy.allowSalary}
+                  showOtherBalance={ledgerCategoryPolicy.allowOther}
                   footerBalances={{
                     balance: formatEuro(ledgerBalances.balance),
                     balance1: formatEuro(ledgerBalances.balance1),
@@ -1923,10 +2090,14 @@ export default function TechAnalysisModal({
                   }}
                   invoiceGuideData={{
                     netAmount: ledgerBalances.invoice,
-                    taxPercent: (() => {
-                      const pct = parseElNumber(earningsForm?.extra)
-                      return pct != null && Number.isFinite(pct) && pct !== 0 ? pct : 20
-                    })(),
+                    // Έκτακτοι: απλό καθαρό + ΦΠΑ 24% · χωρίς /0.8 και παρακράτηση
+                    simpleVatOnly: techIsTemporary,
+                    taxPercent: techIsTemporary
+                      ? 0
+                      : (() => {
+                          const pct = parseElNumber(earningsForm?.extra)
+                          return pct != null && Number.isFinite(pct) && pct !== 0 ? pct : 20
+                        })(),
                   }}
                   onSelectRow={selectLedgerRow}
                   onOpenCreateForType={openMovementCreate}
@@ -1935,16 +2106,18 @@ export default function TechAnalysisModal({
               </div>
 
               <aside className="flex shrink-0 flex-row gap-2 overflow-x-auto lg:w-36 lg:flex-col lg:self-stretch lg:overflow-visible">
-                <button
-                  type="button"
-                  onClick={handleMonthImport}
-                  disabled={monthImportSaving || ledgerLoading || !tech}
-                  title="Εισαγωγη στο ledger μονο για Αποδοχες με τικ (ποσο > 0)"
-                  className="shrink-0 rounded-xl border border-cyan-500/40 bg-cyan-500/15 px-3 py-2.5 text-left text-xs font-semibold uppercase tracking-wide text-cyan-100 transition hover:bg-cyan-500/25 disabled:cursor-not-allowed disabled:opacity-40 lg:w-full"
-                >
-                  {monthImportSaving ? 'ΔΗΜΙΟΥΡΓΙΑ...' : 'ΔΗΜΙΟΥΡΓΙΑ'}
-                </button>
-                {monthImportMessage ? (
+                {!techIsTemporary ? (
+                  <button
+                    type="button"
+                    onClick={handleMonthImport}
+                    disabled={monthImportSaving || ledgerLoading || !tech}
+                    title="Εισαγωγη στο ledger μονο για Αποδοχες με τικ (ποσο > 0)"
+                    className="shrink-0 rounded-xl border border-cyan-500/40 bg-cyan-500/15 px-3 py-2.5 text-left text-xs font-semibold uppercase tracking-wide text-cyan-100 transition hover:bg-cyan-500/25 disabled:cursor-not-allowed disabled:opacity-40 lg:w-full"
+                  >
+                    {monthImportSaving ? 'ΔΗΜΙΟΥΡΓΙΑ...' : 'ΔΗΜΙΟΥΡΓΙΑ'}
+                  </button>
+                ) : null}
+                {!techIsTemporary && monthImportMessage ? (
                   <p className="hidden text-[10px] leading-snug text-cyan-200/80 lg:block">
                     {monthImportMessage}
                   </p>
@@ -2629,32 +2802,24 @@ export default function TechAnalysisModal({
       </div>
 
       <div className="relative flex flex-wrap items-center gap-2 border-t border-white/10 bg-slate-950/70 px-4 py-3 backdrop-blur-md">
-        {(onClose || embedded) && (
-          <button
-            type="button"
-            onClick={() => {
-              if (onClose) onClose()
-              else toast('Έξοδος — κλείσε από τη γραμμή τίτλου του παραθύρου', { icon: 'ℹ️' })
-            }}
-            className="inline-flex items-center rounded-xl border border-rose-500/40 bg-rose-500/15 px-4 py-2 text-sm font-bold text-rose-100 transition hover:bg-rose-500/25 active:scale-95"
-          >
-            Έξοδος
-          </button>
-        )}
-        <ActionButton
-          tone="slate"
-          disabled={hoursTransferSaving || loading || !tech}
-          onClick={handleTransferHours}
-        >
-          {hoursTransferSaving ? 'Μεταφορά...' : 'Μεταφορά Ωρών'}
-        </ActionButton>
-        <ActionButton
-          tone="slate"
-          onClick={() => toast('Εκτύπωση — σύντομα', { icon: 'ℹ️' })}
-        >
-          Εκτύπωση
-        </ActionButton>
-        <div className="mx-1 hidden h-6 w-px bg-white/10 sm:block" />
+        {!showTemporaryToolbar ? (
+          <>
+            <ActionButton
+              tone="slate"
+              disabled={hoursTransferSaving || loading || !tech}
+              onClick={handleTransferHours}
+            >
+              {hoursTransferSaving ? 'Μεταφορά...' : 'Μεταφορά Ωρών'}
+            </ActionButton>
+            <ActionButton
+              tone="slate"
+              onClick={() => toast('Εκτύπωση — σύντομα', { icon: 'ℹ️' })}
+            >
+              Εκτύπωση
+            </ActionButton>
+            <div className="mx-1 hidden h-6 w-px bg-white/10 sm:block" />
+          </>
+        ) : null}
         <div className="ml-auto">
           <ActionButton tone="emerald" disabled={saving || loading} onClick={handleSave}>
             {saving ? 'Αποθήκευση...' : 'Οριστική Αποθήκευση ERP'}
