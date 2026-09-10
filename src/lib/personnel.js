@@ -13,6 +13,24 @@ export const PAYMENT_METHODS = [
   { value: 'mixed', label: 'Μικτό' },
 ]
 
+/** Έκτακτοι: μόνο με/χωρίς τιμολόγιο (χωρίς Μικτό). Τιμές DB αμετάβλητες. */
+export const PAYMENT_METHODS_TEMPORARY = [
+  { value: 'salary', label: 'Χωρίς τιμολόγιο' },
+  { value: 'invoice', label: 'Με τιμολόγιο' },
+]
+
+export function paymentMethodsForEmployment(employmentType) {
+  if (String(employmentType || '') === 'temporary') return PAYMENT_METHODS_TEMPORARY
+  return PAYMENT_METHODS
+}
+
+/** Έκτακτος + mixed → invoice (ίδια συμπεριφορά ledger, καθαρό dropdown). */
+export function normalizePaymentMethodForEmployment(employmentType, paymentMethod) {
+  const method = String(paymentMethod || 'salary')
+  if (String(employmentType || '') === 'temporary' && method === 'mixed') return 'invoice'
+  return method || 'salary'
+}
+
 export const MARITAL_STATUSES = [
   { value: '', label: '—' },
   { value: 'single', label: 'Άγαμος/η' },
@@ -34,8 +52,9 @@ export function employmentLabel(value) {
   return EMPLOYMENT_TYPES.find((t) => t.value === value)?.label || value || '—'
 }
 
-export function paymentMethodLabel(value) {
-  return PAYMENT_METHODS.find((t) => t.value === value)?.label || value || '—'
+export function paymentMethodLabel(value, employmentType = null) {
+  const list = paymentMethodsForEmployment(employmentType)
+  return list.find((t) => t.value === value)?.label || PAYMENT_METHODS.find((t) => t.value === value)?.label || value || '—'
 }
 
 export function emptyPersonnelForm() {
@@ -153,7 +172,10 @@ export function personnelToDb(form) {
     hire_date: form.hire_date || null,
     end_date: hasEndDate ? endDate : null,
     employment_type: form.employment_type || 'permanent',
-    payment_method: form.payment_method || 'salary',
+    payment_method: normalizePaymentMethodForEmployment(
+      form.employment_type,
+      form.payment_method
+    ),
     admin_tech_id: emptyToNull(form.admin_tech_id),
     photo_url: emptyToNull(form.photo_url),
     notes: emptyToNull(form.notes),
@@ -235,6 +257,54 @@ export function routesExtrasToInvoice(personOrTech) {
 /** Εμφάνιση στήλης τιμολογίου / «κόβει παραστατικό» — ίδιο κριτήριο με extras routing. */
 export function personnelIssuesInvoice(personOrTech) {
   return routesExtrasToInvoice(personOrTech)
+}
+
+/** Έκτακτος / εξωτερικός συνεργάτης (employment_type). */
+export function isTemporaryPersonnel(personOrTech) {
+  return String(personOrTech?.employment_type || '') === 'temporary'
+}
+
+/**
+ * Ledger category policy — UI lock για νέες κινήσεις.
+ * Μόνιμοι: SALARY + OTHER (+ INVOICE αν κόβουν παραστατικό).
+ * Έκτακτοι + τιμολόγιο: μόνο INVOICE.
+ * Έκτακτοι μετρητά: μόνο OTHER.
+ * Δεν αλλάζει υπολογισμούς υπολοίπων.
+ */
+export function getLedgerCategoryPolicy(personOrTech) {
+  const temporary = isTemporaryPersonnel(personOrTech)
+  const invoice = personnelIssuesInvoice(personOrTech)
+
+  if (!temporary) {
+    return {
+      temporary: false,
+      allowSalary: true,
+      allowOther: true,
+      allowInvoice: invoice,
+      allowedCategories: invoice ? ['INVOICE', 'SALARY', 'OTHER'] : ['SALARY', 'OTHER'],
+      defaultCategory: invoice ? 'INVOICE' : 'OTHER',
+    }
+  }
+
+  if (invoice) {
+    return {
+      temporary: true,
+      allowSalary: false,
+      allowOther: false,
+      allowInvoice: true,
+      allowedCategories: ['INVOICE'],
+      defaultCategory: 'INVOICE',
+    }
+  }
+
+  return {
+    temporary: true,
+    allowSalary: false,
+    allowOther: true,
+    allowInvoice: false,
+    allowedCategories: ['OTHER'],
+    defaultCategory: 'OTHER',
+  }
 }
 
 export function buildFullName(lastName, firstName) {

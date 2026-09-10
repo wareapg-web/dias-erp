@@ -13,6 +13,7 @@ export const MODAL_POS_KEYS = {
   settings: 'dias-erp:modal-pos:settings',
   techAnalysis: 'dias-erp:modal-pos:tech-analysis',
   loanMgmtWindow: 'dias-erp:modal-pos:loan-mgmt-window',
+  temporaryPayables: 'dias-erp:modal-pos:temporary-payables',
 }
 
 function clampOffset(x, y) {
