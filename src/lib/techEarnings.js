@@ -5,8 +5,7 @@ import { parseElNumber } from './numberFormat'
 export const EARNINGS_ROW_DEFS = [
   // Ομάδα 1 (με checkbox Δημιουργίας) — εμφανίζονται πρώτα μαζί με amount-only
   { key: 'salary', label: 'Μισθός' },
-  { key: 'bonus', label: 'Bonus' },
-  { key: 'bonus_plus', label: 'Bonus +' },
+  { key: 'bonus', label: 'Υπόλοιπο Μισθού' },
   // Ομάδα 2 (χωρίς checkbox Δημιουργίας) — rates / ποσά ωρών
   { key: 'overtime', label: 'Υπερωρίες' },
   { key: 'holiday', label: 'Αργίες' },
@@ -32,8 +31,7 @@ export const EARNINGS_AMOUNT_ONLY_DEFS = [
  */
 export const EARNINGS_AUTO_TRANSFER_DEFS = [
   { key: 'salary', transferKey: 'salary_amount', label: 'Μισθός' },
-  { key: 'bonus', transferKey: 'bonus_amount', label: 'Bonus' },
-  { key: 'bonus_plus', transferKey: 'bonus_plus_amount', label: 'Bonus +' },
+  { key: 'bonus', transferKey: 'bonus_amount', label: 'Υπόλοιπο Μισθού' },
   {
     key: 'driver_allowance',
     transferKey: 'driver_allowance',
@@ -59,8 +57,9 @@ export const FIXED_EXPENSE_DEFAULT_TRUE_KEYS = new Set([
 
 /**
  * transaction_types.id → κλειδί αποδοχών (για Βασικό/Μεταβλητό ανά μήνα).
- * 3 Μισθός · 4 Bonus · 41 Bonus+ · 21 Οδηγού · 23 Λογιστής ·
+ * 3 Μισθός · 4 Υπόλοιπο Μισθού · 21 Οδηγού · 23 Λογιστής ·
  * 7 Υπερωρίες · 8 Αργίες · 9 Νυχτερινά · 22 Διανυκτέρευση · 25 Μετρό · 24 Ticket
+ * (id 41 Bonus+ — μόνο ιστορικό ledger · όχι πλέον UI/Δημιουργία)
  */
 export const EARNINGS_KEY_BY_TYPE_ID = {
   3: 'salary',
@@ -204,6 +203,7 @@ export function emptyEarningsForm() {
     bank_account: '',
     bank_name: '',
     issues_invoice: false,
+    invoice_gross_up: true,
     extra: '',
     auto_transfer_settings: emptyAutoTransferSettings(),
     fixed_expense_settings: emptyFixedExpenseSettings(),
@@ -231,6 +231,8 @@ export function earningsFromDb(row) {
   form.bank_account = row.bank_account || ''
   form.bank_name = row.bank_name || ''
   form.issues_invoice = Boolean(row.issues_invoice)
+  // null/undefined → true (παλιές εγγραφές / snapshots χωρίς το πεδίο)
+  form.invoice_gross_up = row.invoice_gross_up !== false
   form.extra = row.extra || ''
   form.auto_transfer_settings = normalizeAutoTransferSettings(row.auto_transfer_settings)
   form.fixed_expense_settings = normalizeFixedExpenseSettings(row.fixed_expense_settings)
@@ -260,6 +262,7 @@ export function earningsToDb(form, tech) {
     bank_account: form.bank_account?.trim() || null,
     bank_name: form.bank_name?.trim() || null,
     issues_invoice: Boolean(form.issues_invoice),
+    invoice_gross_up: form.invoice_gross_up !== false,
     extra: form.extra?.trim() || null,
     auto_transfer_settings: normalizeAutoTransferSettings(form.auto_transfer_settings),
     fixed_expense_settings: normalizeFixedExpenseSettings(form.fixed_expense_settings),
@@ -297,7 +300,7 @@ export function autoTransferKeyForRow(def) {
   return hit?.transferKey || null
 }
 
-/** Γραμμές 3-στηλών με checkbox (Μισθός, Bonus, Bonus +). */
+/** Γραμμές 3-στηλών με checkbox (Μισθός, Υπόλοιπο Μισθού, …). */
 export function earningsTransferRowDefs() {
   return EARNINGS_ROW_DEFS.filter((def) => earningsRowHasAutoTransfer(def))
 }

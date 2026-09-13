@@ -9,11 +9,9 @@ import {
   autoTransferKeyForRow,
   earningsRateRowDefs,
   earningsRowHasAutoTransfer,
-  earningsTotal,
   earningsTransferRowDefs,
   isFixedExpense,
 } from '../lib/techEarnings'
-import { formatEuroPlain } from '../lib/payrollAnalysis'
 import { fromElInputValue, toElInputDisplay } from '../lib/numberFormat'
 
 export default function EarningsPackageForm({
@@ -32,7 +30,6 @@ export default function EarningsPackageForm({
   const togglesLocked = editMode === 'none'
   const fieldsDisabled = disabled || moneyLocked
   const checksDisabled = disabled || togglesLocked
-  const sum = earningsTotal(form)
 
   return (
     <div className="flex flex-col gap-4 lg:flex-row lg:items-start">
@@ -191,17 +188,6 @@ export default function EarningsPackageForm({
                 )
               })}
             </tbody>
-            <tfoot>
-              <tr className="border-t border-white/10 bg-slate-950/70">
-                <td />
-                <td className="px-4 py-2.5 text-sm font-bold text-cyan-200">Σύνολο</td>
-                <td />
-                <td className="px-3 py-2.5 text-right font-mono text-sm font-bold text-white">
-                  {formatEuroPlain(sum) || '0,00'}
-                </td>
-                <td colSpan={2} />
-              </tr>
-            </tfoot>
           </table>
         </div>
         {footerNote ? (
@@ -212,12 +198,12 @@ export default function EarningsPackageForm({
       {showMetaPanels ? (
         <div className="flex w-full shrink-0 flex-col gap-3 lg:w-72">
           <div className="rounded-2xl border border-white/10 bg-slate-900/75 p-4 shadow-xl backdrop-blur-md">
-            <p className="mb-3 text-[10px] font-semibold uppercase tracking-[0.18em] text-cyan-400/80">
+            <p className="mb-3 text-[11px] font-bold uppercase tracking-[0.18em] text-cyan-300">
               Στοιχεία
             </p>
             <div className="space-y-3">
               <div>
-                <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                <label className="text-[11px] font-bold uppercase tracking-wider text-slate-200">
                   Αρ. Λογαριασμού
                 </label>
                 <input
@@ -226,11 +212,11 @@ export default function EarningsPackageForm({
                   readOnly
                   disabled
                   placeholder="από καρτέλα υπαλλήλου"
-                  className="mt-1 w-full cursor-not-allowed rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 font-mono text-sm text-slate-300 opacity-80"
+                  className="mt-1 w-full cursor-not-allowed rounded-xl border border-white/15 bg-slate-950/40 px-3 py-2 font-mono text-sm font-semibold text-slate-100"
                 />
               </div>
               <div>
-                <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                <label className="text-[11px] font-bold uppercase tracking-wider text-slate-200">
                   Τράπεζα
                 </label>
                 <input
@@ -239,37 +225,58 @@ export default function EarningsPackageForm({
                   readOnly
                   disabled
                   placeholder="από καρτέλα υπαλλήλου"
-                  className="mt-1 w-full cursor-not-allowed rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-300 opacity-80"
+                  className="mt-1 w-full cursor-not-allowed rounded-xl border border-white/15 bg-slate-950/40 px-3 py-2 text-sm font-semibold text-slate-100"
                 />
               </div>
             </div>
           </div>
 
           <div className="rounded-2xl border border-white/10 bg-slate-900/75 p-4 shadow-xl backdrop-blur-md">
-            <p className="mb-3 text-[10px] font-semibold uppercase tracking-[0.18em] text-cyan-400/80">
+            <p className="mb-3 text-[11px] font-bold uppercase tracking-[0.18em] text-cyan-300">
               Παραστατικό
             </p>
             <p
               className={
                 issuesInvoice
-                  ? 'text-sm font-medium text-cyan-200/90'
-                  : 'text-sm font-medium text-slate-400'
+                  ? 'text-sm font-bold text-cyan-100'
+                  : 'text-sm font-bold text-slate-300'
               }
             >
               {issuesInvoice ? 'Με τιμολόγιο' : 'Χωρίς τιμολόγιο'}
             </p>
             {issuesInvoice ? (
-              <div className="mt-3 flex items-center gap-2">
-                <label className="shrink-0 text-[10px] font-semibold uppercase tracking-wider text-slate-400">
-                  Παρακράτηση Φόρου (%)
+              <div className="mt-3 space-y-3">
+                <div className="flex items-center gap-2">
+                  <label className="shrink-0 text-[11px] font-bold uppercase tracking-wider text-slate-200">
+                    Παρακράτηση Φόρου (%)
+                  </label>
+                  <input
+                    type="text"
+                    value={form.extra ?? ''}
+                    onChange={(e) => onPatchField?.('extra', e.target.value)}
+                    disabled={fieldsDisabled}
+                    className="w-full rounded-xl border border-white/15 bg-slate-950/60 px-3 py-2 font-mono text-sm font-semibold text-white disabled:cursor-not-allowed disabled:border-white/10 disabled:text-white"
+                  />
+                </div>
+                <label
+                  className={`flex items-start gap-2.5 rounded-xl border border-white/15 bg-slate-950/40 px-3 py-2.5 ${
+                    fieldsDisabled ? 'cursor-default' : 'cursor-pointer'
+                  }`}
+                >
+                  <input
+                    type="checkbox"
+                    checked={form.invoice_gross_up !== false}
+                    onChange={(e) => onPatchField?.('invoice_gross_up', e.target.checked)}
+                    disabled={fieldsDisabled}
+                    className="mt-0.5 h-4 w-4 rounded border-white/20 bg-slate-900 text-cyan-500 focus:ring-cyan-500/40 disabled:opacity-100"
+                  />
+                  <span className="text-sm font-semibold leading-snug text-white">
+                    Εφαρμογή Προσαύξησης 20% (/0.8)
+                    <span className="mt-0.5 block text-[11px] font-medium text-slate-300">
+                      Αν απενεργοποιηθεί, η Αξία Τιμολογίου = Υπόλοιπο (ΤΙΜ)
+                    </span>
+                  </span>
                 </label>
-                <input
-                  type="text"
-                  value={form.extra ?? ''}
-                  onChange={(e) => onPatchField?.('extra', e.target.value)}
-                  disabled={fieldsDisabled}
-                  className="w-full rounded-xl border border-white/10 bg-slate-950/60 px-3 py-2 font-mono text-sm text-white disabled:opacity-50"
-                />
               </div>
             ) : null}
           </div>

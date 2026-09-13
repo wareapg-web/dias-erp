@@ -42,6 +42,8 @@ export function snapshotToForm(snapshot) {
   merged.fixed_expense_settings = normalizeFixedExpenseSettings(
     snapshot.fixed_expense_settings ?? base.fixed_expense_settings
   )
+  // Παλιά snapshots χωρίς το κλειδί → true
+  if (merged.invoice_gross_up !== false) merged.invoice_gross_up = true
   return merged
 }
 
@@ -60,6 +62,75 @@ export function isAgreementActive(row) {
 
 export function agreementStatusLabel(row) {
   return isAgreementActive(row) ? 'Ενεργή' : 'Ιστορικό'
+}
+
+/** Σημειώσεις συμφωνίας από snapshot (όχι mirror tech_earnings). */
+export function agreementNotesFromRow(row) {
+  const snap = row?.earnings_snapshot
+  if (!snap || typeof snap !== 'object' || Array.isArray(snap)) return ''
+  return String(snap.agreement_notes || '').trim()
+}
+
+function dateOnly(value) {
+  const s = String(value || '').slice(0, 10)
+  return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : ''
+}
+
+/**
+ * Έκδοση συμφωνίας που κάλυπτε τον λογιστικό μήνα (year, month).
+ * Overlap: start ≤ τέλος μήνα · (end null ή end ≥ αρχή μήνα).
+ * Πολλαπλά → πιο πρόσφατη start_date (μετά created_at).
+ */
+export function findAgreementForMonth(versions, year, month) {
+  const y = Number(year)
+  const m = Number(month)
+  if (!Number.isFinite(y) || !Number.isFinite(m) || m < 1 || m > 12) return null
+
+  const monthStart = `${y}-${String(m).padStart(2, '0')}-01`
+  const lastDay = new Date(Date.UTC(y, m, 0)).getUTCDate()
+  const monthEnd = `${y}-${String(m).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`
+
+  const covering = []
+  for (const row of versions || []) {
+    const start = dateOnly(row?.start_date)
+    if (!start || start > monthEnd) continue
+    const end = dateOnly(row?.end_date)
+    if (end && end < monthStart) continue
+    covering.push(row)
+  }
+  if (covering.length === 0) return null
+
+  covering.sort((a, b) => {
+    const as = dateOnly(a.start_date)
+    const bs = dateOnly(b.start_date)
+    if (as !== bs) return bs.localeCompare(as)
+    return String(b.created_at || '').localeCompare(String(a.created_at || ''))
+  })
+  return covering[0]
+}
+
+/**
+ * Όροι παραστατικού για μήνα: ιστορικό snapshot → fallback form/mirror → defaults.
+ * @returns {{ invoiceGrossUp: boolean, taxPercent: number, agreement: object|null }}
+ */
+export function resolveInvoiceTermsForMonth(versions, year, month, fallbackForm = null) {
+  const agreement = findAgreementForMonth(versions, year, month)
+  const fromSnap = agreement ? snapshotToForm(agreement.earnings_snapshot) : null
+  const fb = fallbackForm || emptyEarningsForm()
+  const source = fromSnap || fb
+
+  const rawPct = source.extra
+  let taxPercent = 20
+  if (rawPct !== '' && rawPct != null) {
+    const n = Number(String(rawPct).replace(',', '.'))
+    if (Number.isFinite(n) && n !== 0) taxPercent = n
+  }
+
+  return {
+    agreement,
+    invoiceGrossUp: source.invoice_gross_up !== false,
+    taxPercent,
+  }
 }
 
 /**
@@ -139,9 +210,14 @@ export async function createAgreementVersionAndSyncMirror({
   startDate,
   form,
   earningsRecordId = null,
+  notes = '',
 }) {
   if (!tech?.id) throw new Error('Λείπει τεχνικός')
   const snapshot = formToSnapshot(form)
+  const trimmedNotes = String(notes || '').trim()
+  if (trimmedNotes) snapshot.agreement_notes = trimmedNotes
+  else delete snapshot.agreement_notes
+
   const { data: version, error: rpcError } = await diasClient.rpc(
     'create_tech_agreement_version',
     {

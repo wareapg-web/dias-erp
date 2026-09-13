@@ -53,6 +53,9 @@
 - `supabase/29_loan_batch_id.sql` (`payment_entries.loan_batch_id` + view · σειρά δανείου)
 - `supabase/30_fixed_expense_settings.sql` (JSONB Βασικό/Μεταβλητό στις Αποδοχές)
 - `supabase/31_tech_agreement_versions.sql` (Master snapshots συμφωνιών + RPC create/patch toggles)
+- `supabase/32_rename_bonus_to_salary_remainder.sql` (id 4 · Bonus → Υπόλοιπο Μισθού)
+- `supabase/33_rename_extra_bonus_to_bonus.sql` (id 5 · Extra Bonus → Bonus · χειροκίνητα πριμ)
+- `supabase/34_invoice_gross_up.sql` (tech_earnings.invoice_gross_up · προαιρετική προσαύξηση /0.8)
 
 ### Φωτογραφίες προφίλ (Cloudflare R2 μέσω Edge Function)
 

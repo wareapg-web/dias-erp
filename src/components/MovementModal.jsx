@@ -38,14 +38,18 @@ import {
 
 const INVOICE_CREDIT_TYPE_ID = 93
 
+const MANUAL_BONUS_TYPE_ID = 5
+
 /** Δώρα μετρητά — σε Χρέωση εμφανίζονται σε κάθε Κατηγορία (Μισθός/Λοιπά/Τιμολόγιο). */
 const CROSS_CATEGORY_DEBIT_GIFT_IDS = new Set([11, 12])
 
+/** Ad-hoc Bonus + δώρα — cross-category χρεώσεις. */
+const CROSS_CATEGORY_DEBIT_IDS = new Set([MANUAL_BONUS_TYPE_ID, ...CROSS_CATEGORY_DEBIT_GIFT_IDS])
+
 /** Τύποι που δημιουργούνται αλλού (settlement / LoanModal / αποδοχές) — όχι χειροκίνητα. */
 const EXCLUDED_MANUAL_TYPE_IDS = new Set([
-  1, 2, 3, 10, 14, 24, 91, 92, 93, 94, 95,
+  1, 2, 3, 4, 10, 14, 24, 91, 92, 93, 94, 95,
   // σταθερές αποδοχές / auto-transfer
-  5, // Extra Bonus
   21, // Επίδομα Οδηγού
   23, // Λογιστής
   41, // Bonus +
@@ -53,7 +57,7 @@ const EXCLUDED_MANUAL_TYPE_IDS = new Set([
 
 /** Λεκτικό backup για μελλοντικά IDs με ίδια σημασία. */
 const EXCLUDED_MANUAL_LABEL_RE =
-  /εξόφλησ|εξοφλησ|προκαταβολ|δάνειο|δανειο|δόση|δοση|εκταμίευσ|εκταμιευσ|ticket|bonus\s*\+|extra\s*bonus|επίδομα\s*οδηγ|επιδομα\s*οδηγ|λογιστ/i
+  /εξόφλησ|εξοφλησ|προκαταβολ|δάνειο|δανειο|δόση|δοση|εκταμίευσ|εκταμιευσ|ticket|bonus\s*\+|υπόλοιπο\s*μισθ|υπολοιπο\s*μισθ|επίδομα\s*οδηγ|επιδομα\s*οδηγ|λογιστ/i
 
 const EMPTY_TYPE_PLACEHOLDER = 'Δεν υπάρχουν διαθέσιμοι τύποι για χειροκίνητη εισαγωγή'
 
@@ -84,6 +88,14 @@ function normalizeCategory(value) {
   if (g === 'INVOICE') return 'INVOICE'
   if (g === 'SALARY') return 'SALARY'
   return 'OTHER'
+}
+
+/** Κατηγορία UI για cross-category τύπους (Bonus/δώρα) · αλλιώς native ledger_group. */
+function effectiveLedgerGroup(type, uiCategory) {
+  const cat = normalizeCategory(uiCategory)
+  if (type && CROSS_CATEGORY_DEBIT_IDS.has(Number(type.id))) return cat
+  if (!type) return cat || 'OTHER'
+  return type.ledger_group || (typeIsSalary(type) ? 'SALARY' : 'OTHER')
 }
 
 /** Κατηγορία UI από bucket / form / τύπο. */
@@ -122,8 +134,8 @@ function filterTypesForCategorySide(types, category, side) {
     const id = Number(t.id)
     if (HIDDEN_LEDGER_TYPE_IDS.has(id)) return false
 
-    // Δώρο Πάσχα / Χριστουγέννων: bypass ledger_group σε κάθε Κατηγορία (μόνο Χρέωση)
-    if (!credit && CROSS_CATEGORY_DEBIT_GIFT_IDS.has(id)) return true
+    // Bonus + δώρα: bypass ledger_group σε κάθε Κατηγορία (μόνο Χρέωση)
+    if (!credit && CROSS_CATEGORY_DEBIT_IDS.has(id)) return true
 
     if (cat === 'INVOICE') {
       if (credit) return id === INVOICE_CREDIT_TYPE_ID
@@ -161,16 +173,21 @@ function applyManualTypeExclusion(types, allowTypeId = null) {
   })
 }
 
-/** 11/12 πάντα στο κάτω μέρος της λίστας Τύπου. */
+/** Bonus πρώτο · δώρα 11/12 στο κάτω μέρος · τα υπόλοιπα κατά sort_order. */
 function sortMovementTypeOptions(types) {
   return [...(types || [])].sort((a, b) => {
-    const aGift = CROSS_CATEGORY_DEBIT_GIFT_IDS.has(Number(a.id)) ? 1 : 0
-    const bGift = CROSS_CATEGORY_DEBIT_GIFT_IDS.has(Number(b.id)) ? 1 : 0
+    const aId = Number(a.id)
+    const bId = Number(b.id)
+    const aBonus = aId === MANUAL_BONUS_TYPE_ID ? 0 : 1
+    const bBonus = bId === MANUAL_BONUS_TYPE_ID ? 0 : 1
+    if (aBonus !== bBonus) return aBonus - bBonus
+    const aGift = CROSS_CATEGORY_DEBIT_GIFT_IDS.has(aId) ? 1 : 0
+    const bGift = CROSS_CATEGORY_DEBIT_GIFT_IDS.has(bId) ? 1 : 0
     if (aGift !== bGift) return aGift - bGift
     const orderA = Number(a.sort_order ?? 0)
     const orderB = Number(b.sort_order ?? 0)
     if (orderA !== orderB) return orderA - orderB
-    return Number(a.id) - Number(b.id)
+    return aId - bId
   })
 }
 
@@ -299,16 +316,15 @@ export default function MovementModal({
       return ledgerColumnFor('INVOICE', form.side)
     }
     if (!selectedType) return null
-    return ledgerColumnFor(
-      selectedType.ledger_group || (typeIsSalary(selectedType) ? 'SALARY' : 'OTHER'),
-      form.side
-    )
+    return ledgerColumnFor(effectiveLedgerGroup(selectedType, uiCategory), form.side)
   }, [selectedType, form.side, postToInvoice, uiCategory])
 
   const applyTypeKeepDrivers = (t, category, side) => {
     if (!t) return
     const cat = normalizeCategory(category)
-    const salary = typeIsSalary(t)
+    const salary = CROSS_CATEGORY_DEBIT_IDS.has(Number(t.id))
+      ? cat === 'SALARY'
+      : typeIsSalary(t)
     setForm((prev) => ({
       ...prev,
       type: t.description,
@@ -565,7 +581,8 @@ export default function MovementModal({
       return
     }
 
-    const isSalary = typeIsSalary(selectedType)
+    const effectiveGroup = effectiveLedgerGroup(selectedType, form.ledger_group)
+    const isSalary = isSalaryLedgerGroup(effectiveGroup)
     const side = form.side || 'DEBIT'
     const postAsPayment = shouldPostAsPayment(side)
     // Κατηγορία=Τιμολόγιο → invoice στήλες (χωρίς checkbox)
@@ -601,14 +618,14 @@ export default function MovementModal({
         if (rowSource === 'PAYMENT') {
           const paymentType = paymentTypeCodeFromDescription(
             selectedType.description,
-            selectedType.ledger_group
+            effectiveGroup
           )
           const credits = paymentCreditColumns({
             amount,
             paymentType,
             postToInvoice: invoiceFlag,
             typeId: selectedType.id,
-            ledgerGroup: selectedType.ledger_group,
+            ledgerGroup: effectiveGroup,
           })
           const { error } = await diasClient
             .from('payment_entries')
@@ -648,14 +665,14 @@ export default function MovementModal({
       } else if (postAsPayment) {
         const paymentType = paymentTypeCodeFromDescription(
           selectedType.description,
-          selectedType.ledger_group
+          effectiveGroup
         )
         const credits = paymentCreditColumns({
           amount,
           paymentType,
           postToInvoice: invoiceFlag,
           typeId: selectedType.id,
-          ledgerGroup: selectedType.ledger_group,
+          ledgerGroup: effectiveGroup,
         })
         const { error } = await diasClient.from('payment_entries').insert({
           tech_id: String(tech.id),

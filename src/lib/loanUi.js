@@ -35,6 +35,17 @@ export function loanNotesPrefix(notes) {
   return raw || 'Δάνειο'
 }
 
+/**
+ * Πρόοδος δόσης από notes — π.χ. «… (Δόση 3/13)» → «Δόση 3/13».
+ * Display-only / description fill · δεν αλλάζει ποσά.
+ */
+export function extractLoanInstallmentProgress(notes) {
+  const raw = String(notes || '')
+  const m = raw.match(/\(Δόση\s*(\d+\s*\/\s*\d+)\)/i) || raw.match(/Δόση\s*(\d+\s*\/\s*\d+)/i)
+  if (!m) return ''
+  return `Δόση ${m[1].replace(/\s+/g, '')}`
+}
+
 /** Base notes από δόση ή εκταμίευση για σύνδεση σειράς. */
 export function loanSeriesNotesKey(notes) {
   const raw = String(notes || '').trim()
