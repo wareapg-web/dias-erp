@@ -62,8 +62,10 @@ function isLumpSumNotes(notes) {
 function installmentLineLabel(row) {
   const notes = String(row?.notes || '')
   if (isLumpSumNotes(notes)) return 'Έκτακτη καταβολή'
+  const fromDesc = String(row?.description || '').trim()
+  if (/^Δόση\s*\d+\s*\/\s*\d+$/i.test(fromDesc)) return fromDesc.replace(/\s+/g, ' ')
   const m = notes.match(/\(Δόση\s*([^)]+)\)/i)
-  if (m) return `Δόση ${m[1]}`
+  if (m) return `Δόση ${m[1].replace(/\s+/g, '')}`
   return 'Δόση'
 }
 
@@ -555,7 +557,7 @@ export default function LoanManagementModal({
             amount,
             ...loanCreditColumnsForCategory(category, amount),
             notes: `${baseNotes} (Δόση ${i + 1}/${newCount})`,
-            description: null,
+            description: `Δόση ${i + 1}/${newCount}`,
             loan_batch_id: loanBatchId,
           })
         }

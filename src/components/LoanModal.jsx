@@ -217,6 +217,7 @@ export default function LoanModal({
       const currentInstallmentAmount =
         i === numberOfInstallments - 1 ? lastInstallment : baseInstallment
       const notes = `${baseNotes} (Δόση ${i + 1}/${numberOfInstallments})`
+      const installmentLabel = `Δόση ${i + 1}/${numberOfInstallments}`
 
       entriesData.push({
         tech_id: techId,
@@ -234,7 +235,7 @@ export default function LoanModal({
         salary_debit: 0,
         other_debit: 0,
         notes,
-        description: null,
+        description: installmentLabel,
         loan_batch_id: loanBatchId,
       })
     }

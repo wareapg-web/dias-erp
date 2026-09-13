@@ -521,7 +521,8 @@ export default function LedgerAnalysisGrid({
                       taxMarkup={
                         invoiceGuideData &&
                         Number(invoiceGuideData.netAmount) !== 0 &&
-                        !invoiceGuideData.simpleVatOnly
+                        !invoiceGuideData.simpleVatOnly &&
+                        invoiceGuideData.invoiceGrossUp !== false
                           ? {
                               netAmount: Number(invoiceGuideData.netAmount) || 0,
                               taxPercent: Number(invoiceGuideData.taxPercent) || 20,
@@ -534,6 +535,7 @@ export default function LedgerAnalysisGrid({
                         netAmount={Number(invoiceGuideData.netAmount) || 0}
                         taxPercent={Number(invoiceGuideData.taxPercent) || 20}
                         simpleVatOnly={invoiceGuideData.simpleVatOnly === true}
+                        invoiceGrossUp={invoiceGuideData.invoiceGrossUp !== false}
                       />
                     ) : null}
                   </div>
@@ -567,16 +569,17 @@ function BalanceChip({ label, value, tone = 'slate', taxMarkup = null }) {
 
   return (
     <div
-      className={`min-w-[7.5rem] rounded-xl border px-3 py-2 shadow-sm shadow-black/20 ${tones[tone] || tones.slate}`}
+      className={`min-w-[7.5rem] rounded-xl border px-3 py-2 shadow-sm shadow-black/20 ${
+        taxMarkup ? 'text-center' : ''
+      } ${tones[tone] || tones.slate}`}
     >
       <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">{label}</p>
       <p className="mt-0.5 font-mono text-sm font-bold tabular-nums tracking-tight">{value}</p>
       {grossed != null && factorLabel ? (
-        <div className="mt-1.5 border-t border-amber-500/20 pt-1.5 text-center">
-          <p className="text-[9px] font-medium leading-tight text-amber-200/55">
-            Προσαύξηση φόρου {pct}%
+        <div className="mt-1.5 border-t border-amber-500/20 pt-1.5">
+          <p className="whitespace-nowrap text-[9px] font-medium leading-tight text-amber-200/55">
+            Προσαύξηση φόρου {pct}% ( /{factorLabel})
           </p>
-          <p className="mt-0.5 text-[9px] tabular-nums text-amber-200/45">/ {factorLabel}</p>
           <p className="mt-0.5 font-mono text-sm font-bold tabular-nums tracking-tight text-amber-50">
             {formatEuro(grossed)}
           </p>
@@ -587,7 +590,12 @@ function BalanceChip({ label, value, tone = 'slate', taxMarkup = null }) {
 }
 
 /** Τοπικό σκονάκι έκδοσης τιμολογίου — δεν αγγίζει computeLedgerBalances. */
-function InvoiceGuideCard({ netAmount, taxPercent, simpleVatOnly = false }) {
+function InvoiceGuideCard({
+  netAmount,
+  taxPercent,
+  simpleVatOnly = false,
+  invoiceGrossUp = true,
+}) {
   const net = Number(netAmount) || 0
 
   if (simpleVatOnly) {
@@ -617,7 +625,8 @@ function InvoiceGuideCard({ netAmount, taxPercent, simpleVatOnly = false }) {
 
   const pct = Number(taxPercent) || 20
   const factor = 1 - pct / 100
-  const gross = factor > 0 ? net / factor : net
+  const applyGrossUp = invoiceGrossUp !== false
+  const gross = applyGrossUp && factor > 0 ? net / factor : net
   const vat = gross * 0.24
   const tax = gross * (pct / 100)
   const payable = gross + vat - tax

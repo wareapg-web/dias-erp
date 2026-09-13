@@ -5,6 +5,7 @@ import { diasClient, fetchAllRows } from './supabase'
 import { isTicketRestaurantRow } from './techLedger'
 import { personnelIssuesInvoice } from './personnel'
 import { MONTH_LABELS } from './payrollAnalysis'
+import { resolveInvoiceTermsForMonth } from './techAgreementVersions'
 
 /** Προσαύξηση φόρου 20% → factor 0.8 (ίδιο με Υπόλοιπο ΤΙΜ / Οδηγό). */
 const INVOICE_GROSS_UP_FACTOR = 0.8
@@ -42,14 +43,16 @@ function invoiceTechIdSet(personnel = []) {
 }
 
 /**
- * Υπόλοιπο ΤΙΜ ανά τεχνικό (χρέωση − πίστωση) · Αξία = υπόλοιπο / 0.8
- * Ίδιο με το chip «Υπόλοιπο (ΤΙΜ)» + προσαύξηση.
+ * Υπόλοιπο ΤΙΜ ανά τεχνικό (χρέωση − πίστωση).
+ * Αξία = υπόλοιπο / 0.8 αν invoice_gross_up !== false, αλλιώς = υπόλοιπο.
+ * @param {Map<string, boolean>|Record<string, boolean>|null} [grossUpByTechId]
  * @returns {Array<{ techId: string, name: string, invoiceBalance: number, grossAmount: number }>}
  */
 export function aggregateMonthInvoiceGross(
   ledgerRows = [],
   personnel = [],
-  factor = INVOICE_GROSS_UP_FACTOR
+  factor = INVOICE_GROSS_UP_FACTOR,
+  grossUpByTechId = null
 ) {
   const names = personnelNameByTechId(personnel)
   const invoiceTechs = invoiceTechIdSet(personnel)
@@ -88,11 +91,26 @@ export function aggregateMonthInvoiceGross(
     const balance = round2(slot.invoiceDebit - slot.invoiceCredit)
     slot.invoiceBalance = balance
     if (balance <= 0) continue
-    slot.grossAmount = round2(balance / safeFactor)
+    const applyGrossUp = resolveInvoiceGrossUp(slot.techId, grossUpByTechId)
+    slot.grossAmount = applyGrossUp ? round2(balance / safeFactor) : balance
     rows.push(slot)
   }
 
   return rows.sort((a, b) => String(a.name).localeCompare(String(b.name), 'el'))
+}
+
+/** null/missing → true (backwards compatible). */
+function resolveInvoiceGrossUp(techId, grossUpByTechId) {
+  if (!grossUpByTechId) return true
+  const id = String(techId)
+  if (grossUpByTechId instanceof Map) {
+    if (!grossUpByTechId.has(id)) return true
+    return grossUpByTechId.get(id) !== false
+  }
+  if (Object.prototype.hasOwnProperty.call(grossUpByTechId, id)) {
+    return grossUpByTechId[id] !== false
+  }
+  return true
 }
 
 export function invoiceExportFilename(month, year) {
@@ -102,7 +120,8 @@ export function invoiceExportFilename(month, year) {
 }
 
 /**
- * Excel: Ονοματεπώνυμο · Αξία Τιμολογίου (€) = Υπόλοιπο ΤΙΜ / 0.8
+ * Excel: Ονοματεπώνυμο · Αξία Τιμολογίου (€)
+ * = Υπόλοιπο ΤΙΜ / 0.8 αν invoice_gross_up, αλλιώς = Υπόλοιπο ΤΙΜ
  * @param {{ month: number, year: number, personnel?: object[] }} opts
  */
 export async function exportMonthInvoicesToExcel({ month, year, personnel = [] }) {
@@ -116,7 +135,57 @@ export async function exportMonthInvoicesToExcel({ month, year, personnel = [] }
     q.eq('month', m).eq('year', y)
   )
 
-  const rows = aggregateMonthInvoiceGross(ledgerRows, personnel, INVOICE_GROSS_UP_FACTOR)
+  /** tech_id → versions[] · όροι από ιστορικό μήνα, όχι live mirror. */
+  const versionsByTech = new Map()
+  try {
+    const versionRows = await fetchAllRows(diasClient, 'tech_agreement_versions')
+    for (const row of versionRows || []) {
+      const id = String(row?.tech_id ?? '')
+      if (!id) continue
+      if (!versionsByTech.has(id)) versionsByTech.set(id, [])
+      versionsByTech.get(id).push(row)
+    }
+  } catch {
+    /* missing table → fallback defaults κάτω */
+  }
+
+  const earningsFallbackByTech = new Map()
+  try {
+    const earningsRows = await fetchAllRows(diasClient, 'tech_earnings')
+    for (const row of earningsRows || []) {
+      const id = String(row?.tech_id ?? '')
+      if (!id) continue
+      earningsFallbackByTech.set(id, {
+        invoice_gross_up: row.invoice_gross_up !== false,
+        extra: row.extra ?? '',
+      })
+    }
+  } catch {
+    /* ignore */
+  }
+
+  const grossUpByTechId = new Map()
+  const techIds = new Set()
+  for (const row of ledgerRows || []) {
+    const id = String(row?.tech_id ?? '')
+    if (id) techIds.add(id)
+  }
+  for (const id of techIds) {
+    const terms = resolveInvoiceTermsForMonth(
+      versionsByTech.get(id) || [],
+      y,
+      m,
+      earningsFallbackByTech.get(id) || null
+    )
+    grossUpByTechId.set(id, terms.invoiceGrossUp)
+  }
+
+  const rows = aggregateMonthInvoiceGross(
+    ledgerRows,
+    personnel,
+    INVOICE_GROSS_UP_FACTOR,
+    grossUpByTechId
+  )
   if (rows.length === 0) {
     throw new Error('Δεν βρέθηκε υπόλοιπο τιμολογίου για τεχνικούς με τιμολόγιο αυτόν τον μήνα')
   }

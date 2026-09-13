@@ -38,6 +38,7 @@ import {
   upsertWorkHours,
 } from '../lib/workHours'
 import {
+  agreementNotesFromRow,
   agreementStatusLabel,
   createAgreementVersionAndSyncMirror,
   ensureActiveAgreementFromEarnings,
@@ -45,6 +46,7 @@ import {
   isAgreementActive,
   loadAgreementVersions,
   patchActiveAgreementToggles,
+  resolveInvoiceTermsForMonth,
   snapshotToForm,
 } from '../lib/techAgreementVersions'
 import {
@@ -95,6 +97,8 @@ import {
 } from '../lib/modalSize'
 import LedgerAnalysisGrid from './LedgerAnalysisGrid'
 import DarkSelect from './DarkSelect'
+
+const MATRIX_BALANCES_STORAGE_KEY = 'dias_show_matrix_balances'
 
 /** Ώρες στο grid: 0 / κενό → παύλα. */
 function formatHoursDash(value) {
@@ -167,6 +171,7 @@ export default function TechAnalysisModal({
   const [agreementViewOpen, setAgreementViewOpen] = useState(false)
   const [agreementViewRow, setAgreementViewRow] = useState(null)
   const [agreementDraftForm, setAgreementDraftForm] = useState(() => emptyEarningsForm())
+  const [agreementDraftNotes, setAgreementDraftNotes] = useState('')
   const [agreementStartDate, setAgreementStartDate] = useState(() =>
     new Date().toISOString().slice(0, 10)
   )
@@ -196,6 +201,15 @@ export default function TechAnalysisModal({
   const [loanManagementOpen, setLoanManagementOpen] = useState(false)
   const [selectedRowData, setSelectedRowData] = useState(null)
   const [selectedLedgerRowKey, setSelectedLedgerRowKey] = useState(null)
+  const [ledgerDeleteOpen, setLedgerDeleteOpen] = useState(false)
+  const [ledgerDeleting, setLedgerDeleting] = useState(false)
+  const [showMatrixBalances, setShowMatrixBalances] = useState(() => {
+    try {
+      return localStorage.getItem(MATRIX_BALANCES_STORAGE_KEY) === '1'
+    } catch {
+      return false
+    }
+  })
   const [movementPresetTypeId, setMovementPresetTypeId] = useState(null)
   const [movementPresetSide, setMovementPresetSide] = useState(null)
   const [movementPresetDescription, setMovementPresetDescription] = useState(null)
@@ -691,7 +705,7 @@ export default function TechAnalysisModal({
     openMovementEdit(row)
   }
 
-  const handleDeleteLedgerEntry = async () => {
+  const handleDeleteLedgerEntry = () => {
     if (!selectedLedgerRowKey) return
 
     const row = ledgerDisplayRows.find((r) => ledgerRowKey(r) === selectedLedgerRowKey)
@@ -707,13 +721,20 @@ export default function TechAnalysisModal({
       return
     }
 
-    if (!window.confirm('Είστε σίγουροι ότι θέλετε να διαγράψετε την επιλεγμένη εγγραφή;')) {
+    setLedgerDeleteOpen(true)
+  }
+
+  const confirmDeleteLedgerEntry = async () => {
+    const row = ledgerDisplayRows.find((r) => ledgerRowKey(r) === selectedLedgerRowKey)
+    if (!row?.id) {
+      setLedgerDeleteOpen(false)
       return
     }
 
     const targetTable = row.source === 'PAYMENT' ? 'payment_entries' : 'payroll_entries'
 
     setLedgerError(null)
+    setLedgerDeleting(true)
     try {
       const { error } = await diasClient.from(targetTable).delete().eq('id', row.id)
       if (error) {
@@ -725,6 +746,7 @@ export default function TechAnalysisModal({
       setLedgerTick((n) => n + 1)
       setSelectedLedgerRowKey(null)
       setSelectedRowData(null)
+      setLedgerDeleteOpen(false)
       toast.success('Η εγγραφή διαγράφηκε επιτυχώς.')
     } catch (err) {
       const msg =
@@ -733,6 +755,8 @@ export default function TechAnalysisModal({
         String(err)
       setLedgerError(msg)
       toast.error(msg)
+    } finally {
+      setLedgerDeleting(false)
     }
   }
 
@@ -856,14 +880,14 @@ export default function TechAnalysisModal({
 
   const formatMatrixCell = (value) => {
     const n = Number(value) || 0
-    if (!n) return '-'
+    if (Math.abs(n) < 0.005) return '-'
     return formatEuro(n)
   }
 
-  /** Υπόλοιπα μήτρας: το 0 εμφανίζεται ως 0,00 € (όχι παύλα). */
+  /** Υπόλοιπα μήτρας: μηδενικά → παύλα (ίδιο οπτικό με Σ/Π). */
   const formatMatrixBalance = (value) => {
     const n = Number(value) || 0
-    if (!Number.isFinite(n)) return formatEuro(0)
+    if (!Number.isFinite(n) || Math.abs(n) < 0.005) return '-'
     return formatEuro(n)
   }
   const selectedPayroll = monthlyPayrolls[selectedMonth - 1]
@@ -1092,6 +1116,18 @@ export default function TechAnalysisModal({
       ? personnelSidebarKind === 'temporary'
       : techIsTemporary
 
+  const toggleMatrixBalances = () => {
+    setShowMatrixBalances((prev) => {
+      const next = !prev
+      try {
+        localStorage.setItem(MATRIX_BALANCES_STORAGE_KEY, next ? '1' : '0')
+      } catch {
+        /* ignore quota / private mode */
+      }
+      return next
+    })
+  }
+
   useEffect(() => {
     if (!showTemporaryToolbar) {
       setTemporaryPayablesHint({ totalInvoice: 0, totalCash: 0 })
@@ -1307,11 +1343,24 @@ export default function TechAnalysisModal({
     [agreementVersions]
   )
 
+  /** Όροι ΤΙΜ για τον επιλεγμένο μήνα — ιστορικό snapshot, όχι live mirror. */
+  const invoiceTermsForSelectedMonth = useMemo(
+    () =>
+      resolveInvoiceTermsForMonth(
+        agreementVersions,
+        analysisYear,
+        selectedMonth,
+        earningsForm
+      ),
+    [agreementVersions, analysisYear, selectedMonth, earningsForm]
+  )
+
   const openNewAgreement = () => {
     const prefill = activeAgreement
       ? snapshotToForm(activeAgreement.earnings_snapshot)
       : earningsForm
     setAgreementDraftForm(prefill)
+    setAgreementDraftNotes('')
     setAgreementStartDate(new Date().toISOString().slice(0, 10))
     setAgreementEditorOpen(true)
   }
@@ -1361,6 +1410,7 @@ export default function TechAnalysisModal({
         startDate: agreementStartDate,
         form: agreementDraftForm,
         earningsRecordId,
+        notes: agreementDraftNotes,
       })
       setEarningsForm(earningsFromDb(earnings))
       setEarningsRecordId(earnings?.id || null)
@@ -1740,7 +1790,7 @@ export default function TechAnalysisModal({
                       title="Συγκεντρωτικές οφειλές έκτακτων (all-time υπόλοιπο)"
                       className="inline-flex items-center gap-1.5 rounded-xl border border-cyan-500/40 bg-cyan-500/15 px-3 py-1.5 text-xs font-bold text-cyan-100 transition hover:bg-cyan-500/25"
                     >
-                      Διαχείριση Οφειλών
+                      {greekCapsLabel('Διαχείριση Οφειλών')}
                     </button>
                     {!hasAdminHours && (
                       <span className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[10px] font-semibold text-amber-100">
@@ -1848,7 +1898,7 @@ export default function TechAnalysisModal({
                 title="Διαχείριση δανείων τεχνικού"
                 className="rounded-xl border border-amber-500/40 bg-transparent px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-amber-100/90 transition hover:border-amber-400/60 hover:bg-amber-500/10 disabled:cursor-not-allowed disabled:opacity-40"
               >
-                Διαχείριση Δανείων
+                {greekCapsLabel('Διαχείριση Δανείων')}
               </button>
               {tech ? (
                 <p className="mr-2 max-w-[16rem] self-start text-left text-[11px] font-bold leading-tight text-slate-300">
@@ -1903,9 +1953,63 @@ export default function TechAnalysisModal({
           <>
             <div className="overflow-hidden rounded-2xl border border-white/10 bg-slate-900/75 shadow-2xl backdrop-blur-md">
               <div className="border-b border-white/10 px-4 py-3">
-                <h3 className="text-sm font-semibold text-white">
-                  Ετήσια Μήτρα Απολαβών · {analysisYear}
-                </h3>
+                <div className="flex items-center justify-between gap-3">
+                  <h3 className="text-sm font-semibold text-white">
+                    Ετήσια Μήτρα Απολαβών · {analysisYear}
+                  </h3>
+                  <button
+                    type="button"
+                    onClick={toggleMatrixBalances}
+                    aria-pressed={showMatrixBalances}
+                    aria-label={
+                      showMatrixBalances
+                        ? 'Απόκρυψη γραμμών υπολοίπων'
+                        : 'Εμφάνιση γραμμών υπολοίπων'
+                    }
+                    title={
+                      showMatrixBalances
+                        ? 'Υπόλοιπα ορατά — κλικ για απόκρυψη'
+                        : 'Υπόλοιπα κρυφά — κλικ για εμφάνιση'
+                    }
+                    className={`group shrink-0 inline-flex h-8 w-8 items-center justify-center rounded-full border transition duration-200 ${
+                      showMatrixBalances
+                        ? 'border-cyan-400/35 bg-cyan-500/15 text-cyan-200 shadow-[0_0_12px_rgba(34,211,238,0.18)] hover:bg-cyan-500/25'
+                        : 'border-white/10 bg-white/5 text-slate-400 hover:border-white/20 hover:bg-white/10 hover:text-slate-200'
+                    }`}
+                  >
+                    {showMatrixBalances ? (
+                      <svg
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.75"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        className="h-[15px] w-[15px]"
+                        aria-hidden
+                      >
+                        <path d="M2.5 12s3.5-6.5 9.5-6.5S21.5 12 21.5 12s-3.5 6.5-9.5 6.5S2.5 12 2.5 12z" />
+                        <circle cx="12" cy="12" r="2.75" />
+                      </svg>
+                    ) : (
+                      <svg
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.75"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        className="h-[15px] w-[15px]"
+                        aria-hidden
+                      >
+                        <path d="M3 3l18 18" />
+                        <path d="M10.6 10.6a2.75 2.75 0 003.8 3.8" />
+                        <path d="M9.9 5.1A10.4 10.4 0 0112 4.9c5.2 0 9 5.3 9.5 6.1a1.1 1.1 0 010 1.2c-.3.5-1.2 1.8-2.7 3.1" />
+                        <path d="M6.1 6.2C4.3 7.6 3 9.2 2.5 10a1.1 1.1 0 000 1.2C3 12 6.8 17.1 12 17.1c1.1 0 2.1-.2 3-.5" />
+                      </svg>
+                    )}
+                  </button>
+                </div>
                 <p className="text-xs text-slate-400">
                   {techIsTemporary
                     ? ledgerCategoryPolicy.allowInvoice
@@ -1966,7 +2070,7 @@ export default function TechAnalysisModal({
                         values={salaryMatrix.months.map((m) => formatMatrixCell(m.pi))}
                         total={formatMatrixCell(salaryMatrix.totals.pi)}
                       />
-                      {!techIsTemporary ? (
+                      {showMatrixBalances && !techIsTemporary ? (
                         <MatrixRow
                           label="Υ (Μ)"
                           hint="Υπόλοιπο Μισθού"
@@ -1976,7 +2080,8 @@ export default function TechAnalysisModal({
                           total={formatMatrixBalance(salaryMatrix.totals.yM)}
                         />
                       ) : null}
-                      {!techIsTemporary || ledgerCategoryPolicy.allowOther ? (
+                      {showMatrixBalances &&
+                      (!techIsTemporary || ledgerCategoryPolicy.allowOther) ? (
                         <MatrixRow
                           label="Υ (Λ)"
                           hint="Υπόλοιπο Λοιπών"
@@ -1986,7 +2091,8 @@ export default function TechAnalysisModal({
                           total={formatMatrixBalance(salaryMatrix.totals.yL)}
                         />
                       ) : null}
-                      {!techIsTemporary || ledgerCategoryPolicy.allowInvoice ? (
+                      {showMatrixBalances &&
+                      (!techIsTemporary || ledgerCategoryPolicy.allowInvoice) ? (
                         <MatrixRow
                           label="Υ (ΤΙΜ)"
                           hint="Υπόλοιπο Τιμολογίου"
@@ -2092,12 +2198,11 @@ export default function TechAnalysisModal({
                     netAmount: ledgerBalances.invoice,
                     // Έκτακτοι: απλό καθαρό + ΦΠΑ 24% · χωρίς /0.8 και παρακράτηση
                     simpleVatOnly: techIsTemporary,
+                    // Μόνιμοι: όροι από συμφωνία που κάλυπτε τον επιλεγμένο μήνα
+                    invoiceGrossUp: invoiceTermsForSelectedMonth.invoiceGrossUp,
                     taxPercent: techIsTemporary
                       ? 0
-                      : (() => {
-                          const pct = parseElNumber(earningsForm?.extra)
-                          return pct != null && Number.isFinite(pct) && pct !== 0 ? pct : 20
-                        })(),
+                      : invoiceTermsForSelectedMonth.taxPercent,
                   }}
                   onSelectRow={selectLedgerRow}
                   onOpenCreateForType={openMovementCreate}
@@ -2304,32 +2409,44 @@ export default function TechAnalysisModal({
                   disabled={!tech || agreementsMissing || agreementsSaving}
                   className="rounded-xl border border-emerald-500/40 bg-emerald-500/15 px-3 py-2 text-xs font-semibold text-emerald-100 transition hover:bg-emerald-500/25 disabled:opacity-50"
                 >
-                  Νέα Συμφωνία
+                  {greekCapsLabel('Νέα')}
                 </button>
               </div>
               {agreementsLoading ? (
                 <div className="px-4 py-12 text-center text-slate-400">Φόρτωση συμφωνιών...</div>
               ) : (
                 <div className="overflow-x-auto">
-                  <table className="w-full min-w-[560px] border-collapse text-left text-sm">
+                  <table className="w-full min-w-[640px] border-collapse text-left text-sm">
                     <thead>
                       <tr className="border-b border-white/10 bg-slate-950/60 text-[10px] uppercase tracking-wider text-slate-400">
-                        <th className="px-4 py-2.5 font-semibold">Ημ. Έναρξης</th>
-                        <th className="px-3 py-2.5 font-semibold">Ημ. Λήξης</th>
-                        <th className="px-3 py-2.5 font-semibold">Κατάσταση</th>
-                        <th className="px-3 py-2.5 text-right font-semibold">Ενέργεια</th>
+                        <th className="px-4 py-2.5 font-semibold">
+                          {greekCapsLabel('Ημ. Έναρξης')}
+                        </th>
+                        <th className="px-3 py-2.5 font-semibold">
+                          {greekCapsLabel('Ημ. Λήξης')}
+                        </th>
+                        <th className="px-3 py-2.5 font-semibold">
+                          {greekCapsLabel('Κατάσταση')}
+                        </th>
+                        <th className="px-3 py-2.5 font-semibold">
+                          {greekCapsLabel('Σημειώσεις')}
+                        </th>
+                        <th className="px-3 py-2.5 text-right font-semibold">
+                          {greekCapsLabel('Ενέργεια')}
+                        </th>
                       </tr>
                     </thead>
                     <tbody>
                       {agreementVersions.length === 0 ? (
                         <tr>
-                          <td colSpan={4} className="px-4 py-10 text-center text-sm text-slate-500">
-                            Καμία συμφωνία — πάτα «Νέα Συμφωνία» για το πρώτο πακέτο.
+                          <td colSpan={5} className="px-4 py-10 text-center text-sm text-slate-500">
+                            Καμία συμφωνία — πάτα «{greekCapsLabel('Νέα')}» για το πρώτο πακέτο.
                           </td>
                         </tr>
                       ) : (
                         agreementVersions.map((row) => {
                           const active = isAgreementActive(row)
+                          const notes = agreementNotesFromRow(row)
                           return (
                             <tr key={row.id} className="border-b border-white/5 hover:bg-slate-800/40">
                               <td className="px-4 py-2.5 text-white">
@@ -2352,6 +2469,18 @@ export default function TechAnalysisModal({
                                 >
                                   {agreementStatusLabel(row)}
                                 </span>
+                              </td>
+                              <td
+                                className="max-w-[14rem] px-3 py-2.5 text-sm text-slate-200"
+                                title={notes || undefined}
+                              >
+                                {notes ? (
+                                  <span className="line-clamp-2 whitespace-pre-wrap break-words">
+                                    {notes}
+                                  </span>
+                                ) : (
+                                  <span className="text-slate-500">—</span>
+                                )}
                               </td>
                               <td className="px-3 py-2.5 text-right">
                                 <button
@@ -2864,7 +2993,7 @@ export default function TechAnalysisModal({
                 />
               </div>
             </div>
-            <div className="min-h-0 flex-1 overflow-y-auto p-4">
+            <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
               <EarningsPackageForm
                 form={agreementDraftForm}
                 editMode="full"
@@ -2874,6 +3003,18 @@ export default function TechAnalysisModal({
                 onPatchAutoTransfer={patchAgreementDraftAuto}
                 onPatchFixedExpense={patchAgreementDraftFixed}
               />
+              <div>
+                <label className="text-[11px] font-bold uppercase tracking-wider text-slate-200">
+                  {greekCapsLabel('Σημειώσεις')}
+                </label>
+                <textarea
+                  value={agreementDraftNotes}
+                  onChange={(e) => setAgreementDraftNotes(e.target.value)}
+                  rows={3}
+                  placeholder="π.χ. αλλαγή παρακράτησης, χωρίς προσαύξηση…"
+                  className="mt-1.5 w-full resize-y rounded-xl border border-white/15 bg-slate-950/60 px-3 py-2 text-sm font-medium text-white placeholder:text-slate-500"
+                />
+              </div>
             </div>
             <div className="flex shrink-0 justify-between gap-2 border-t border-white/10 px-4 py-3">
               <button
@@ -2929,13 +3070,67 @@ export default function TechAnalysisModal({
                 Κλείσιμο
               </button>
             </div>
-            <div className="min-h-0 flex-1 overflow-y-auto p-4">
+            <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
+              {agreementNotesFromRow(agreementViewRow) ? (
+                <div className="rounded-xl border border-white/10 bg-slate-900/60 px-3 py-2.5">
+                  <p className="text-[11px] font-bold uppercase tracking-wider text-slate-300">
+                    {greekCapsLabel('Σημειώσεις')}
+                  </p>
+                  <p className="mt-1 whitespace-pre-wrap text-sm font-medium text-white">
+                    {agreementNotesFromRow(agreementViewRow)}
+                  </p>
+                </div>
+              ) : null}
               <EarningsPackageForm
                 form={agreementViewForm}
                 editMode="none"
                 issuesInvoice={issuesInvoice}
                 tech={tech}
               />
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {ledgerDeleteOpen ? (
+        <div className="fixed inset-0 z-[80] flex items-center justify-center p-4">
+          <button
+            type="button"
+            className="absolute inset-0 bg-slate-950/25 backdrop-blur-none"
+            aria-label="Κλείσιμο"
+            onClick={() => !ledgerDeleting && setLedgerDeleteOpen(false)}
+            disabled={ledgerDeleting}
+          />
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="ledger-delete-title"
+            className="relative w-full max-w-md rounded-2xl border border-rose-500/40 bg-slate-900 p-5 shadow-2xl shadow-rose-950/40"
+          >
+            <h3 id="ledger-delete-title" className="text-lg font-bold text-rose-100">
+              Διαγραφή εγγραφής
+            </h3>
+            <p className="mt-2 text-sm leading-relaxed text-slate-300">
+              Είστε σίγουροι ότι θέλετε να διαγράψετε την επιλεγμένη εγγραφή; Η ενέργεια δεν
+              αναιρείται.
+            </p>
+            <div className="mt-5 flex flex-wrap justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setLedgerDeleteOpen(false)}
+                disabled={ledgerDeleting}
+                className="rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm font-semibold text-slate-200 transition hover:bg-white/10 disabled:opacity-50"
+              >
+                Ακύρωση
+              </button>
+              <button
+                type="button"
+                onClick={confirmDeleteLedgerEntry}
+                disabled={ledgerDeleting}
+                className="rounded-xl border border-rose-500/50 bg-rose-600/30 px-4 py-2.5 text-sm font-bold text-rose-100 transition hover:bg-rose-600/45 disabled:opacity-50"
+              >
+                {ledgerDeleting ? 'Διαγραφή...' : 'Ναι, διαγραφή'}
+              </button>
             </div>
           </div>
         </div>
