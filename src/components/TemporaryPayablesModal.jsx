@@ -166,11 +166,9 @@ export default function TemporaryPayablesModal({
 
   return (
     <div className="fixed inset-0 z-[70] flex items-center justify-center p-4">
-      <button
-        type="button"
+      <div
         className="absolute inset-0 bg-slate-950/40 backdrop-blur-none"
-        aria-label="Κλείσιμο"
-        onClick={onClose}
+        aria-hidden
       />
       <div
         className="relative flex max-h-[min(85vh,720px)] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-white/10 bg-slate-900 shadow-2xl"

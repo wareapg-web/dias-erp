@@ -793,11 +793,9 @@ export default function PersonnelPanel({
       {formOpen &&
         createPortal(
         <div className="fixed inset-0 z-[80] flex items-center justify-center p-4">
-          <button
-            type="button"
+          <div
             className="absolute inset-0 bg-slate-950/20 backdrop-blur-none"
-            aria-label="Κλείσιμο"
-            onClick={() => setFormOpen(false)}
+            aria-hidden
           />
           <div
             className="relative flex flex-col overflow-hidden rounded-2xl border border-white/10 bg-slate-900 shadow-2xl"

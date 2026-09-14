@@ -1,8 +1,9 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import toast from 'react-hot-toast'
 import { diasClient, formatSupabaseError } from '../lib/supabase'
-import { movementFormFromRow, parseMovementAmount, extractLedgerAmount, isBareEuroText, normalizeEntryDate } from '../lib/techLedger'
-import { fromElInputValue, toElInputDisplay } from '../lib/numberFormat'
+import { movementFormFromRow, parseMovementAmount, extractLedgerAmount, isBareEuroText, normalizeEntryDate, mergeInvoiceBreakdownDescription } from '../lib/techLedger'
+import { fromElInputValue, parseElNumber, toElInputDisplay } from '../lib/numberFormat'
+import { formatEuro } from '../lib/payrollAnalysis'
 import {
   HIDDEN_LEDGER_TYPE_IDS,
   OTHER_CREDIT_IDS,
@@ -26,7 +27,7 @@ import {
 } from '../lib/transactionTypes'
 import DarkSelect from './DarkSelect'
 import GreekDateInput from './GreekDateInput'
-import { parseToIsoDate } from '../lib/greekDate'
+import { parseToIsoDate, greekCapsLabel } from '../lib/greekDate'
 import { useDraggableModal, MODAL_POS_KEYS } from '../lib/useDraggableModal'
 import { getLedgerCategoryPolicy } from '../lib/personnel'
 import {
@@ -37,6 +38,23 @@ import {
 } from '../lib/loanUi'
 
 const INVOICE_CREDIT_TYPE_ID = 93
+
+function round2(n) {
+  return Math.round((Number(n) || 0) * 100) / 100
+}
+
+/** Gross ↔ Net με συντελεστή παρακράτησης (π.χ. 20% → 0.8). */
+function netToGross(net, factor) {
+  const n = Number(net)
+  if (!Number.isFinite(n) || !(factor > 0)) return ''
+  return String(round2(n / factor))
+}
+
+function grossToNet(gross, factor) {
+  const g = Number(gross)
+  if (!Number.isFinite(g) || !(factor > 0)) return ''
+  return String(round2(g * factor))
+}
 
 const MANUAL_BONUS_TYPE_ID = 5
 
@@ -222,11 +240,17 @@ export default function MovementModal({
   presetMonth = null,
   presetYear = null,
   hasInvoice = false,
+  /** Ιστορικοί όροι μήνα — από resolveInvoiceTermsForMonth. */
+  invoiceGrossUp = true,
+  taxPercent = 20,
+  techIsTemporary = false,
   onClose,
   onSaved,
   error: externalError = null,
 }) {
   const [form, setForm] = useState(() => movementFormFromRow(null))
+  /** UI-only · μικτή αξία τιμολογίου · δεν αποθηκεύεται. */
+  const [grossAmountDisplay, setGrossAmountDisplay] = useState('')
   const [types, setTypes] = useState([])
   const [typesLoading, setTypesLoading] = useState(false)
   const [typesError, setTypesError] = useState(null)
@@ -256,6 +280,17 @@ export default function MovementModal({
 
   const showInvoiceCategory = hasInvoice === true || allowInvoiceCategory
   const categoryPolicy = useMemo(() => getLedgerCategoryPolicy(tech), [tech])
+
+  const pct = Number(taxPercent)
+  const safeTaxPercent = Number.isFinite(pct) && pct > 0 ? pct : 20
+  const grossUpFactor = 1 - safeTaxPercent / 100
+  const showInvoiceGrossDual =
+    uiCategory === 'INVOICE' &&
+    techIsTemporary !== true &&
+    categoryPolicy.temporary !== true &&
+    invoiceGrossUp !== false &&
+    grossUpFactor > 0 &&
+    grossUpFactor < 1
 
   const categoryOptions = useMemo(() => {
     const labelByValue = new Map(
@@ -460,6 +495,10 @@ export default function MovementModal({
         }
 
         setSelectedTypeId(chosen?.id ?? null)
+        const nextAmount =
+          !selectedRowData && presetAmount != null && presetAmount !== ''
+            ? String(presetAmount)
+            : base.amount
         setForm({
           ...base,
           type: chosen?.description || base.type,
@@ -469,15 +508,28 @@ export default function MovementModal({
               : isBareEuroText(base.description)
                 ? ''
                 : base.description,
-          amount:
-            !selectedRowData && presetAmount != null && presetAmount !== ''
-              ? String(presetAmount)
-              : base.amount,
+          amount: nextAmount,
           is_salary_type: typeIsSalary(chosen),
           ledger_group: category,
           side,
           post_to_invoice: category === 'INVOICE',
         })
+
+        // Dual UI: net από preset · gross = net / factor (μόνο μόνιμοι + προσαύξηση)
+        const dualOk =
+          category === 'INVOICE' &&
+          techIsTemporary !== true &&
+          policy.temporary !== true &&
+          invoiceGrossUp !== false
+        const factorInit = 1 - (Number(taxPercent) > 0 ? Number(taxPercent) : 20) / 100
+        if (dualOk && factorInit > 0 && factorInit < 1) {
+          const netN = parseElNumber(nextAmount)
+          setGrossAmountDisplay(
+            netN != null && netN !== 0 ? netToGross(netN, factorInit) : ''
+          )
+        } else {
+          setGrossAmountDisplay('')
+        }
       } catch (err) {
         if (!cancelled) {
           setTypes([])
@@ -496,11 +548,47 @@ export default function MovementModal({
     return () => {
       cancelled = true
     }
-  }, [open, selectedRowData, presetTypeId, presetSide, presetDescription, presetAmount, presetPostToInvoice, hasInvoice, tech])
+  }, [
+    open,
+    selectedRowData,
+    presetTypeId,
+    presetSide,
+    presetDescription,
+    presetAmount,
+    presetPostToInvoice,
+    hasInvoice,
+    tech,
+    invoiceGrossUp,
+    taxPercent,
+    techIsTemporary,
+  ])
 
   if (!open) return null
 
   const patch = (field, value) => setForm((prev) => ({ ...prev, [field]: value }))
+
+  const patchNetAmount = (raw) => {
+    const next = fromElInputValue(raw)
+    patch('amount', next)
+    if (!showInvoiceGrossDual) return
+    const n = parseElNumber(next)
+    if (n == null) {
+      if (!String(next || '').trim()) setGrossAmountDisplay('')
+      return
+    }
+    setGrossAmountDisplay(netToGross(n, grossUpFactor))
+  }
+
+  const patchGrossAmount = (raw) => {
+    const next = fromElInputValue(raw)
+    setGrossAmountDisplay(next)
+    const g = parseElNumber(next)
+    if (g == null) {
+      if (!String(next || '').trim()) patch('amount', '')
+      return
+    }
+    patch('amount', grossToNet(g, grossUpFactor))
+  }
 
   const handleCategoryChange = (value) => {
     if (categorySelectLocked) return
@@ -518,6 +606,20 @@ export default function MovementModal({
       ledger_group: category,
       post_to_invoice: category === 'INVOICE',
     }))
+    // Sync gross όταν μπαίνει σε Τιμολόγιο με dual mode
+    const dualOk =
+      category === 'INVOICE' &&
+      techIsTemporary !== true &&
+      categoryPolicy.temporary !== true &&
+      invoiceGrossUp !== false &&
+      grossUpFactor > 0 &&
+      grossUpFactor < 1
+    if (dualOk) {
+      const n = parseElNumber(form.amount)
+      setGrossAmountDisplay(n != null ? netToGross(n, grossUpFactor) : '')
+    } else {
+      setGrossAmountDisplay('')
+    }
     pickTypeForDrivers(
       nextFiltered,
       typeSelectLocked ? exceptionTypeId : selectedTypeId,
@@ -589,8 +691,29 @@ export default function MovementModal({
     const invoiceFlag = normalizeCategory(form.ledger_group) === 'INVOICE'
     const invoiceAmount = invoiceFlag && !postAsPayment ? amount : 0
     const rawDescription = form.description?.trim() || ''
-    const description =
+    let description =
       rawDescription && !isBareEuroText(rawDescription) ? rawDescription : null
+
+    // Εξόφληση ΤΙΜ (μόνο type 93) + προσαύξηση — ΟΧΙ δάνεια 94/95
+    const typeId = Number(selectedType.id)
+    const isInvoiceCreditSettlement =
+      invoiceFlag &&
+      side === 'CREDIT' &&
+      invoiceGrossUp !== false &&
+      techIsTemporary !== true &&
+      categoryPolicy.temporary !== true &&
+      typeId === INVOICE_CREDIT_TYPE_ID &&
+      typeId !== LOAN_INSTALLMENT_TYPE_ID &&
+      typeId !== LOAN_DISBURSEMENT_TYPE_ID
+
+    if (isInvoiceCreditSettlement && amount > 0) {
+      description = mergeInvoiceBreakdownDescription(
+        description,
+        amount,
+        Number(taxPercent) > 0 ? Number(taxPercent) : 20
+      )
+    }
+
     const notes = form.notes?.trim() || null
     const entryDateIso =
       parseToIsoDate(form.entry_date) || normalizeEntryDate(form.entry_date)
@@ -825,12 +948,9 @@ export default function MovementModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <button
-        type="button"
+      <div
         className="absolute inset-0 bg-slate-950/20 backdrop-blur-none"
-        aria-label="Κλείσιμο"
-        onClick={onClose}
-        disabled={saving || deleting}
+        aria-hidden
       />
       <form
         onSubmit={handleSave}
@@ -886,7 +1006,7 @@ export default function MovementModal({
           <fieldset disabled={formDisabled} className="space-y-3 disabled:opacity-60">
             <div>
               <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
-                Ημερομηνία
+                {greekCapsLabel('Ημερομηνία')}
               </label>
               <GreekDateInput
                 value={form.entry_date || ''}
@@ -899,7 +1019,7 @@ export default function MovementModal({
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
-                  Κατηγορία
+                  {greekCapsLabel('Κατηγορία')}
                 </label>
                 <DarkSelect
                   value={uiCategory}
@@ -911,7 +1031,7 @@ export default function MovementModal({
               </div>
               <div>
                 <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
-                  Κατεύθυνση
+                  {greekCapsLabel('Κατεύθυνση')}
                 </label>
                 <DarkSelect
                   value={form.side || 'DEBIT'}
@@ -931,7 +1051,7 @@ export default function MovementModal({
             {!categoryPolicy.temporary ? (
               <div>
                 <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
-                  Τύπος
+                  {greekCapsLabel('Τύπος')}
                 </label>
                 <DarkSelect
                   value={noAvailableTypes ? '' : (selectedTypeId ?? '')}
@@ -958,7 +1078,7 @@ export default function MovementModal({
 
             <div>
               <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
-                Περιγραφή
+                {greekCapsLabel('Περιγραφή')}
               </label>
               <input
                 type="text"
@@ -969,20 +1089,94 @@ export default function MovementModal({
               />
             </div>
 
-            <div>
-              <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
-                Ποσό (€)
-              </label>
-              <input
-                type="text"
-                inputMode="decimal"
-                autoComplete="off"
-                required
-                value={toElInputDisplay(form.amount)}
-                onChange={(e) => patch('amount', fromElInputValue(e.target.value))}
-                className="mt-1 w-full rounded-xl border border-white/10 bg-slate-950/60 px-3 py-2 font-mono text-sm text-white"
-              />
-            </div>
+            {showInvoiceGrossDual ? (
+              <div className="space-y-3">
+                <div>
+                  <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                    {greekCapsLabel('Καθαρό Ποσό (Βάση Ledger)')}
+                  </label>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    autoComplete="off"
+                    value={toElInputDisplay(form.amount)}
+                    onChange={(e) => patchNetAmount(e.target.value)}
+                    className="mt-1 w-full rounded-xl border border-white/10 bg-slate-950/60 px-3 py-2 font-mono text-sm text-slate-200"
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] font-semibold uppercase tracking-wider text-amber-200/90">
+                    {greekCapsLabel(`Προσαύξηση ${safeTaxPercent}%`)}
+                  </label>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    autoComplete="off"
+                    required
+                    value={toElInputDisplay(grossAmountDisplay)}
+                    onChange={(e) => patchGrossAmount(e.target.value)}
+                    className="mt-1 w-full rounded-xl border border-amber-500/35 bg-amber-500/10 px-3 py-2 font-mono text-sm font-semibold text-amber-50"
+                  />
+                  <p className="mt-1 text-[10px] text-amber-200/50">
+                    /{grossUpFactor.toLocaleString('el-GR', {
+                      minimumFractionDigits: 1,
+                      maximumFractionDigits: 2,
+                    })}
+                  </p>
+                </div>
+                {(() => {
+                  const grossN =
+                    parseElNumber(grossAmountDisplay) ??
+                    (() => {
+                      const n = parseElNumber(form.amount)
+                      return n != null && grossUpFactor > 0 ? round2(n / grossUpFactor) : null
+                    })()
+                  if (grossN == null || !(grossN > 0)) return null
+                  const vat = round2(grossN * 0.24)
+                  const withhold = round2(grossN * (safeTaxPercent / 100))
+                  const payable = round2(grossN + vat - withhold)
+                  return (
+                    <div className="rounded-xl border border-slate-700/50 bg-slate-800/50 px-3 py-2.5 text-xs">
+                      <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                        {greekCapsLabel('Οδηγός πληρωμής')}
+                      </p>
+                      <div className="flex justify-between gap-3 py-0.5 text-slate-300">
+                        <span>Αξία Τιμολογίου</span>
+                        <span className="font-mono tabular-nums">{formatEuro(grossN)}</span>
+                      </div>
+                      <div className="flex justify-between gap-3 py-0.5 text-slate-300">
+                        <span>ΦΠΑ 24%</span>
+                        <span className="font-mono tabular-nums">+ {formatEuro(vat)}</span>
+                      </div>
+                      <div className="flex justify-between gap-3 py-0.5 text-slate-300">
+                        <span>Παρακρ. Φόρου ({safeTaxPercent}%)</span>
+                        <span className="font-mono tabular-nums">− {formatEuro(withhold)}</span>
+                      </div>
+                      <hr className="my-1.5 border-slate-600" />
+                      <div className="flex justify-between gap-3 py-0.5 font-bold text-slate-100">
+                        <span>Πληρωτέο</span>
+                        <span className="font-mono tabular-nums">{formatEuro(payable)}</span>
+                      </div>
+                    </div>
+                  )
+                })()}
+              </div>
+            ) : (
+              <div>
+                <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                  {greekCapsLabel('Ποσό (€)')}
+                </label>
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  autoComplete="off"
+                  required
+                  value={toElInputDisplay(form.amount)}
+                  onChange={(e) => patchNetAmount(e.target.value)}
+                  className="mt-1 w-full rounded-xl border border-white/10 bg-slate-950/60 px-3 py-2 font-mono text-sm text-white"
+                />
+              </div>
+            )}
 
             {selectedType && !typesLoading && !categoryPolicy.temporary ? (
               <p className="text-[11px] text-slate-500">
@@ -993,7 +1187,7 @@ export default function MovementModal({
 
             <div>
               <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
-                Σημειώσεις
+                {greekCapsLabel('Σημειώσεις')}
               </label>
               <textarea
                 value={form.notes}
@@ -1042,12 +1236,9 @@ export default function MovementModal({
 
       {loanDeleteOpen && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
-          <button
-            type="button"
+          <div
             className="absolute inset-0 bg-slate-950/25 backdrop-blur-none"
-            aria-label="Κλείσιμο διαλόγου διαγραφής"
-            onClick={() => !deleting && setLoanDeleteOpen(false)}
-            disabled={deleting}
+            aria-hidden
           />
           <div
             role="dialog"

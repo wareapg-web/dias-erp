@@ -10,6 +10,10 @@ import {
 import { mapTechRow } from './lib/crewPayroll'
 import { personnelAsTech, personnelFromDb } from './lib/personnel'
 import TechAnalysisModal from './components/TechAnalysisModal'
+import {
+  LedgerCompactHeadersToggle,
+  useLedgerCompactHeaders,
+} from './components/LedgerAnalysisGrid'
 import PersonnelPanel from './components/PersonnelPanel'
 import AdminLoginScreen from './components/AdminLoginScreen'
 import ErpWindow from './components/ErpWindow'
@@ -73,6 +77,8 @@ export default function App() {
     dragHandleProps: settingsDragHandleProps,
     dragHandleClassName: settingsDragHandleClassName,
   } = useDraggableModal(settingsOpen, MODAL_POS_KEYS.settings)
+  const { compactHeaders: ledgerCompactHeaders, toggleCompactHeaders: toggleLedgerCompactHeaders } =
+    useLedgerCompactHeaders()
 
   const period = formatPeriod(selectedYear, selectedMonth)
 
@@ -365,15 +371,21 @@ export default function App() {
                 Υπάλληλοι
               </button>
             </div>
-            <button
-              type="button"
-              onClick={async () => {
-                await adminClient.auth.signOut()
-              }}
-              className="shrink-0 rounded-xl border border-rose-500/40 bg-rose-500/15 px-3 py-1.5 text-xs font-bold text-rose-100 transition hover:bg-rose-500/25"
-            >
-              Έξοδος
-            </button>
+            <div className="flex shrink-0 items-center gap-2">
+              <LedgerCompactHeadersToggle
+                compactHeaders={ledgerCompactHeaders}
+                onToggle={toggleLedgerCompactHeaders}
+              />
+              <button
+                type="button"
+                onClick={async () => {
+                  await adminClient.auth.signOut()
+                }}
+                className="rounded-xl border border-rose-500/40 bg-rose-500/15 px-3 py-1.5 text-xs font-bold text-rose-100 transition hover:bg-rose-500/25"
+              >
+                Έξοδος
+              </button>
+            </div>
           </div>
         }
       >
@@ -397,6 +409,8 @@ export default function App() {
             initialYear={selectedYear}
             saving={saving || loading}
             payrolls={payrolls}
+            ledgerCompactHeaders={ledgerCompactHeaders}
+            onToggleLedgerCompactHeaders={toggleLedgerCompactHeaders}
             onSaveToErp={savePayrollToErp}
           />
         </div>
@@ -404,11 +418,9 @@ export default function App() {
 
       {personnelModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4">
-          <button
-            type="button"
+          <div
             className="absolute inset-0 bg-slate-950/20 backdrop-blur-none"
-            aria-label="Κλείσιμο"
-            onClick={() => setPersonnelModalOpen(false)}
+            aria-hidden
           />
           <div
             ref={catalogFrameRef}
@@ -480,11 +492,9 @@ export default function App() {
 
       {settingsOpen && (
         <div className="fixed inset-0 z-40 flex items-center justify-center p-4">
-          <button
-            type="button"
+          <div
             className="absolute inset-0 bg-slate-950/20 backdrop-blur-none"
-            aria-label="Κλείσιμο"
-            onClick={() => setSettingsOpen(false)}
+            aria-hidden
           />
           <div
             className="relative w-full max-w-md rounded-2xl border border-white/10 bg-slate-900/95 p-6 shadow-2xl backdrop-blur-md"
