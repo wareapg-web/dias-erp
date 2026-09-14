@@ -188,6 +188,19 @@ export default function LoanModal({
       salary_credit: form.category === 'salary' ? amount : 0,
       other_credit: form.category === 'other' ? amount : 0,
       invoice_credit: form.category === 'invoice' ? amount : 0,
+      salary_debit: 0,
+      other_debit: 0,
+      invoice_amount: 0,
+    })
+
+    // Εκταμίευση = οφειλή → Χρέωση στο επιλεγμένο συρτάρι · δόσεις μένουν Πίστωση
+    const debitFor = (amount) => ({
+      salary_debit: form.category === 'salary' ? amount : 0,
+      other_debit: form.category === 'other' ? amount : 0,
+      invoice_amount: form.category === 'invoice' ? amount : 0,
+      salary_credit: 0,
+      other_credit: 0,
+      invoice_credit: 0,
     })
 
     const entriesData = [
@@ -202,10 +215,7 @@ export default function LoanModal({
         type_id: LOAN_DISBURSEMENT_TYPE_ID,
         payment_type: paymentType,
         amount: totalAmount,
-        ...creditFor(totalAmount),
-        invoice_amount: 0,
-        salary_debit: 0,
-        other_debit: 0,
+        ...debitFor(totalAmount),
         notes: `Εκταμίευση Δανείου: ${baseNotes}`,
         description: null,
         loan_batch_id: loanBatchId,
@@ -231,9 +241,6 @@ export default function LoanModal({
         payment_type: paymentType,
         amount: currentInstallmentAmount,
         ...creditFor(currentInstallmentAmount),
-        invoice_amount: 0,
-        salary_debit: 0,
-        other_debit: 0,
         notes,
         description: installmentLabel,
         loan_batch_id: loanBatchId,
@@ -263,12 +270,9 @@ export default function LoanModal({
 
   return (
     <div className="fixed inset-0 z-[70] flex items-center justify-center p-4">
-      <button
-        type="button"
+      <div
         className="absolute inset-0 bg-slate-950/20 backdrop-blur-none"
-        aria-label="Κλείσιμο"
-        onClick={onClose}
-        disabled={saving}
+        aria-hidden
       />
       <form
         onSubmit={handleSave}

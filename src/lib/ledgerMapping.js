@@ -415,7 +415,10 @@ export function ledgerRowClassName(row, isSelected) {
     parts.push('ledger-row--saved bg-slate-950/20')
   }
   if (isSelected) {
-    parts.push('bg-amber-400/25 ring-1 ring-inset ring-amber-400/50 hover:bg-amber-400/30')
+    // Μόνιμο highlight ≈ ένταση hover (όχι μόνο στο mouseover)
+    parts.push(
+      'bg-amber-400/35 ring-2 ring-inset ring-amber-400 hover:bg-amber-400/40'
+    )
   } else {
     parts.push('hover:bg-slate-800/50')
   }

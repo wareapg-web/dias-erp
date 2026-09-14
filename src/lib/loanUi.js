@@ -114,16 +114,19 @@ function round2(n) {
   return Math.round((Number(n) || 0) * 100) / 100
 }
 
-/** Ποσό γραμμής δανείου από amount ή φυσικές credit στήλες. */
+/** Ποσό γραμμής δανείου από amount ή φυσικές debit/credit στήλες. */
 export function loanRowAmount(row) {
   if (!row) return 0
   const fromAmount = Number(row.amount)
   if (Number.isFinite(fromAmount) && fromAmount !== 0) return round2(Math.abs(fromAmount))
-  const credits =
+  const cols =
+    (Number(row.salary_debit) || 0) +
+    (Number(row.other_debit) || 0) +
+    (Number(row.invoice_amount) || 0) +
     (Number(row.salary_credit) || 0) +
     (Number(row.other_credit) || 0) +
     (Number(row.invoice_credit) || 0)
-  return round2(Math.abs(credits))
+  return round2(Math.abs(cols))
 }
 
 function legacyGroupKey(row) {
@@ -266,20 +269,27 @@ export function computeBankInstallments(totalAmount, numberOfInstallments) {
 }
 
 /**
- * Φυσική στήλη πίστωσης από υπάρχουσα γραμμή δανείου.
+ * Συρτάρι δανείου από υπάρχουσα γραμμή (debit εκταμίευσης ή credit δόσης).
  * @returns {'salary'|'other'|'invoice'}
  */
 export function loanCreditCategoryFromRow(row) {
   if (!row) return 'salary'
-  if ((Number(row.invoice_credit) || 0) !== 0) return 'invoice'
-  if ((Number(row.other_credit) || 0) !== 0) return 'other'
-  if ((Number(row.salary_credit) || 0) !== 0) return 'salary'
+  if ((Number(row.invoice_amount) || 0) !== 0 || (Number(row.invoice_credit) || 0) !== 0) {
+    return 'invoice'
+  }
+  if ((Number(row.other_debit) || 0) !== 0 || (Number(row.other_credit) || 0) !== 0) {
+    return 'other'
+  }
+  if ((Number(row.salary_debit) || 0) !== 0 || (Number(row.salary_credit) || 0) !== 0) {
+    return 'salary'
+  }
   const pt = String(row.payment_type || '').toUpperCase()
   if (pt === 'SETTLEMENT' || pt.includes('TIM')) return 'invoice'
   if (pt === 'SETTLEMENT_2' || pt === 'EXPENSES' || pt === 'BONUS_PAYOUT') return 'other'
   return 'salary'
 }
 
+/** Δόσεις (94): πίστωση = κράτηση. */
 export function loanCreditColumnsForCategory(category, amount) {
   const abs = Math.abs(Number(amount) || 0)
   return {
@@ -289,6 +299,19 @@ export function loanCreditColumnsForCategory(category, amount) {
     salary_debit: 0,
     other_debit: 0,
     invoice_amount: 0,
+  }
+}
+
+/** Εκταμίευση (95): χρέωση = οφειλή προς πληρωμή. */
+export function loanDebitColumnsForCategory(category, amount) {
+  const abs = Math.abs(Number(amount) || 0)
+  return {
+    salary_debit: category === 'salary' ? abs : 0,
+    other_debit: category === 'other' ? abs : 0,
+    invoice_amount: category === 'invoice' ? abs : 0,
+    salary_credit: 0,
+    other_credit: 0,
+    invoice_credit: 0,
   }
 }
 

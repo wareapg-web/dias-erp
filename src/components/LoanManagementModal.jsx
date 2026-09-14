@@ -595,12 +595,9 @@ export default function LoanManagementModal({
 
   return (
     <div className="fixed inset-0 z-50">
-      <button
-        type="button"
+      <div
         className="absolute inset-0 bg-slate-950/20 backdrop-blur-none"
-        aria-label="Κλείσιμο"
-        onClick={onClose}
-        disabled={saving || loanCreateOpen}
+        aria-hidden
       />
       <ErpWindow
         className="!bg-slate-900"
@@ -1211,12 +1208,9 @@ export default function LoanManagementModal({
 
       {deleteConfirmGroup && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
-          <button
-            type="button"
+          <div
             className="absolute inset-0 bg-slate-950/40 backdrop-blur-none"
-            aria-label="Κλείσιμο"
-            onClick={() => !saving && setDeleteConfirmGroup(null)}
-            disabled={saving}
+            aria-hidden
           />
           <div
             role="dialog"

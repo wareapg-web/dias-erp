@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
+  computeInvoiceGrossBreakdown,
   formatLedgerAmount,
   formatLedgerImportAt,
   isTicketRestaurantRow,
@@ -9,7 +10,8 @@ import {
 import { ledgerRowClassName } from '../lib/ledgerMapping'
 import { resolveTransactionTypeFromLedgerRow } from '../lib/transactionTypes'
 import { formatEuro } from '../lib/payrollAnalysis'
-import { isLoanInstallmentRow } from '../lib/loanUi'
+import { isLoanDisbursementRow, isLoanInstallmentRow } from '../lib/loanUi'
+import { greekCapsLabel } from '../lib/greekDate'
 
 function renderCreditAmount(row, value) {
   const n = Number(value)
@@ -24,7 +26,111 @@ function renderCreditAmount(row, value) {
   return formatLedgerAmount(value)
 }
 
-const COLUMN_WIDTHS_STORAGE_KEY = 'dias_ledger_column_widths_v5'
+/** Display-only μικτό — μόνο εξόφληση ΤΙΜ (93), όχι χρεώσεις/δάνεια. */
+function renderInvoiceMarkupAmount(row, { invoiceGrossUp, taxPercent, techIsTemporary }) {
+  if (techIsTemporary || invoiceGrossUp === false) return ''
+  if (isLoanInstallmentRow(row) || isLoanDisbursementRow(row)) return ''
+  const id = Number(row?.type_id ?? row?.ept_id ?? row?.__type?.id)
+  if (id === 94 || id === 95) return ''
+  if (id !== 93) {
+    const t = String(row?.type || row?.__type?.description || '')
+    if (t !== 'SETTLEMENT' && !/εξόφληση\s*τιμολογ/i.test(t)) return ''
+  }
+  const credit = Number(row?.invoice_credit) || 0
+  if (!(credit > 0)) return ''
+  const b = computeInvoiceGrossBreakdown(credit, taxPercent)
+  if (!b?.gross) return ''
+  return formatLedgerAmount(b.gross)
+}
+
+const COLUMN_WIDTHS_STORAGE_KEY = 'dias_ledger_column_widths_v6'
+const COMPACT_HEADERS_STORAGE_KEY = 'dias_ledger_compact_headers'
+
+/** Ζεύγη Χρ./Πιστ. → ένα header όταν compact (κελιά αμετάβλητα). */
+const HEADER_MERGE_PAIRS = {
+  salary_debit: { mate: 'salary_credit', label: 'Μισθός' },
+  other_debit: { mate: 'other_credit', label: 'Λοιπά' },
+  invoice_amount: { mate: 'invoice_credit', label: 'Τιμολόγιο' },
+}
+
+function loadCompactHeaders() {
+  try {
+    return localStorage.getItem(COMPACT_HEADERS_STORAGE_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+function persistCompactHeaders(on) {
+  try {
+    localStorage.setItem(COMPACT_HEADERS_STORAGE_KEY, on ? '1' : '0')
+  } catch {
+    // ignore
+  }
+}
+
+export function useLedgerCompactHeaders() {
+  const [compactHeaders, setCompactHeaders] = useState(loadCompactHeaders)
+  const toggleCompactHeaders = useCallback(() => {
+    setCompactHeaders((prev) => {
+      const next = !prev
+      persistCompactHeaders(next)
+      return next
+    })
+  }, [])
+  return { compactHeaders, toggleCompactHeaders }
+}
+
+/** Κουμπί ON/OFF συμπαγών headers ledger (Μισθός / Λοιπά / Τιμ). */
+export function LedgerCompactHeadersToggle({ compactHeaders, onToggle, className = '' }) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-pressed={compactHeaders}
+      aria-label={
+        compactHeaders
+          ? 'Ξεχωριστά headers Χρ. / Πιστ.'
+          : 'Ενοποίηση headers Μισθός / Λοιπά / Τιμολόγιο'
+      }
+      title={
+        compactHeaders
+          ? 'Συμπαγή headers — κλικ για Χρ. / Πιστ.'
+          : 'Χρ. / Πιστ. — κλικ για Μισθός · Λοιπά · Τιμολόγιο'
+      }
+      className={`inline-flex items-center gap-1.5 rounded-xl border px-2.5 py-1.5 text-[10px] font-semibold uppercase tracking-wide transition ${
+        compactHeaders
+          ? 'border-cyan-400/40 bg-cyan-500/15 text-cyan-100'
+          : 'border-white/10 bg-white/5 text-slate-400 hover:border-white/20 hover:text-slate-200'
+      } ${className}`}
+    >
+      <svg
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.75"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        className="h-3.5 w-3.5 shrink-0"
+        aria-hidden
+      >
+        {compactHeaders ? (
+          <>
+            <rect x="3" y="4" width="18" height="6" rx="1" />
+            <path d="M3 14h8M13 14h8M3 18h8M13 18h8" />
+          </>
+        ) : (
+          <>
+            <rect x="3" y="4" width="8" height="6" rx="1" />
+            <rect x="13" y="4" width="8" height="6" rx="1" />
+            <path d="M3 14h8M13 14h8M3 18h8M13 18h8" />
+          </>
+        )}
+      </svg>
+      {compactHeaders ? 'Μισθός · Λοιπά · Τιμ' : 'Χρ. / Πιστ.'}
+    </button>
+  )
+}
 
 const INVOICE_COLUMNS = [
   {
@@ -39,6 +145,14 @@ const INVOICE_COLUMNS = [
     id: 'invoice_credit',
     label: 'Τιμολόγιο Πιστ.',
     defaultWidth: 96,
+    minWidth: 52,
+    align: 'right',
+    group: 'invoice',
+  },
+  {
+    id: 'invoice_markup',
+    label: 'Προσ. 20%',
+    defaultWidth: 88,
     minWidth: 52,
     align: 'right',
     group: 'invoice',
@@ -92,18 +206,23 @@ const BASE_COLUMN_DEFS = [
   },
 ]
 
-function getColumnDefs(hasInvoice) {
+function getColumnDefs(hasInvoice, { showInvoiceMarkup = true } = {}) {
   if (!hasInvoice) return BASE_COLUMN_DEFS
+  const invoiceCols = showInvoiceMarkup
+    ? INVOICE_COLUMNS
+    : INVOICE_COLUMNS.filter((c) => c.id !== 'invoice_markup')
   const defs = []
   for (const col of BASE_COLUMN_DEFS) {
     defs.push(col)
-    if (col.id === 'other_credit') defs.push(...INVOICE_COLUMNS)
+    if (col.id === 'other_credit') defs.push(...invoiceCols)
   }
   return defs
 }
 
 function defaultColumnWidths(hasInvoice) {
-  return Object.fromEntries(getColumnDefs(hasInvoice).map((c) => [c.id, c.defaultWidth]))
+  return Object.fromEntries(
+    getColumnDefs(hasInvoice, { showInvoiceMarkup: true }).map((c) => [c.id, c.defaultWidth])
+  )
 }
 
 function loadColumnWidths(hasInvoice) {
@@ -136,7 +255,7 @@ function persistColumnWidths(widths) {
 }
 
 function widthFor(columnWidths, colId, hasInvoice) {
-  const col = getColumnDefs(hasInvoice).find((c) => c.id === colId)
+  const col = getColumnDefs(hasInvoice, { showInvoiceMarkup: true }).find((c) => c.id === colId)
   return columnWidths[colId] ?? col?.defaultWidth ?? 80
 }
 
@@ -182,13 +301,22 @@ export default function LedgerAnalysisGrid({
   showOtherBalance = true,
   footerBalances = null,
   invoiceGuideData = null,
+  compactHeaders = false,
   onSelectRow,
   onOpenCreateForType,
   onOpenEditRow,
 }) {
   // Strict: false/null/undefined → χωρίς στήλη τιμολογίου (header + cells μαζί)
   const showInvoice = hasInvoice === true || monthContext?.hasInvoice === true
-  const columnDefs = useMemo(() => getColumnDefs(showInvoice), [showInvoice])
+  // Έκτακτοι: χωρίς προσαύξηση φόρου — η στήλη ΠΡΟΣ. είναι άκυρη
+  const showInvoiceMarkup =
+    showInvoice &&
+    monthContext?.techIsTemporary !== true &&
+    monthContext?.simpleVatOnly !== true
+  const columnDefs = useMemo(
+    () => getColumnDefs(showInvoice, { showInvoiceMarkup }),
+    [showInvoice, showInvoiceMarkup]
+  )
   /** Ticket Restaurant μόνο στη Μήτρα — όχι στον πίνακα κινήσεων μήνα. */
   const visibleRows = useMemo(
     () => (rows || []).filter((row) => !isTicketRestaurantRow(row)),
@@ -197,6 +325,56 @@ export default function LedgerAnalysisGrid({
   const [columnWidths, setColumnWidths] = useState(() => loadColumnWidths(showInvoice))
   const scrollRef = useRef(null)
   const resizeRef = useRef(null)
+
+  /** Header units: single th ή group με colSpan (μόνο όταν compact). */
+  const headerUnits = useMemo(() => {
+    if (!compactHeaders) {
+      return columnDefs.map((col) => ({
+        key: col.id,
+        colSpan: 1,
+        col,
+        cols: [col],
+        labelKey: col.id,
+        resizeColId: col.id,
+        group: col.group,
+        align: col.align,
+      }))
+    }
+
+    const skip = new Set()
+    const units = []
+    for (const col of columnDefs) {
+      if (skip.has(col.id)) continue
+      const pair = HEADER_MERGE_PAIRS[col.id]
+      const mate = pair ? columnDefs.find((c) => c.id === pair.mate) : null
+      if (pair && mate) {
+        skip.add(mate.id)
+        units.push({
+          key: `group-${col.id}`,
+          colSpan: 2,
+          col,
+          cols: [col, mate],
+          labelKey: 'group',
+          groupLabel: pair.label,
+          resizeColId: mate.id,
+          group: col.group,
+          align: 'center',
+        })
+        continue
+      }
+      units.push({
+        key: col.id,
+        colSpan: 1,
+        col,
+        cols: [col],
+        labelKey: col.id,
+        resizeColId: col.id,
+        group: col.group,
+        align: col.align,
+      })
+    }
+    return units
+  }, [compactHeaders, columnDefs])
 
   useEffect(() => {
     setColumnWidths((prev) => {
@@ -210,8 +388,42 @@ export default function LedgerAnalysisGrid({
       summary: monthContext?.summary || null,
       earningsForm: monthContext?.earningsForm || null,
       hasInvoice: showInvoice,
+      invoiceGrossUp: monthContext?.invoiceGrossUp !== false,
+      taxPercent: monthContext?.taxPercent ?? 20,
+      techIsTemporary: monthContext?.techIsTemporary === true,
+      simpleVatOnly: monthContext?.simpleVatOnly === true,
     }),
     [monthContext, showInvoice]
+  )
+
+  const markupDisplayOpts = useMemo(
+    () => ({
+      invoiceGrossUp: monthContext?.invoiceGrossUp !== false,
+      taxPercent: monthContext?.taxPercent ?? 20,
+      techIsTemporary:
+        monthContext?.techIsTemporary === true || monthContext?.simpleVatOnly === true,
+    }),
+    [monthContext]
+  )
+
+  const invoiceHeaderLabel = useCallback(
+    (col) => {
+      if (col.id === 'invoice_markup') {
+        const pct = Number(monthContext?.taxPercent)
+        const n = Number.isFinite(pct) && pct > 0 ? pct : 20
+        return greekCapsLabel(`Προσ. ${n}%`)
+      }
+      return greekCapsLabel(col.label)
+    },
+    [monthContext?.taxPercent]
+  )
+
+  const headerUnitLabel = useCallback(
+    (unit) => {
+      if (unit.groupLabel) return greekCapsLabel(unit.groupLabel)
+      return invoiceHeaderLabel(unit.col)
+    },
+    [invoiceHeaderLabel]
   )
 
   const setAndPersistWidths = useCallback((updater) => {
@@ -286,13 +498,20 @@ export default function LedgerAnalysisGrid({
 
   const amountCellClass = (colId, bucket, row) => {
     const active = bucket === colId
+    // Compact: χωρίς κάθετη γραμμή ανάμεσα σε Χρ. και Πιστ. του ίδιου group
+    const hidePairSeam =
+      compactHeaders &&
+      (colId === 'salary_debit' || colId === 'other_debit' || colId === 'invoice_amount')
     const parts = [
-      'box-border border-r border-white/10 px-1.5 py-1.5 overflow-hidden text-right font-mono text-xs',
+      `box-border px-1.5 py-1.5 overflow-hidden text-right font-mono text-xs ${
+        hidePairSeam ? 'border-r-0' : 'border-r border-white/10'
+      }`,
     ]
     if (colId.includes('salary')) parts.push('bg-cyan-500/[0.07]')
     if (colId.includes('other')) parts.push('bg-violet-500/[0.07]')
-    if (colId.includes('invoice')) parts.push('bg-amber-500/[0.08] text-amber-100')
-    else if (colId.includes('credit')) parts.push('text-emerald-100')
+    if (colId.includes('invoice') || colId === 'invoice_markup') {
+      parts.push('bg-amber-500/[0.08] text-amber-100')
+    } else if (colId.includes('credit')) parts.push('text-emerald-100')
     else parts.push('text-slate-200')
     if (active) parts.push('font-semibold ring-1 ring-inset ring-amber-400/50')
     if (row.__template) parts.push('opacity-70')
@@ -397,6 +616,15 @@ export default function LedgerAnalysisGrid({
             >
               {renderCreditAmount(row, row.invoice_credit)}
             </td>
+            {showInvoiceMarkup ? (
+              <td
+                style={cellStyle('invoice_markup')}
+                className={amountCellClass('invoice_markup', bucket, row)}
+                title="Μικτή αξία με προσαύξηση (display-only)"
+              >
+                {renderInvoiceMarkupAmount(row, markupDisplayOpts)}
+              </td>
+            ) : null}
           </>
         ) : null}
         <td
@@ -432,41 +660,64 @@ export default function LedgerAnalysisGrid({
         </colgroup>
         <thead>
           <tr>
-            {columnDefs.map((col) => (
-              <th
-                key={col.id}
-                style={cellStyle(col.id)}
-                className={`${headerClass(col)} ${
-                  col.align === 'right'
-                    ? 'text-right'
-                    : col.align === 'center'
-                      ? 'text-center'
-                      : 'text-left'
-                }`}
-              >
-                <span className="block truncate pr-1 leading-tight" title={col.label}>
-                  {col.label}
-                </span>
-                <div
-                  role="separator"
-                  aria-orientation="vertical"
-                  aria-label={`Αλλαγή πλάτους στήλης ${col.label}`}
-                  onMouseDown={(e) => startResize(col.id, e)}
-                  className="absolute -right-px top-0 z-20 h-full w-[5px] cursor-col-resize touch-none hover:bg-cyan-400/40 active:bg-cyan-400/60"
-                />
-              </th>
-            ))}
+            {headerUnits.map((unit) => {
+              const label = headerUnitLabel(unit)
+              const widthSum = unit.cols.reduce(
+                (sum, c) => sum + (resolvedWidths[c.id] || 0),
+                0
+              )
+              return (
+                <th
+                  key={unit.key}
+                  colSpan={unit.colSpan}
+                  style={{
+                    width: widthSum,
+                    maxWidth: widthSum,
+                    minWidth: widthSum,
+                  }}
+                  className={`${headerClass(unit.col)} ${
+                    unit.align === 'right'
+                      ? 'text-right'
+                      : unit.align === 'center'
+                        ? 'text-center'
+                        : 'text-left'
+                  }`}
+                >
+                  <span className="block truncate pr-1 leading-tight" title={label}>
+                    {label}
+                  </span>
+                  <div
+                    role="separator"
+                    aria-orientation="vertical"
+                    aria-label={`Αλλαγή πλάτους στήλης ${label}`}
+                    onMouseDown={(e) => startResize(unit.resizeColId, e)}
+                    className="absolute -right-px top-0 z-20 h-full w-[5px] cursor-col-resize touch-none hover:bg-cyan-400/40 active:bg-cyan-400/60"
+                  />
+                </th>
+              )
+            })}
           </tr>
         </thead>
         <tbody>
           {loading && visibleRows.length === 0
             ? Array.from({ length: Math.max(skeletonCount, 6) }, (_, i) => (
                 <tr key={`loading-${i}`} className="h-9 border-b border-white/10">
-                  {columnDefs.map((col) => (
-                    <td key={col.id} style={cellStyle(col.id)} className="border-r border-white/10 px-1.5">
-                      &nbsp;
-                    </td>
-                  ))}
+                  {columnDefs.map((col) => {
+                    const hideSeam =
+                      compactHeaders &&
+                      (col.id === 'salary_debit' ||
+                        col.id === 'other_debit' ||
+                        col.id === 'invoice_amount')
+                    return (
+                      <td
+                        key={col.id}
+                        style={cellStyle(col.id)}
+                        className={`px-1.5 ${hideSeam ? 'border-r-0' : 'border-r border-white/10'}`}
+                      >
+                        &nbsp;
+                      </td>
+                    )
+                  })}
                 </tr>
               ))
             : visibleRows.length === 0
@@ -510,7 +761,7 @@ export default function LedgerAnalysisGrid({
               </td>
               {showInvoice ? (
                 <td
-                  colSpan={2}
+                  colSpan={showInvoiceMarkup ? 3 : 2}
                   className="box-border border-r border-white/10 px-2 py-3 align-middle"
                 >
                   <div className="flex flex-col items-center gap-3">

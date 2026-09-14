@@ -1,7 +1,7 @@
 /** tech_ledger_view helpers — Μηνιαία Ανάλυση καρτέλας */
 
 import { formatElNumber, parseElNumber } from './numberFormat'
-import { isLoanInstallmentRow } from './loanUi'
+import { isLoanDisbursementRow, isLoanInstallmentRow } from './loanUi'
 
 export function monthDateRange(year, month) {
   const y = Number(year)
@@ -47,6 +47,75 @@ function fmtLedgerNum(value, digits = 2) {
     minimumFractionDigits: digits,
     maximumFractionDigits: digits,
   })
+}
+
+function round2Money(n) {
+  return Math.round((Number(n) || 0) * 100) / 100
+}
+
+function fmtBreakdownEuro(n) {
+  return `${fmtLedgerNum(round2Money(n), 2)} €`
+}
+
+/**
+ * Μικτή ανάλυση τιμολογίου από καθαρό υπόλοιπο (ίδιο math με Οδηγό ΤΙΜ).
+ * @returns {{ net: number, gross: number, vat: number, tax: number, payable: number, taxPercent: number, factor: number }|null}
+ */
+export function computeInvoiceGrossBreakdown(netAmount, taxPercent = 20) {
+  const net = Number(netAmount) || 0
+  if (!(net > 0)) return null
+  const pct = Number(taxPercent)
+  const safePct = Number.isFinite(pct) && pct > 0 ? pct : 20
+  const factor = 1 - safePct / 100
+  if (!(factor > 0)) return null
+  const gross = round2Money(net / factor)
+  const vat = round2Money(gross * 0.24)
+  const tax = round2Money(gross * (safePct / 100))
+  const payable = round2Money(gross + vat - tax)
+  return { net, gross, vat, tax, payable, taxPercent: safePct, factor }
+}
+
+/** Πραγματική εξόφληση τιμολογίου (type 93) — ΟΧΙ δάνεια 94/95 ακόμα κι αν είναι σε invoice_credit. */
+export function isInvoiceSettlementCreditRow(row) {
+  if (!row || row.__template) return false
+  if (isLoanInstallmentRow(row) || isLoanDisbursementRow(row)) return false
+
+  const id = Number(row.type_id ?? row.ept_id ?? row.__type?.id)
+  if (id === 94 || id === 95) return false
+  if (id === 93) return true
+
+  const t = String(row.type || row.__type?.description || '')
+  if (t === 'SETTLEMENT' || /εξόφληση\s*τιμολογ/i.test(t)) {
+    return (Number(row.invoice_credit) || 0) > 0
+  }
+  return false
+}
+
+export function descriptionHasInvoiceBreakdown(description) {
+  const s = String(description || '')
+  return /Αξία:\s*/i.test(s) && /Πληρωτέο:\s*/i.test(s)
+}
+
+/**
+ * Display/save string: Αξία | ΦΠΑ | Παρ | Πληρωτέο
+ */
+export function buildInvoiceBreakdownString(netAmount, taxPercent = 20) {
+  const b = computeInvoiceGrossBreakdown(netAmount, taxPercent)
+  if (!b) return ''
+  return `Αξία: ${fmtBreakdownEuro(b.gross)} | ΦΠΑ: ${fmtBreakdownEuro(b.vat)} | Παρ: ${fmtBreakdownEuro(b.tax)} | Πληρωτέο: ${fmtBreakdownEuro(b.payable)}`
+}
+
+/** Αν δεν υπάρχει ήδη breakdown · κενό → αυτούσιο · αλλιώς append σε παρένθεση. */
+export function mergeInvoiceBreakdownDescription(existingDescription, netAmount, taxPercent = 20) {
+  const breakdown = buildInvoiceBreakdownString(netAmount, taxPercent)
+  if (!breakdown) {
+    const raw = String(existingDescription || '').trim()
+    return raw && !isBareEuroText(raw) ? raw : null
+  }
+  const raw = String(existingDescription || '').trim()
+  if (!raw || isBareEuroText(raw)) return breakdown
+  if (descriptionHasInvoiceBreakdown(raw)) return raw
+  return `${raw} (${breakdown})`
 }
 
 function earningsAmount(earningsForm, prefix) {
@@ -161,6 +230,7 @@ export function formatLedgerImportAt(value) {
 /**
  * Περιγραφή στο grid: μόνο ποιοτικά (τύπος ώρες×τιμή ή ελεύθερο κείμενο).
  * Σκέτα ποσά € αποκλείονται — πάνε στις 4 λογιστικές στήλες.
+ * Fallback: εξόφληση ΤΙΜ χωρίς description → ανάλυση Αξία/ΦΠΑ/Παρ/Πληρωτέο (display-only).
  */
 export function ledgerDescriptionForRow(row, context = {}) {
   if (!row) return ''
@@ -173,8 +243,23 @@ export function ledgerDescriptionForRow(row, context = {}) {
   }
 
   const fromDb = String(row.description || '').trim()
-  if (fromDb && !isBareEuroText(fromDb)) return fromDb
-  return ''
+  const usableDb = fromDb && !isBareEuroText(fromDb) ? fromDb : ''
+
+  const allowBreakdown =
+    context.invoiceGrossUp !== false &&
+    context.techIsTemporary !== true &&
+    context.simpleVatOnly !== true &&
+    isInvoiceSettlementCreditRow(row)
+
+  if (allowBreakdown && !descriptionHasInvoiceBreakdown(usableDb)) {
+    const net = Number(row.invoice_credit) || 0
+    const breakdown = buildInvoiceBreakdownString(net, context.taxPercent ?? 20)
+    if (breakdown) {
+      return usableDb ? `${usableDb} (${breakdown})` : breakdown
+    }
+  }
+
+  return usableDb
 }
 
 /** Ποσό από τις ledger στήλες (μη μηδενική, συμπεριλαμβανομένων αρνητικών). */
@@ -332,13 +417,17 @@ function payrollRowMonthYear(payroll) {
  * Γραμμή «Δάνειο»: πληροφοριακό άθροισμα δόσεων 94 (όλες οι κατηγορίες) · δεν αλλάζει Σ/Π/Υ.
  * Ticket: γραμμή μήτρας από payrolls · Σ της μήτρας το συμπεριλαμβάνει (εξαίρεση) ·
  * Π/Υ και computeLedgerBalances μένουν χωρίς Ticket.
+ * Fallback: αν δεν υπάρχει payrolls.ticket για μήνα με PAYROLL ledger (π.χ. μετά Δημιουργία),
+ * δείχνει tech_earnings.ticket_amount — μόνο εμφάνιση, χωρίς εγγραφή στο payrolls.
  *
  * @param {object[]} ledgerRows
  * @param {number} year
  * @param {object[]} yearPayrolls — εγγραφές payrolls (ήδη φιλτραρισμένες ή όχι) για Ticket
+ * @param {{ earningsTicketAmount?: number }} [options]
  */
-export function buildLedgerYearMatrix(ledgerRows = [], year, yearPayrolls = []) {
+export function buildLedgerYearMatrix(ledgerRows = [], year, yearPayrolls = [], options = {}) {
   const y = Number(year)
+  const earningsTicket = Math.round((Number(options?.earningsTicketAmount) || 0) * 100) / 100
   const months = Array.from({ length: 12 }, (_, i) => ({
     month: i + 1,
     sigma: 0,
@@ -358,6 +447,9 @@ export function buildLedgerYearMatrix(ledgerRows = [], year, yearPayrolls = []) 
     loanInstallmentsCredit: 0,
   }))
 
+  /** Μήνες με payroll ledger (Δημιουργία / αποδοχές) — όχι payments-only. */
+  const monthsWithPayrollLedger = new Set()
+
   for (const row of ledgerRows || []) {
     const { year: yy, month: mm } = ledgerRowPeriod(row)
     if (yy !== y || mm < 1 || mm > 12) continue
@@ -365,6 +457,10 @@ export function buildLedgerYearMatrix(ledgerRows = [], year, yearPayrolls = []) 
 
     // Ticket μόνο από payrolls — ledger ticket rows δεν μετράνε στη μήτρα
     if (isTicketRestaurantRow(row)) continue
+
+    if (String(row.source || '').toUpperCase() === 'PAYROLL') {
+      monthsWithPayrollLedger.add(mm)
+    }
 
     const sd = Number(row.salary_debit) || 0
     const sc = Number(row.salary_credit) || 0
@@ -398,7 +494,12 @@ export function buildLedgerYearMatrix(ledgerRows = [], year, yearPayrolls = []) 
     const ticketVals = monthPayrolls.map(
       (p) => Number(p.ticket_restaurant) || Number(p.ticket_amount) || 0
     )
-    slot.ticket = round2(ticketVals.length ? Math.max(...ticketVals) : 0)
+    let ticket = round2(ticketVals.length ? Math.max(...ticketVals) : 0)
+    // Μετά Δημιουργία, πριν Οριστική Αποθήκευση ERP: δείξε Ticket από Αποδοχές
+    if (!(ticket > 0) && earningsTicket > 0 && monthsWithPayrollLedger.has(slot.month)) {
+      ticket = earningsTicket
+    }
+    slot.ticket = ticket
     slot.loan = round2(slot.loanInstallmentsCredit || 0)
 
     // Σ μήτρας = ledger χρεώσεις + Ticket (εξαίρεση) · Π/Υ χωρίς Ticket

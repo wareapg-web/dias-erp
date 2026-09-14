@@ -95,7 +95,9 @@ import {
   saveSidebarWidth,
   PERSONNEL_SIDEBAR_WIDTH_KEY,
 } from '../lib/modalSize'
-import LedgerAnalysisGrid from './LedgerAnalysisGrid'
+import LedgerAnalysisGrid, {
+  LedgerCompactHeadersToggle,
+} from './LedgerAnalysisGrid'
 import DarkSelect from './DarkSelect'
 
 const MATRIX_BALANCES_STORAGE_KEY = 'dias_show_matrix_balances'
@@ -126,6 +128,8 @@ export default function TechAnalysisModal({
   onSaveToErp,
   embedded = false,
   payrolls = [],
+  ledgerCompactHeaders = false,
+  onToggleLedgerCompactHeaders,
 }) {
   const [analysisYear, setAnalysisYear] = useState(initialYear)
   const [selectedMonth, setSelectedMonth] = useState(initialMonth)
@@ -865,8 +869,10 @@ export default function TechAnalysisModal({
       return Number(p.year) === Number(analysisYear)
     })
 
-    return buildLedgerYearMatrix(yearLedgerRows, analysisYear, yearPayrolls)
-  }, [tech, analysisYear, yearLedgerRows, payrolls])
+    return buildLedgerYearMatrix(yearLedgerRows, analysisYear, yearPayrolls, {
+      earningsTicketAmount: parseElNumber(earningsForm?.ticket_amount) || 0,
+    })
+  }, [tech, analysisYear, yearLedgerRows, payrolls, earningsForm?.ticket_amount])
 
   /** Σύνολο εκταμιεύσεων δανείου (τύπος 95) για το επιλεγμένο έτος. */
   const yearLoanDisbursementsTotal = useMemo(() => {
@@ -1008,15 +1014,32 @@ export default function TechAnalysisModal({
     }
   }
 
-  const ledgerMonthContext = useMemo(
-    () => ({
+  const ledgerMonthContext = useMemo(() => {
+    const temporary = isTemporaryPersonnel(tech)
+    const terms = resolveInvoiceTermsForMonth(
+      agreementVersions,
+      analysisYear,
+      selectedMonth,
+      earningsForm
+    )
+    return {
       summary: selectedSummary || null,
       earningsForm,
       // Στήλη τιμολογίου από master personnel.payment_method === 'invoice'
       hasInvoice: personnelIssuesInvoice(tech),
-    }),
-    [selectedSummary, earningsForm, tech]
-  )
+      invoiceGrossUp: terms.invoiceGrossUp,
+      taxPercent: terms.taxPercent,
+      techIsTemporary: temporary,
+      simpleVatOnly: temporary,
+    }
+  }, [
+    selectedSummary,
+    earningsForm,
+    tech,
+    agreementVersions,
+    analysisYear,
+    selectedMonth,
+  ])
 
   const ledgerDisplayRows = useMemo(
     () =>
@@ -1063,7 +1086,6 @@ export default function TechAnalysisModal({
         action: handleDeleteLedgerEntry,
         disabled: !selectedLedgerRowKey,
       },
-      { label: 'ΠΛΗΡΩΜΗ', tab: 'payments' },
     ]
     if (policy.allowSalary) {
       items.push({
@@ -1611,15 +1633,23 @@ export default function TechAnalysisModal({
               Οικονομικά Στοιχεία Προσωπικού
             </h2>
           </div>
-          {onClose && (
-            <button
-              type="button"
-              onClick={onClose}
-              className="rounded-xl border border-rose-500/40 bg-rose-500/20 px-3 py-1.5 text-sm font-semibold text-rose-100 transition hover:bg-rose-500/30"
-            >
-              Έξοδος
-            </button>
-          )}
+          <div className="flex items-center gap-2">
+            {typeof onToggleLedgerCompactHeaders === 'function' ? (
+              <LedgerCompactHeadersToggle
+                compactHeaders={ledgerCompactHeaders}
+                onToggle={onToggleLedgerCompactHeaders}
+              />
+            ) : null}
+            {onClose && (
+              <button
+                type="button"
+                onClick={onClose}
+                className="rounded-xl border border-rose-500/40 bg-rose-500/20 px-3 py-1.5 text-sm font-semibold text-rose-100 transition hover:bg-rose-500/30"
+              >
+                Έξοδος
+              </button>
+            )}
+          </div>
         </div>
       )}
 
@@ -2188,6 +2218,7 @@ export default function TechAnalysisModal({
                   hasInvoice={ledgerMonthContext.hasInvoice}
                   showSalaryBalance={ledgerCategoryPolicy.allowSalary}
                   showOtherBalance={ledgerCategoryPolicy.allowOther}
+                  compactHeaders={ledgerCompactHeaders}
                   footerBalances={{
                     balance: formatEuro(ledgerBalances.balance),
                     balance1: formatEuro(ledgerBalances.balance1),
@@ -2243,8 +2274,7 @@ export default function TechAnalysisModal({
                     disabled={item.disabled}
                     title={item.title}
                     onClick={() => {
-                      if (item.tab === 'payments') setActiveTab('payments')
-                      else if (typeof item.action === 'function') item.action()
+                      if (typeof item.action === 'function') item.action()
                       else if (item.typeId) {
                         if (item.amount == null && (item.typeId === 91 || item.typeId === 92 || item.typeId === 93)) {
                           toast.error(item.title || 'Δεν υπάρχει υπόλοιπο για εξόφληση')
@@ -2293,6 +2323,9 @@ export default function TechAnalysisModal({
               presetMonth={selectedMonth}
               presetYear={analysisYear}
               hasInvoice={ledgerMonthContext.hasInvoice}
+              invoiceGrossUp={invoiceTermsForSelectedMonth.invoiceGrossUp}
+              taxPercent={invoiceTermsForSelectedMonth.taxPercent}
+              techIsTemporary={techIsTemporary}
               onClose={closeMovement}
               onSaved={handleMovementSaved}
             />
@@ -2967,11 +3000,9 @@ export default function TechAnalysisModal({
     <>
       {agreementEditorOpen ? (
         <div className="fixed inset-0 z-[80] flex items-center justify-center p-3 sm:p-6">
-          <button
-            type="button"
-            aria-label="Κλείσιμο"
+          <div
             className="absolute inset-0 bg-slate-950/60"
-            onClick={() => !agreementsSaving && setAgreementEditorOpen(false)}
+            aria-hidden
           />
           <div className="relative z-10 flex max-h-[92vh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl border border-white/10 bg-slate-950 shadow-2xl">
             <div className="flex shrink-0 flex-wrap items-end justify-between gap-3 border-b border-white/10 px-4 py-3">
@@ -3040,11 +3071,9 @@ export default function TechAnalysisModal({
 
       {agreementViewOpen && agreementViewRow ? (
         <div className="fixed inset-0 z-[80] flex items-center justify-center p-3 sm:p-6">
-          <button
-            type="button"
-            aria-label="Κλείσιμο"
+          <div
             className="absolute inset-0 bg-slate-950/60"
-            onClick={() => setAgreementViewOpen(false)}
+            aria-hidden
           />
           <div className="relative z-10 flex max-h-[92vh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl border border-white/10 bg-slate-950 shadow-2xl">
             <div className="flex shrink-0 items-center justify-between gap-3 border-b border-white/10 px-4 py-3">
@@ -3094,12 +3123,9 @@ export default function TechAnalysisModal({
 
       {ledgerDeleteOpen ? (
         <div className="fixed inset-0 z-[80] flex items-center justify-center p-4">
-          <button
-            type="button"
+          <div
             className="absolute inset-0 bg-slate-950/25 backdrop-blur-none"
-            aria-label="Κλείσιμο"
-            onClick={() => !ledgerDeleting && setLedgerDeleteOpen(false)}
-            disabled={ledgerDeleting}
+            aria-hidden
           />
           <div
             role="dialog"
@@ -3183,11 +3209,9 @@ export default function TechAnalysisModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6">
-      <button
-        type="button"
-        aria-label="Κλείσιμο"
+      <div
         className="absolute inset-0 bg-slate-950/20 backdrop-blur-none"
-        onClick={onClose}
+        aria-hidden
       />
       <div
         className="relative flex max-h-[94vh] w-full max-w-[1920px] flex-col overflow-hidden rounded-2xl border border-white/10 bg-gradient-to-br from-slate-950 via-slate-900 to-indigo-950 shadow-2xl"
