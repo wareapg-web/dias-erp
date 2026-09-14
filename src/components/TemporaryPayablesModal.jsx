@@ -106,6 +106,7 @@ export default function TemporaryPayablesModal({
   personnel = [],
   onClose,
   onSelectPerson,
+  onSettlePerson,
 }) {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
@@ -214,29 +215,16 @@ export default function TemporaryPayablesModal({
                   <th className="px-2 py-2 font-semibold">Όνομα</th>
                   <th className="px-2 py-2 font-semibold">Τρόπος</th>
                   <th className="px-2 py-2 text-right font-semibold">Υπόλοιπο</th>
+                  <th className="px-2 py-2 text-right font-semibold">Ενέργεια</th>
                 </tr>
               </thead>
               <tbody>
                 {rows.map((row) => (
                   <tr
                     key={row.person.id || row.person.tech_id}
-                    role="button"
-                    tabIndex={0}
-                    onClick={() => {
-                      onSelectPerson?.(row.person)
-                      onClose?.()
-                    }}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' || e.key === ' ') {
-                        e.preventDefault()
-                        onSelectPerson?.(row.person)
-                        onClose?.()
-                      }
-                    }}
-                    className={`cursor-pointer border-b border-white/5 transition hover:bg-cyan-500/10 ${
+                    className={`border-b border-white/5 ${
                       row.amount > 0.005 ? 'text-slate-100' : 'text-slate-500'
                     }`}
-                    title="Άνοιγμα καρτέλας για εξόφληση"
                   >
                     <td className="px-2 py-2.5 font-semibold">{row.name}</td>
                     <td className="px-2 py-2.5">
@@ -253,12 +241,49 @@ export default function TemporaryPayablesModal({
                     <td className="px-2 py-2.5 text-right font-mono tabular-nums">
                       {formatEuro(row.amount)}
                     </td>
+                    <td className="px-2 py-2.5 text-right">
+                      <div className="flex flex-wrap items-center justify-end gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const ok = onSelectPerson?.(row.person)
+                            if (ok !== false) onClose?.()
+                          }}
+                          className="rounded-lg border border-white/10 bg-white/5 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-200 hover:bg-white/10"
+                        >
+                          Καρτέλα
+                        </button>
+                        <button
+                          type="button"
+                          disabled={!(row.amount > 0.005)}
+                          title={
+                            row.amount > 0.005
+                              ? 'Άνοιγμα εξόφλησης με το υπόλοιπο'
+                              : 'Δεν υπάρχει υπόλοιπο'
+                          }
+                          onClick={() => {
+                            if (typeof onSettlePerson === 'function') {
+                              onSettlePerson(row.person, {
+                                invoice: row.invoice,
+                                amount: row.amount,
+                              })
+                            } else {
+                              onSelectPerson?.(row.person)
+                              onClose?.()
+                            }
+                          }}
+                          className="rounded-lg border border-emerald-500/40 bg-emerald-500/15 px-2 py-1 text-[10px] font-bold uppercase tracking-wide text-emerald-100 transition hover:bg-emerald-500/25 disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          Εξόφληση
+                        </button>
+                      </div>
+                    </td>
                   </tr>
                 ))}
               </tbody>
               <tfoot>
                 <tr className="border-t border-white/15 bg-slate-950/50">
-                  <td colSpan={2} className="px-2 py-2.5 text-xs font-semibold uppercase tracking-wide text-amber-200/80">
+                  <td colSpan={3} className="px-2 py-2.5 text-xs font-semibold uppercase tracking-wide text-amber-200/80">
                     Σύνολο τιμολογίων
                   </td>
                   <td className="px-2 py-2.5 text-right font-mono text-sm font-bold tabular-nums text-amber-100">
@@ -266,7 +291,7 @@ export default function TemporaryPayablesModal({
                   </td>
                 </tr>
                 <tr className="bg-slate-950/50">
-                  <td colSpan={2} className="px-2 py-2.5 text-xs font-semibold uppercase tracking-wide text-slate-400">
+                  <td colSpan={3} className="px-2 py-2.5 text-xs font-semibold uppercase tracking-wide text-slate-400">
                     Σύνολο μετρητών
                   </td>
                   <td className="px-2 py-2.5 text-right font-mono text-sm font-bold tabular-nums text-slate-100">
@@ -274,7 +299,7 @@ export default function TemporaryPayablesModal({
                   </td>
                 </tr>
                 <tr className="border-t border-white/10 bg-slate-950/70">
-                  <td colSpan={2} className="px-2 py-3 text-xs font-semibold uppercase tracking-wide text-cyan-300/80">
+                  <td colSpan={3} className="px-2 py-3 text-xs font-semibold uppercase tracking-wide text-cyan-300/80">
                     Γενικό σύνολο
                   </td>
                   <td className="px-2 py-3 text-right font-mono text-sm font-bold tabular-nums text-cyan-100">

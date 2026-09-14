@@ -13,6 +13,7 @@ import {
   isFixedExpense,
 } from '../lib/techEarnings'
 import { fromElInputValue, toElInputDisplay } from '../lib/numberFormat'
+import { greekCapsLabel } from '../lib/greekDate'
 
 export default function EarningsPackageForm({
   form,
@@ -40,20 +41,24 @@ export default function EarningsPackageForm({
               <tr className="border-b border-white/10 bg-slate-950/60 text-[10px] uppercase tracking-wider text-slate-400">
                 <th
                   className="w-14 px-2 py-2.5 text-center font-semibold"
-                  title="Βασικό/στάνταρ μηνιαίο έξοδο (τικ) · μεταβλητό (κενό)"
+                  title="Σταθερό/στάνταρ μηνιαίο έξοδο (τικ) · μεταβλητό (κενό)"
                 >
-                  Βασικό
+                  {greekCapsLabel('Σταθερό')}
                 </th>
-                <th className="px-4 py-2.5 font-semibold">Τύπος</th>
+                <th className="px-4 py-2.5 font-semibold">{greekCapsLabel('Τύπος')}</th>
                 <th
                   className="w-16 px-1 py-2.5 text-center font-semibold text-cyan-400/90"
                   title="Συμπερίληψη στη Δημιουργία μήνα"
                 >
-                  Δημιουργία
+                  {greekCapsLabel('Δημιουργία')}
                 </th>
-                <th className="px-3 py-2.5 text-right font-semibold">Ποσό</th>
-                <th className="px-3 py-2.5 text-right font-semibold">&gt; από</th>
-                <th className="px-3 py-2.5 text-right font-semibold">Ελάχιστο</th>
+                <th className="px-3 py-2.5 text-right font-semibold">{greekCapsLabel('Ποσό')}</th>
+                <th className="px-3 py-2.5 text-right font-semibold">
+                  {greekCapsLabel('> από')}
+                </th>
+                <th className="px-3 py-2.5 text-right font-semibold">
+                  {greekCapsLabel('Ελάχιστο')}
+                </th>
               </tr>
             </thead>
             <tbody>
@@ -73,7 +78,7 @@ export default function EarningsPackageForm({
                         checked={fixedOn}
                         disabled={checksDisabled}
                         amber
-                        title={fixedOn ? 'Βασικό/στάνταρ μηνιαίο έξοδο' : 'Μεταβλητό έξοδο'}
+                        title={fixedOn ? 'Σταθερό/στάνταρ μηνιαίο έξοδο' : 'Μεταβλητό έξοδο'}
                         onChange={(checked) => onPatchFixedExpense?.(def.key, checked)}
                       />
                     </td>
@@ -122,7 +127,7 @@ export default function EarningsPackageForm({
                         checked={fixedOn}
                         disabled={checksDisabled}
                         amber
-                        title={fixedOn ? 'Βασικό/στάνταρ μηνιαίο έξοδο' : 'Μεταβλητό έξοδο'}
+                        title={fixedOn ? 'Σταθερό/στάνταρ μηνιαίο έξοδο' : 'Μεταβλητό έξοδο'}
                         onChange={(checked) => onPatchFixedExpense?.(def.key, checked)}
                       />
                     </td>
@@ -166,7 +171,7 @@ export default function EarningsPackageForm({
                         checked={fixedOn}
                         disabled={checksDisabled}
                         amber
-                        title={fixedOn ? 'Βασικό/στάνταρ μηνιαίο έξοδο' : 'Μεταβλητό έξοδο'}
+                        title={fixedOn ? 'Σταθερό/στάνταρ μηνιαίο έξοδο' : 'Μεταβλητό έξοδο'}
                         onChange={(checked) => onPatchFixedExpense?.(def.key, checked)}
                       />
                     </td>
@@ -199,12 +204,12 @@ export default function EarningsPackageForm({
         <div className="flex w-full shrink-0 flex-col gap-3 lg:w-72">
           <div className="rounded-2xl border border-white/10 bg-slate-900/75 p-4 shadow-xl backdrop-blur-md">
             <p className="mb-3 text-[11px] font-bold uppercase tracking-[0.18em] text-cyan-300">
-              Στοιχεία
+              {greekCapsLabel('Στοιχεία')}
             </p>
             <div className="space-y-3">
               <div>
                 <label className="text-[11px] font-bold uppercase tracking-wider text-slate-200">
-                  Αρ. Λογαριασμού
+                  {greekCapsLabel('Αρ. Λογαριασμού')}
                 </label>
                 <input
                   type="text"
@@ -217,7 +222,7 @@ export default function EarningsPackageForm({
               </div>
               <div>
                 <label className="text-[11px] font-bold uppercase tracking-wider text-slate-200">
-                  Τράπεζα
+                  {greekCapsLabel('Τράπεζα')}
                 </label>
                 <input
                   type="text"
@@ -233,7 +238,7 @@ export default function EarningsPackageForm({
 
           <div className="rounded-2xl border border-white/10 bg-slate-900/75 p-4 shadow-xl backdrop-blur-md">
             <p className="mb-3 text-[11px] font-bold uppercase tracking-[0.18em] text-cyan-300">
-              Παραστατικό
+              {greekCapsLabel('Παραστατικό')}
             </p>
             <p
               className={
@@ -248,7 +253,7 @@ export default function EarningsPackageForm({
               <div className="mt-3 space-y-3">
                 <div className="flex items-center gap-2">
                   <label className="shrink-0 text-[11px] font-bold uppercase tracking-wider text-slate-200">
-                    Παρακράτηση Φόρου (%)
+                    {greekCapsLabel('Παρακράτηση Φόρου (%)')}
                   </label>
                   <input
                     type="text"
@@ -271,7 +276,7 @@ export default function EarningsPackageForm({
                     className="mt-0.5 h-4 w-4 rounded border-white/20 bg-slate-900 text-cyan-500 focus:ring-cyan-500/40 disabled:opacity-100"
                   />
                   <span className="text-sm font-semibold leading-snug text-white">
-                    Εφαρμογή Προσαύξησης 20% (/0.8)
+                    Εφαρμογή Προσαύξησης 20%
                     <span className="mt-0.5 block text-[11px] font-medium text-slate-300">
                       Αν απενεργοποιηθεί, η Αξία Τιμολογίου = Υπόλοιπο (ΤΙΜ)
                     </span>
