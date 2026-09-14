@@ -110,7 +110,7 @@ function isFixedForTech(settingsByTech, techId, earningsKey) {
 }
 
 /**
- * Ομαδοποίηση χρεώσεων μήνα ανά τεχνικό · Μισθός/Λοιπά/ΤΙΜ + Βασικά/Μεταβλητά.
+ * Ομαδοποίηση χρεώσεων μήνα ανά τεχνικό · Μισθός/Λοιπά/ΤΙΜ + Σταθερά/Μεταβλητά.
  * @returns {Array<{
  *   techId: string,
  *   name: string,
@@ -231,7 +231,7 @@ export async function exportMonthPayrollToExcel({ month, year, personnel = [] })
     'Χρέωση Μισθού (€)',
     'Χρέωση Λοιπών (€)',
     'Χρέωση Τιμολογίου (€)',
-    'Βασικά (€)',
+    'Σταθερά (€)',
     'Μεταβλητά (€)',
     'Ticket Restaurant (€)',
     'Συνολικό Πληρωτέο (€)',

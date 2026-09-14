@@ -4,6 +4,7 @@ import { diasClient, formatSupabaseError } from '../lib/supabase'
 import { movementFormFromRow, parseMovementAmount, extractLedgerAmount, isBareEuroText, normalizeEntryDate, mergeInvoiceBreakdownDescription } from '../lib/techLedger'
 import { fromElInputValue, parseElNumber, toElInputDisplay } from '../lib/numberFormat'
 import { formatEuro } from '../lib/payrollAnalysis'
+import { parseToIsoDate, greekCapsLabel } from '../lib/greekDate'
 import {
   HIDDEN_LEDGER_TYPE_IDS,
   OTHER_CREDIT_IDS,
@@ -27,7 +28,6 @@ import {
 } from '../lib/transactionTypes'
 import DarkSelect from './DarkSelect'
 import GreekDateInput from './GreekDateInput'
-import { parseToIsoDate, greekCapsLabel } from '../lib/greekDate'
 import { useDraggableModal, MODAL_POS_KEYS } from '../lib/useDraggableModal'
 import { getLedgerCategoryPolicy } from '../lib/personnel'
 import {
@@ -38,6 +38,18 @@ import {
 } from '../lib/loanUi'
 
 const INVOICE_CREDIT_TYPE_ID = 93
+
+/** Εμφάνιση ποσού · 0,00 € μόνο όταν ΔΕΝ είναι focused (ώστε να μην «κολλάει» στο σβήσιμο). */
+function amountFieldDisplay(stored, focused) {
+  const d = toElInputDisplay(stored)
+  if (focused) return d
+  if (d === '' || d == null) return '0,00 €'
+  return d
+}
+
+function sanitizeAmountRaw(raw) {
+  return fromElInputValue(String(raw ?? '').replace(/€/gi, ''))
+}
 
 function round2(n) {
   return Math.round((Number(n) || 0) * 100) / 100
@@ -251,6 +263,8 @@ export default function MovementModal({
   const [form, setForm] = useState(() => movementFormFromRow(null))
   /** UI-only · μικτή αξία τιμολογίου · δεν αποθηκεύεται. */
   const [grossAmountDisplay, setGrossAmountDisplay] = useState('')
+  const [netAmountFocused, setNetAmountFocused] = useState(false)
+  const [grossAmountFocused, setGrossAmountFocused] = useState(false)
   const [types, setTypes] = useState([])
   const [typesLoading, setTypesLoading] = useState(false)
   const [typesError, setTypesError] = useState(null)
@@ -568,7 +582,7 @@ export default function MovementModal({
   const patch = (field, value) => setForm((prev) => ({ ...prev, [field]: value }))
 
   const patchNetAmount = (raw) => {
-    const next = fromElInputValue(raw)
+    const next = sanitizeAmountRaw(raw)
     patch('amount', next)
     if (!showInvoiceGrossDual) return
     const n = parseElNumber(next)
@@ -580,7 +594,7 @@ export default function MovementModal({
   }
 
   const patchGrossAmount = (raw) => {
-    const next = fromElInputValue(raw)
+    const next = sanitizeAmountRaw(raw)
     setGrossAmountDisplay(next)
     const g = parseElNumber(next)
     if (g == null) {
@@ -1091,17 +1105,23 @@ export default function MovementModal({
 
             {showInvoiceGrossDual ? (
               <div className="space-y-3">
-                <div>
-                  <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                <div className="rounded-xl border border-cyan-400/30 bg-cyan-500/[0.07] px-2.5 py-2">
+                  <label className="text-xs font-bold uppercase tracking-wider text-cyan-100">
                     {greekCapsLabel('Καθαρό Ποσό (Βάση Ledger)')}
                   </label>
                   <input
                     type="text"
                     inputMode="decimal"
                     autoComplete="off"
-                    value={toElInputDisplay(form.amount)}
+                    value={amountFieldDisplay(form.amount, netAmountFocused)}
                     onChange={(e) => patchNetAmount(e.target.value)}
-                    className="mt-1 w-full rounded-xl border border-white/10 bg-slate-950/60 px-3 py-2 font-mono text-sm text-slate-200"
+                    onFocus={(e) => {
+                      setNetAmountFocused(true)
+                      const n = parseElNumber(sanitizeAmountRaw(e.target.value))
+                      if (n == null || n === 0) e.target.select()
+                    }}
+                    onBlur={() => setNetAmountFocused(false)}
+                    className="mt-1 w-full rounded-lg border border-cyan-400/35 bg-slate-950/70 px-3 py-2.5 font-mono text-lg font-bold tabular-nums text-white outline-none focus:border-cyan-300/55 focus:ring-1 focus:ring-cyan-400/20"
                   />
                 </div>
                 <div>
@@ -1113,16 +1133,16 @@ export default function MovementModal({
                     inputMode="decimal"
                     autoComplete="off"
                     required
-                    value={toElInputDisplay(grossAmountDisplay)}
+                    value={amountFieldDisplay(grossAmountDisplay, grossAmountFocused)}
                     onChange={(e) => patchGrossAmount(e.target.value)}
+                    onFocus={(e) => {
+                      setGrossAmountFocused(true)
+                      const n = parseElNumber(sanitizeAmountRaw(e.target.value))
+                      if (n == null || n === 0) e.target.select()
+                    }}
+                    onBlur={() => setGrossAmountFocused(false)}
                     className="mt-1 w-full rounded-xl border border-amber-500/35 bg-amber-500/10 px-3 py-2 font-mono text-sm font-semibold text-amber-50"
                   />
-                  <p className="mt-1 text-[10px] text-amber-200/50">
-                    /{grossUpFactor.toLocaleString('el-GR', {
-                      minimumFractionDigits: 1,
-                      maximumFractionDigits: 2,
-                    })}
-                  </p>
                 </div>
                 {(() => {
                   const grossN =
@@ -1162,8 +1182,8 @@ export default function MovementModal({
                 })()}
               </div>
             ) : (
-              <div>
-                <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+              <div className="rounded-xl border border-cyan-400/30 bg-cyan-500/[0.07] px-2.5 py-2">
+                <label className="text-xs font-bold uppercase tracking-wider text-cyan-100">
                   {greekCapsLabel('Ποσό (€)')}
                 </label>
                 <input
@@ -1171,9 +1191,15 @@ export default function MovementModal({
                   inputMode="decimal"
                   autoComplete="off"
                   required
-                  value={toElInputDisplay(form.amount)}
+                  value={amountFieldDisplay(form.amount, netAmountFocused)}
                   onChange={(e) => patchNetAmount(e.target.value)}
-                  className="mt-1 w-full rounded-xl border border-white/10 bg-slate-950/60 px-3 py-2 font-mono text-sm text-white"
+                  onFocus={(e) => {
+                    setNetAmountFocused(true)
+                    const n = parseElNumber(sanitizeAmountRaw(e.target.value))
+                    if (n == null || n === 0) e.target.select()
+                  }}
+                  onBlur={() => setNetAmountFocused(false)}
+                  className="mt-1 w-full rounded-lg border border-cyan-400/35 bg-slate-950/70 px-3 py-2.5 font-mono text-lg font-bold tabular-nums text-white outline-none focus:border-cyan-300/55 focus:ring-1 focus:ring-cyan-400/20"
                 />
               </div>
             )}

@@ -415,8 +415,8 @@ function payrollRowMonthYear(payroll) {
  * Ετήσια μήτρα: Σ/Π/Υ από tech_ledger_view · Ticket από payrolls (hybrid).
  * Type 94: μετράει στα Υ (λογιστική κράτηση) · εξαιρείται από το Π (όχι cash-out).
  * Γραμμή «Δάνειο»: πληροφοριακό άθροισμα δόσεων 94 (όλες οι κατηγορίες) · δεν αλλάζει Σ/Π/Υ.
- * Ticket: γραμμή μήτρας από payrolls · Σ της μήτρας το συμπεριλαμβάνει (εξαίρεση) ·
- * Π/Υ και computeLedgerBalances μένουν χωρίς Ticket.
+ * Ticket: γραμμή μήτρας από payrolls (ή fallback Αποδοχές μετά Δημιουργία) ·
+ * μόνο display · ΔΕΝ μπαίνει στο Σ · Π/Υ και computeLedgerBalances χωρίς Ticket.
  * Fallback: αν δεν υπάρχει payrolls.ticket για μήνα με PAYROLL ledger (π.χ. μετά Δημιουργία),
  * δείχνει tech_earnings.ticket_amount — μόνο εμφάνιση, χωρίς εγγραφή στο payrolls.
  *
@@ -502,10 +502,8 @@ export function buildLedgerYearMatrix(ledgerRows = [], year, yearPayrolls = [], 
     slot.ticket = ticket
     slot.loan = round2(slot.loanInstallmentsCredit || 0)
 
-    // Σ μήτρας = ledger χρεώσεις + Ticket (εξαίρεση) · Π/Υ χωρίς Ticket
-    slot.sigma = round2(
-      slot.salaryDebit + slot.otherDebit + slot.invoiceDebit + slot.ticket
-    )
+    // Σ μήτρας = μόνο ledger χρεώσεις · Ticket μόνο στη δική του γραμμή (display)
+    slot.sigma = round2(slot.salaryDebit + slot.otherDebit + slot.invoiceDebit)
     slot.pi = round2(
       slot.salaryCredit +
         slot.otherCredit +

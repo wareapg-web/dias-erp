@@ -101,6 +101,53 @@ import LedgerAnalysisGrid, {
 import DarkSelect from './DarkSelect'
 
 const MATRIX_BALANCES_STORAGE_KEY = 'dias_show_matrix_balances'
+const ANALYSIS_WORKSPACE_KEY = 'dias_analysis_workspace'
+const WORKSPACE_TABS = new Set([
+  'analysis',
+  'earnings',
+  'agreements',
+  'payments',
+  'movements',
+])
+
+function loadAnalysisWorkspace(fallbackMonth, fallbackYear) {
+  try {
+    const raw = localStorage.getItem(ANALYSIS_WORKSPACE_KEY)
+    if (!raw) {
+      return {
+        month: fallbackMonth,
+        year: fallbackYear,
+        tab: 'analysis',
+        sidebarKind: 'permanent',
+      }
+    }
+    const parsed = JSON.parse(raw)
+    const month = Number(parsed?.month)
+    const year = Number(parsed?.year)
+    const tab = String(parsed?.tab || 'analysis')
+    return {
+      month: month >= 1 && month <= 12 ? month : fallbackMonth,
+      year: year >= 2020 && year <= 2035 ? year : fallbackYear,
+      tab: WORKSPACE_TABS.has(tab) ? tab : 'analysis',
+      sidebarKind: parsed?.sidebarKind === 'temporary' ? 'temporary' : 'permanent',
+    }
+  } catch {
+    return {
+      month: fallbackMonth,
+      year: fallbackYear,
+      tab: 'analysis',
+      sidebarKind: 'permanent',
+    }
+  }
+}
+
+function persistAnalysisWorkspace(payload) {
+  try {
+    localStorage.setItem(ANALYSIS_WORKSPACE_KEY, JSON.stringify(payload))
+  } catch {
+    /* ignore */
+  }
+}
 
 /** Ώρες στο grid: 0 / κενό → παύλα. */
 function formatHoursDash(value) {
@@ -131,12 +178,13 @@ export default function TechAnalysisModal({
   ledgerCompactHeaders = false,
   onToggleLedgerCompactHeaders,
 }) {
-  const [analysisYear, setAnalysisYear] = useState(initialYear)
-  const [selectedMonth, setSelectedMonth] = useState(initialMonth)
+  const [workspaceSeed] = useState(() => loadAnalysisWorkspace(initialMonth, initialYear))
+  const [analysisYear, setAnalysisYear] = useState(workspaceSeed.year)
+  const [selectedMonth, setSelectedMonth] = useState(workspaceSeed.month)
   const [monthExporting, setMonthExporting] = useState(false)
   const [invoiceExporting, setInvoiceExporting] = useState(false)
   const [temporaryExporting, setTemporaryExporting] = useState(false)
-  const [personnelSidebarKind, setPersonnelSidebarKind] = useState('permanent')
+  const [personnelSidebarKind, setPersonnelSidebarKind] = useState(workspaceSeed.sidebarKind)
   const [temporaryPayablesOpen, setTemporaryPayablesOpen] = useState(false)
   const [temporaryPayablesHint, setTemporaryPayablesHint] = useState({
     totalInvoice: 0,
@@ -157,7 +205,7 @@ export default function TechAnalysisModal({
   const [dailyStatus, setDailyStatus] = useState([])
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState(null)
-  const [activeTab, setActiveTab] = useState('analysis')
+  const [activeTab, setActiveTab] = useState(workspaceSeed.tab)
   const [techSearch, setTechSearch] = useState('')
   const [earningsForm, setEarningsForm] = useState(emptyEarningsForm)
   const [earningsRecordId, setEarningsRecordId] = useState(null)
@@ -222,10 +270,76 @@ export default function TechAnalysisModal({
   const [transactionTypes, setTransactionTypes] = useState([])
   const [transactionTypesError, setTransactionTypesError] = useState(null)
 
+  const pendingSettleRef = useRef(null)
+
+  const confirmLeaveDirty = () => {
+    if (!earningsDirty && !workHoursDirty) return true
+    return window.confirm(
+      'Υπάρχουν μη αποθηκευμένες αλλαγές σε Αποδοχές ή Ώρες γραφείου.\n\nΝα συνεχίσεις χωρίς αποθήκευση;'
+    )
+  }
+
+  const requestSelectedMonth = (monthOrUpdater) => {
+    if (!confirmLeaveDirty()) return
+    setSelectedMonth(monthOrUpdater)
+  }
+
+  const requestAnalysisYear = (yearOrUpdater) => {
+    if (!confirmLeaveDirty()) return
+    setAnalysisYear(yearOrUpdater)
+  }
+
+  const stepSelectedMonth = (delta) => {
+    if (!confirmLeaveDirty()) return
+    if (delta < 0) {
+      if (selectedMonth <= 1) {
+        setSelectedMonth(12)
+        setAnalysisYear((y) => Number(y) - 1)
+      } else {
+        setSelectedMonth((m) => Number(m) - 1)
+      }
+    } else if (selectedMonth >= 12) {
+      setSelectedMonth(1)
+      setAnalysisYear((y) => Number(y) + 1)
+    } else {
+      setSelectedMonth((m) => Number(m) + 1)
+    }
+  }
+
+  const requestActiveTab = (tabId) => {
+    if (tabId === activeTab) return
+    if (!confirmLeaveDirty()) return
+    setActiveTab(tabId)
+  }
+
+  const requestPersonSelect = (person, options = {}) => {
+    if (!person || typeof onPersonSelect !== 'function') return false
+    const force = options?.force === true
+    const same =
+      String(person.id ?? '') === String(selectedPersonId ?? '') ||
+      (person.tech_id != null && String(person.tech_id) === String(tech?.id ?? ''))
+    if (same) return true
+    if (!force && !confirmLeaveDirty()) return false
+    onPersonSelect(person)
+    return true
+  }
+
+  const requestTechChange = (nextTech) => {
+    if (!nextTech || typeof onTechChange !== 'function') return false
+    if (String(nextTech.id) === String(tech?.id ?? '')) return true
+    if (!confirmLeaveDirty()) return false
+    onTechChange(nextTech)
+    return true
+  }
+
   useEffect(() => {
-    setAnalysisYear(initialYear)
-    setSelectedMonth(initialMonth)
-  }, [tech?.id, initialYear, initialMonth])
+    persistAnalysisWorkspace({
+      month: selectedMonth,
+      year: analysisYear,
+      tab: activeTab,
+      sidebarKind: personnelSidebarKind,
+    })
+  }, [selectedMonth, analysisYear, activeTab, personnelSidebarKind])
 
   useEffect(() => {
     saveSidebarWidth(PERSONNEL_SIDEBAR_WIDTH_KEY, sidebarWidth)
@@ -678,6 +792,46 @@ export default function TechAnalysisModal({
     setMovementPresetAmount(presetAmount)
     setMovementOpen(true)
   }
+
+  const openSettlementForPayables = (settle) => {
+    const amount = Number(settle?.amount) || 0
+    if (!(amount > 0.005)) {
+      toast.error('Δεν υπάρχει υπόλοιπο για εξόφληση')
+      return
+    }
+    const invoice = settle?.invoice === true
+    openMovementCreate({
+      typeId: invoice ? 93 : 92,
+      side: 'CREDIT',
+      postToInvoice: invoice,
+      amount,
+    })
+  }
+
+  const handleSettleFromPayables = (person, settle) => {
+    if (!person) return
+    if (!confirmLeaveDirty()) return
+    setTemporaryPayablesOpen(false)
+    setPersonnelSidebarKind('temporary')
+    setActiveTab('analysis')
+    const same =
+      String(person.id ?? '') === String(selectedPersonId ?? '') ||
+      (person.tech_id != null && String(person.tech_id) === String(tech?.id ?? ''))
+    if (same) {
+      openSettlementForPayables(settle)
+      return
+    }
+    pendingSettleRef.current = settle || null
+    onPersonSelect?.(person)
+  }
+
+  useEffect(() => {
+    const settle = pendingSettleRef.current
+    if (!settle || !tech) return
+    pendingSettleRef.current = null
+    openSettlementForPayables(settle)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- μόνο μετά αλλαγή υπαλλήλου από οφειλές
+  }, [tech?.id])
 
   const selectLedgerRow = (row) => {
     const key = ledgerRowKey(row)
@@ -1551,9 +1705,10 @@ export default function TechAnalysisModal({
       personnel={personnel}
       adminTechs={adminTechs}
       selectedId={selectedPersonId}
-      onSelect={onPersonSelect}
+      onSelect={requestPersonSelect}
       onMutated={onPersonnelMutated}
       onSidebarKindChange={setPersonnelSidebarKind}
+      initialSidebarKind={personnelSidebarKind}
       width={sidebarWidth}
     />
   ) : embedded && onTechChange ? (
@@ -1583,7 +1738,7 @@ export default function TechAnalysisModal({
               <button
                 key={t.id}
                 type="button"
-                onClick={() => onTechChange(t)}
+                onClick={() => requestTechChange(t)}
                 className={`mb-1 flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-left transition ${
                   selected
                     ? 'border border-cyan-500/40 bg-cyan-500/15 text-cyan-100'
@@ -1668,14 +1823,7 @@ export default function TechAnalysisModal({
                     type="button"
                     aria-label="Προηγούμενος μήνας"
                     title="Προηγούμενος μήνας"
-                    onClick={() => {
-                      if (selectedMonth <= 1) {
-                        setSelectedMonth(12)
-                        setAnalysisYear((y) => Number(y) - 1)
-                      } else {
-                        setSelectedMonth((m) => Number(m) - 1)
-                      }
-                    }}
+                    onClick={() => stepSelectedMonth(-1)}
                     className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-white/10 bg-white/5 text-cyan-200 shadow-inner transition hover:border-cyan-400/50 hover:bg-cyan-500/20 hover:text-white active:scale-95"
                   >
                     <svg viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4" aria-hidden>
@@ -1696,14 +1844,7 @@ export default function TechAnalysisModal({
                     type="button"
                     aria-label="Επόμενος μήνας"
                     title="Επόμενος μήνας"
-                    onClick={() => {
-                      if (selectedMonth >= 12) {
-                        setSelectedMonth(1)
-                        setAnalysisYear((y) => Number(y) + 1)
-                      } else {
-                        setSelectedMonth((m) => Number(m) + 1)
-                      }
-                    }}
+                    onClick={() => stepSelectedMonth(1)}
                     className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-white/10 bg-white/5 text-cyan-200 shadow-inner transition hover:border-cyan-400/50 hover:bg-cyan-500/20 hover:text-white active:scale-95"
                   >
                     <svg viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4" aria-hidden>
@@ -1726,7 +1867,7 @@ export default function TechAnalysisModal({
                     aria-label="Προηγούμενο έτος"
                     title="Προηγούμενο έτος"
                     onClick={() =>
-                      setAnalysisYear((y) => Math.max(2020, Number(y) - 1))
+                      requestAnalysisYear((y) => Math.max(2020, Number(y) - 1))
                     }
                     className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-white/10 bg-white/5 text-cyan-200 shadow-inner transition hover:border-cyan-400/50 hover:bg-cyan-500/20 hover:text-white active:scale-95"
                   >
@@ -1744,7 +1885,9 @@ export default function TechAnalysisModal({
                     min={2020}
                     max={2035}
                     value={analysisYear}
-                    onChange={(e) => setAnalysisYear(Number(e.target.value) || initialYear)}
+                    onChange={(e) =>
+                      requestAnalysisYear(Number(e.target.value) || initialYear)
+                    }
                     className="w-[4.25rem] appearance-none border-0 bg-transparent px-0.5 text-center text-xs font-bold uppercase leading-none tracking-[0.08em] text-white outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
                   />
                   <button
@@ -1752,7 +1895,7 @@ export default function TechAnalysisModal({
                     aria-label="Επόμενο έτος"
                     title="Επόμενο έτος"
                     onClick={() =>
-                      setAnalysisYear((y) => Math.min(2035, Number(y) + 1))
+                      requestAnalysisYear((y) => Math.min(2035, Number(y) + 1))
                     }
                     className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-white/10 bg-white/5 text-cyan-200 shadow-inner transition hover:border-cyan-400/50 hover:bg-cyan-500/20 hover:text-white active:scale-95"
                   >
@@ -1776,7 +1919,7 @@ export default function TechAnalysisModal({
                     value={tech.id}
                     onChange={(v) => {
                       const next = techList.find((t) => String(t.id) === String(v))
-                      if (next) onTechChange(next)
+                      if (next) requestTechChange(next)
                     }}
                     options={techList.map((t) => ({
                       value: t.id,
@@ -1909,7 +2052,7 @@ export default function TechAnalysisModal({
             <button
               key={tab.id}
               type="button"
-              onClick={() => setActiveTab(tab.id)}
+              onClick={() => requestActiveTab(tab.id)}
               className={`shrink-0 rounded-t-xl px-4 py-2 text-sm font-semibold transition ${
                 activeTab === tab.id
                   ? 'border border-b-0 border-white/10 bg-slate-900/90 text-cyan-200'
@@ -1970,7 +2113,8 @@ export default function TechAnalysisModal({
           open={temporaryPayablesOpen}
           personnel={personnel}
           onClose={() => setTemporaryPayablesOpen(false)}
-          onSelectPerson={onPersonSelect}
+          onSelectPerson={requestPersonSelect}
+          onSettlePerson={handleSettleFromPayables}
         />
 
         {loadError && (
@@ -2070,7 +2214,7 @@ export default function TechAnalysisModal({
                             }`}
                             onMouseDown={(e) => {
                               e.preventDefault()
-                              setSelectedMonth(monthNum)
+                              requestSelectedMonth(monthNum)
                             }}
                             title={label}
                           >
@@ -2087,7 +2231,7 @@ export default function TechAnalysisModal({
                           label="Σ"
                           hint="Απολαβές"
                           selectedMonth={selectedMonth}
-                          onSelectMonth={setSelectedMonth}
+                          onSelectMonth={requestSelectedMonth}
                           values={salaryMatrix.months.map((m) => formatMatrixCell(m.sigma))}
                           total={formatMatrixCell(salaryMatrix.totals.sigma)}
                         />
@@ -2096,7 +2240,7 @@ export default function TechAnalysisModal({
                         label="Π"
                         hint="Πληρωμές"
                         selectedMonth={selectedMonth}
-                        onSelectMonth={setSelectedMonth}
+                        onSelectMonth={requestSelectedMonth}
                         values={salaryMatrix.months.map((m) => formatMatrixCell(m.pi))}
                         total={formatMatrixCell(salaryMatrix.totals.pi)}
                       />
@@ -2105,7 +2249,7 @@ export default function TechAnalysisModal({
                           label="Υ (Μ)"
                           hint="Υπόλοιπο Μισθού"
                           selectedMonth={selectedMonth}
-                          onSelectMonth={setSelectedMonth}
+                          onSelectMonth={requestSelectedMonth}
                           values={salaryMatrix.months.map((m) => formatMatrixBalance(m.yM))}
                           total={formatMatrixBalance(salaryMatrix.totals.yM)}
                         />
@@ -2116,7 +2260,7 @@ export default function TechAnalysisModal({
                           label="Υ (Λ)"
                           hint="Υπόλοιπο Λοιπών"
                           selectedMonth={selectedMonth}
-                          onSelectMonth={setSelectedMonth}
+                          onSelectMonth={requestSelectedMonth}
                           values={salaryMatrix.months.map((m) => formatMatrixBalance(m.yL))}
                           total={formatMatrixBalance(salaryMatrix.totals.yL)}
                         />
@@ -2127,7 +2271,7 @@ export default function TechAnalysisModal({
                           label="Υ (ΤΙΜ)"
                           hint="Υπόλοιπο Τιμολογίου"
                           selectedMonth={selectedMonth}
-                          onSelectMonth={setSelectedMonth}
+                          onSelectMonth={requestSelectedMonth}
                           values={salaryMatrix.months.map((m) => formatMatrixBalance(m.yTim))}
                           total={formatMatrixBalance(salaryMatrix.totals.yTim)}
                         />
@@ -2137,7 +2281,7 @@ export default function TechAnalysisModal({
                           label="Ticket Restaurant"
                           hint=""
                           selectedMonth={selectedMonth}
-                          onSelectMonth={setSelectedMonth}
+                          onSelectMonth={requestSelectedMonth}
                           values={salaryMatrix.months.map((m) => formatMatrixTicket(m.ticket))}
                           total={formatMatrixTicket(salaryMatrix.totals.ticket)}
                         />
@@ -2147,7 +2291,7 @@ export default function TechAnalysisModal({
                           label="Δάνειο"
                           hint=""
                           selectedMonth={selectedMonth}
-                          onSelectMonth={setSelectedMonth}
+                          onSelectMonth={requestSelectedMonth}
                           values={salaryMatrix.months.map((m) =>
                             formatMatrixLoan(m.loan, m.loanCount)
                           )}
@@ -2375,8 +2519,8 @@ export default function TechAnalysisModal({
                     onPatchFixedExpense={patchFixedExpense}
                     footerNote={
                       earningsDirty
-                        ? 'Κίτρινο ✓ = Βασικό · κυανό ✓ = Δημιουργία · μη αποθηκευμένες αλλαγές ρυθμίσεων'
-                        : 'Κίτρινο ✓ = Βασικό · κυανό ✓ = Δημιουργία · αποθηκευμένο'
+                        ? 'Κίτρινο ✓ = Σταθερό · κυανό ✓ = Δημιουργία · μη αποθηκευμένες αλλαγές ρυθμίσεων'
+                        : 'Κίτρινο ✓ = Σταθερό · κυανό ✓ = Δημιουργία · αποθηκευμένο'
                     }
                   />
                 )}

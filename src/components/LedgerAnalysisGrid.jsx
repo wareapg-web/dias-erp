@@ -727,8 +727,10 @@ export default function LedgerAnalysisGrid({
                     colSpan={columnDefs.length}
                     className="px-4 py-10 text-center text-sm text-slate-500"
                   >
-                    Δεν υπάρχουν κινήσεις για τον επιλεγμένο μήνα. Πάτα «Εισαγωγή» για υπολογισμό από
-                    Αποδοχές / Συμφωνίες.
+                    Δεν υπάρχουν κινήσεις για τον επιλεγμένο μήνα.
+                    {monthContext?.techIsTemporary === true
+                      ? ' Πάτα «ΕΙΣΑΓΩΓΗ» για νέα κίνηση.'
+                      : ' Πάτα «ΔΗΜΙΟΥΡΓΙΑ» για εισαγωγή από Αποδοχές / Συμφωνίες, ή «ΕΙΣΑΓΩΓΗ» για νέα κίνηση.'}
                   </td>
                 </tr>
               )
@@ -813,10 +815,6 @@ function BalanceChip({ label, value, tone = 'slate', taxMarkup = null }) {
   const net = Number(taxMarkup?.netAmount) || 0
   const factor = 1 - pct / 100
   const grossed = taxMarkup && factor > 0 ? net / factor : null
-  const factorLabel =
-    factor > 0
-      ? factor.toLocaleString('el-GR', { minimumFractionDigits: 1, maximumFractionDigits: 2 })
-      : null
 
   return (
     <div
@@ -826,10 +824,10 @@ function BalanceChip({ label, value, tone = 'slate', taxMarkup = null }) {
     >
       <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">{label}</p>
       <p className="mt-0.5 font-mono text-sm font-bold tabular-nums tracking-tight">{value}</p>
-      {grossed != null && factorLabel ? (
+      {grossed != null ? (
         <div className="mt-1.5 border-t border-amber-500/20 pt-1.5">
           <p className="whitespace-nowrap text-[9px] font-medium leading-tight text-amber-200/55">
-            Προσαύξηση φόρου {pct}% ( /{factorLabel})
+            Προσαύξηση φόρου {pct}%
           </p>
           <p className="mt-0.5 font-mono text-sm font-bold tabular-nums tracking-tight text-amber-50">
             {formatEuro(grossed)}

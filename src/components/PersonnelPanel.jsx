@@ -59,10 +59,13 @@ export default function PersonnelPanel({
   width = null,
   /** Sidebar tab: permanent | temporary — lift στο parent για toolbar. */
   onSidebarKindChange = null,
+  initialSidebarKind = 'permanent',
 }) {
   const isSidebar = variant === 'sidebar'
   /** Sidebar: permanent | temporary — ίδιο πεδίο με κατάλογο (employment_type). */
-  const [sidebarKind, setSidebarKind] = useState('permanent')
+  const [sidebarKind, setSidebarKind] = useState(
+    initialSidebarKind === 'temporary' ? 'temporary' : 'permanent'
+  )
   const [formOpen, setFormOpen] = useState(false)
   const [form, setForm] = useState(emptyPersonnelForm())
   const [editingId, setEditingId] = useState(null)
@@ -188,7 +191,7 @@ export default function PersonnelPanel({
     if (!isSidebar || !onSelect) return
     const stillVisible = filtered.some((p) => String(p.id) === String(selectedId))
     if (!stillVisible && filtered[0]) {
-      onSelect(filtered[0])
+      onSelect(filtered[0], { force: true })
     }
   }, [isSidebar, sidebarKind, filtered, selectedId, onSelect])
 
