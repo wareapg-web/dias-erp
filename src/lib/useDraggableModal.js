@@ -19,9 +19,9 @@ export const MODAL_POS_KEYS = {
 function clampOffset(x, y) {
   const vw = typeof window !== 'undefined' ? window.innerWidth : 1200
   const vh = typeof window !== 'undefined' ? window.innerHeight : 800
-  // κράτα λίγο μέσα στο viewport ακόμα κι αν τραβήξει μακριά
-  const maxX = Math.max(vw * 0.45, 120)
-  const maxY = Math.max(vh * 0.45, 80)
+  // Laptop-safe: μην αφήνεις το modal να «φεύγει» εκτός οθόνης
+  const maxX = Math.max(Math.round(vw * 0.35), 80)
+  const maxY = Math.max(Math.round(vh * 0.18), 40)
   return {
     x: Math.min(maxX, Math.max(-maxX, Math.round(Number(x) || 0))),
     y: Math.min(maxY, Math.max(-maxY, Math.round(Number(y) || 0))),

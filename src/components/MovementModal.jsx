@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import toast from 'react-hot-toast'
 import { diasClient, formatSupabaseError } from '../lib/supabase'
 import { movementFormFromRow, parseMovementAmount, extractLedgerAmount, isBareEuroText, normalizeEntryDate, mergeInvoiceBreakdownDescription } from '../lib/techLedger'
@@ -29,6 +29,7 @@ import {
 import DarkSelect from './DarkSelect'
 import GreekDateInput from './GreekDateInput'
 import { useDraggableModal, MODAL_POS_KEYS } from '../lib/useDraggableModal'
+import { loadModalSize, saveModalSize, MOVEMENT_MODAL_SIZE_KEY } from '../lib/modalSize'
 import { getLedgerCategoryPolicy } from '../lib/personnel'
 import {
   LOAN_DISBURSEMENT_TYPE_ID,
@@ -38,6 +39,18 @@ import {
 } from '../lib/loanUi'
 
 const INVOICE_CREDIT_TYPE_ID = 93
+const MOVEMENT_MODAL_MIN_W = 560
+const MOVEMENT_MODAL_MIN_H = 420
+
+function defaultMovementModalSize() {
+  if (typeof window === 'undefined') return { width: 720, height: 640 }
+  const vw = window.innerWidth
+  const vh = window.innerHeight
+  return {
+    width: Math.min(760, Math.max(MOVEMENT_MODAL_MIN_W, vw - 32)),
+    height: Math.min(Math.round(vh * 0.88), Math.max(MOVEMENT_MODAL_MIN_H, vh - 32)),
+  }
+}
 
 /** Εμφάνιση ποσού · 0,00 € μόνο όταν ΔΕΝ είναι focused (ώστε να μην «κολλάει» στο σβήσιμο). */
 function amountFieldDisplay(stored, focused) {
@@ -281,9 +294,72 @@ export default function MovementModal({
     dragHandleProps: deleteDragHandleProps,
     dragHandleClassName: deleteDragHandleClassName,
   } = useDraggableModal(loanDeleteOpen, MODAL_POS_KEYS.movementLoanDelete)
+  const resizeRef = useRef(null)
+  const [modalSize, setModalSize] = useState(() =>
+    loadModalSize(MOVEMENT_MODAL_SIZE_KEY, defaultMovementModalSize)
+  )
   const [deleting, setDeleting] = useState(false)
   /** Edit τιμολογίου χωρίς hasInvoice: κράτα την επιλογή Κατηγορίας σε όλο το session. */
   const [allowInvoiceCategory, setAllowInvoiceCategory] = useState(false)
+
+  useEffect(() => {
+    saveModalSize(MOVEMENT_MODAL_SIZE_KEY, modalSize)
+  }, [modalSize])
+
+  useEffect(() => {
+    const onMove = (e) => {
+      const d = resizeRef.current
+      if (!d) return
+      const dx = e.clientX - d.startX
+      const dy = e.clientY - d.startY
+      const vw = window.innerWidth
+      const vh = window.innerHeight
+      let { width, height } = d.orig
+      const edge = d.edge
+      if (edge.includes('e')) width = d.orig.width + dx
+      if (edge.includes('s')) height = d.orig.height + dy
+      if (edge.includes('w')) width = d.orig.width - dx
+      if (edge.includes('n')) height = d.orig.height - dy
+      width = Math.min(Math.max(width, MOVEMENT_MODAL_MIN_W), vw - 24)
+      height = Math.min(Math.max(height, MOVEMENT_MODAL_MIN_H), vh - 24)
+      setModalSize({ width, height })
+    }
+    const onUp = () => {
+      resizeRef.current = null
+    }
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+    window.addEventListener('pointercancel', onUp)
+    return () => {
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+      window.removeEventListener('pointercancel', onUp)
+    }
+  }, [])
+
+  const startResize = useCallback(
+    (edge) => (e) => {
+      if (e.button !== 0) return
+      e.preventDefault()
+      e.stopPropagation()
+      resizeRef.current = {
+        edge,
+        startX: e.clientX,
+        startY: e.clientY,
+        orig: { ...modalSize },
+      }
+    },
+    [modalSize]
+  )
+
+  const resizeHandle = (edge, cursor, extra = '') => (
+    <div
+      role="presentation"
+      onPointerDown={startResize(edge)}
+      className={`absolute z-30 ${extra}`}
+      style={{ cursor }}
+    />
+  )
 
   const isEdit = Boolean(selectedRowData?.id)
   const rowSource = selectedRowData?.source || 'PAYROLL'
@@ -961,18 +1037,32 @@ export default function MovementModal({
   })()
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto p-3 sm:items-center sm:p-4">
       <div
         className="absolute inset-0 bg-slate-950/20 backdrop-blur-none"
         aria-hidden
       />
       <form
         onSubmit={handleSave}
-        className="relative w-full max-w-lg rounded-2xl border border-white/10 bg-slate-900 p-5 shadow-2xl"
-        style={panelStyle}
+        className="relative my-auto flex flex-col overflow-hidden rounded-2xl border border-white/10 bg-slate-900 shadow-2xl"
+        style={{
+          width: modalSize.width,
+          height: modalSize.height,
+          maxWidth: 'calc(100vw - 1.5rem)',
+          maxHeight: 'calc(100vh - 1.5rem)',
+          ...panelStyle,
+        }}
       >
+        {resizeHandle('n', 'ns-resize', 'left-2 right-2 top-0 h-2')}
+        {resizeHandle('s', 'ns-resize', 'left-2 right-2 bottom-0 h-2')}
+        {resizeHandle('e', 'ew-resize', 'top-2 bottom-2 right-0 w-2')}
+        {resizeHandle('w', 'ew-resize', 'top-2 bottom-2 left-0 w-2')}
+        {resizeHandle('nw', 'nwse-resize', 'left-0 top-0 h-3 w-3')}
+        {resizeHandle('ne', 'nesw-resize', 'right-0 top-0 h-3 w-3')}
+        {resizeHandle('sw', 'nesw-resize', 'bottom-0 left-0 h-3 w-3')}
+        {resizeHandle('se', 'nwse-resize', 'bottom-0 right-0 h-4 w-4')}
         <div
-          className={`flex items-start justify-between gap-3 ${dragHandleClassName}`}
+          className={`flex shrink-0 items-start justify-between gap-3 border-b border-white/10 px-5 pt-5 pb-3 ${dragHandleClassName}`}
           {...dragHandleProps}
         >
           <div>
@@ -1002,7 +1092,8 @@ export default function MovementModal({
           </button>
         </div>
 
-        <div className="mt-4 space-y-3 rounded-xl border border-white/10 bg-slate-950/40 p-4">
+        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+        <div className="space-y-3 rounded-xl border border-white/10 bg-slate-950/40 p-4">
           <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Στοιχεία</p>
 
           {(typesError || typesLoading) && (
@@ -1105,44 +1196,46 @@ export default function MovementModal({
 
             {showInvoiceGrossDual ? (
               <div className="space-y-3">
-                <div className="rounded-xl border border-cyan-400/30 bg-cyan-500/[0.07] px-2.5 py-2">
-                  <label className="text-xs font-bold uppercase tracking-wider text-cyan-100">
-                    {greekCapsLabel('Καθαρό Ποσό (Βάση Ledger)')}
-                  </label>
-                  <input
-                    type="text"
-                    inputMode="decimal"
-                    autoComplete="off"
-                    value={amountFieldDisplay(form.amount, netAmountFocused)}
-                    onChange={(e) => patchNetAmount(e.target.value)}
-                    onFocus={(e) => {
-                      setNetAmountFocused(true)
-                      const n = parseElNumber(sanitizeAmountRaw(e.target.value))
-                      if (n == null || n === 0) e.target.select()
-                    }}
-                    onBlur={() => setNetAmountFocused(false)}
-                    className="mt-1 w-full rounded-lg border border-cyan-400/35 bg-slate-950/70 px-3 py-2.5 font-mono text-lg font-bold tabular-nums text-white outline-none focus:border-cyan-300/55 focus:ring-1 focus:ring-cyan-400/20"
-                  />
-                </div>
-                <div>
-                  <label className="text-[10px] font-semibold uppercase tracking-wider text-amber-200/90">
-                    {greekCapsLabel(`Προσαύξηση ${safeTaxPercent}%`)}
-                  </label>
-                  <input
-                    type="text"
-                    inputMode="decimal"
-                    autoComplete="off"
-                    required
-                    value={amountFieldDisplay(grossAmountDisplay, grossAmountFocused)}
-                    onChange={(e) => patchGrossAmount(e.target.value)}
-                    onFocus={(e) => {
-                      setGrossAmountFocused(true)
-                      const n = parseElNumber(sanitizeAmountRaw(e.target.value))
-                      if (n == null || n === 0) e.target.select()
-                    }}
-                    onBlur={() => setGrossAmountFocused(false)}
-                    className="mt-1 w-full rounded-xl border border-amber-500/35 bg-amber-500/10 px-3 py-2 font-mono text-sm font-semibold text-amber-50"
-                  />
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <div className="rounded-xl border border-cyan-400/30 bg-cyan-500/[0.07] px-2.5 py-2">
+                    <label className="text-xs font-bold uppercase tracking-wider text-cyan-100">
+                      {greekCapsLabel('Καθαρό Ποσό')}
+                    </label>
+                    <input
+                      type="text"
+                      inputMode="decimal"
+                      autoComplete="off"
+                      value={amountFieldDisplay(form.amount, netAmountFocused)}
+                      onChange={(e) => patchNetAmount(e.target.value)}
+                      onFocus={(e) => {
+                        setNetAmountFocused(true)
+                        const n = parseElNumber(sanitizeAmountRaw(e.target.value))
+                        if (n == null || n === 0) e.target.select()
+                      }}
+                      onBlur={() => setNetAmountFocused(false)}
+                      className="mt-1 w-full rounded-lg border border-cyan-400/35 bg-slate-950/70 px-3 py-2.5 font-mono text-lg font-bold tabular-nums text-white outline-none focus:border-cyan-300/55 focus:ring-1 focus:ring-cyan-400/20"
+                    />
+                  </div>
+                  <div className="rounded-xl border border-amber-500/35 bg-amber-500/10 px-2.5 py-2">
+                    <label className="text-xs font-bold uppercase tracking-wider text-amber-100">
+                      {greekCapsLabel(`Προσαύξηση ${safeTaxPercent}%`)}
+                    </label>
+                    <input
+                      type="text"
+                      inputMode="decimal"
+                      autoComplete="off"
+                      required
+                      value={amountFieldDisplay(grossAmountDisplay, grossAmountFocused)}
+                      onChange={(e) => patchGrossAmount(e.target.value)}
+                      onFocus={(e) => {
+                        setGrossAmountFocused(true)
+                        const n = parseElNumber(sanitizeAmountRaw(e.target.value))
+                        if (n == null || n === 0) e.target.select()
+                      }}
+                      onBlur={() => setGrossAmountFocused(false)}
+                      className="mt-1 w-full rounded-lg border border-amber-500/40 bg-slate-950/70 px-3 py-2.5 font-mono text-lg font-bold tabular-nums text-amber-50 outline-none focus:border-amber-300/55 focus:ring-1 focus:ring-amber-400/20"
+                    />
+                  </div>
                 </div>
                 {(() => {
                   const grossN =
@@ -1218,7 +1311,7 @@ export default function MovementModal({
               <textarea
                 value={form.notes}
                 onChange={(e) => patch('notes', e.target.value)}
-                rows={3}
+                rows={2}
                 className="mt-1 w-full rounded-xl border border-white/10 bg-slate-950/60 px-3 py-2 text-sm text-white"
               />
             </div>
@@ -1230,8 +1323,9 @@ export default function MovementModal({
             {displayError}
           </div>
         )}
+        </div>
 
-        <div className="mt-4 flex gap-2">
+        <div className="flex shrink-0 gap-2 border-t border-white/10 bg-slate-900 px-5 py-3">
           <button
             type="button"
             onClick={onClose}

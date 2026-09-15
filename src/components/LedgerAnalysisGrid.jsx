@@ -827,7 +827,7 @@ function BalanceChip({ label, value, tone = 'slate', taxMarkup = null }) {
       {grossed != null ? (
         <div className="mt-1.5 border-t border-amber-500/20 pt-1.5">
           <p className="whitespace-nowrap text-[9px] font-medium leading-tight text-amber-200/55">
-            Προσαύξηση φόρου {pct}%
+            Προσαύξηση {pct}%
           </p>
           <p className="mt-0.5 font-mono text-sm font-bold tabular-nums tracking-tight text-amber-50">
             {formatEuro(grossed)}
