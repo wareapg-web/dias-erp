@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import toast from 'react-hot-toast'
 import { adminClient, diasClient, safeQuery, isMissingTableError, formatSupabaseError } from '../lib/supabase'
 import {
@@ -72,7 +73,7 @@ import {
   resolveLedgerSide,
   visibleTransactionTypes,
 } from '../lib/ledgerMapping'
-import { importMonthFromAgreements } from '../lib/monthImport'
+import { importMonthFromAgreements, importMonthForAllPermanent } from '../lib/monthImport'
 import { transferHoursToLedger } from '../lib/transferHours'
 import {
   buildTypeLookup,
@@ -241,6 +242,7 @@ export default function TechAnalysisModal({
   const [ledgerTick, setLedgerTick] = useState(0)
   const [monthImportSaving, setMonthImportSaving] = useState(false)
   const [monthImportMessage, setMonthImportMessage] = useState(null)
+  const [monthImportChoiceOpen, setMonthImportChoiceOpen] = useState(false)
   const [hoursTransferSaving, setHoursTransferSaving] = useState(false)
   const [manualHours, setManualHours] = useState({})
   const [workHoursDirty, setWorkHoursDirty] = useState(false)
@@ -936,8 +938,8 @@ export default function TechAnalysisModal({
     if (wasPayment) await loadPayments()
   }
 
-  const handleMonthImport = async () => {
-    if (!tech?.id || monthImportSaving) return
+  const runMonthImportOne = async () => {
+    if (!tech?.id) return
     setMonthImportSaving(true)
     setMonthImportMessage(null)
     setLedgerError(null)
@@ -963,6 +965,88 @@ export default function TechAnalysisModal({
       setMonthImportSaving(false)
     }
   }
+
+  const runMonthImportAll = async () => {
+    const targets = (personnel || []).filter(
+      (p) =>
+        p &&
+        p.is_active !== false &&
+        !isTemporaryPersonnel(p) &&
+        p.tech_id != null &&
+        String(p.tech_id).trim() !== ''
+    )
+    if (!targets.length) {
+      toast.error('Δεν βρέθηκαν ενεργοί μόνιμοι υπάλληλοι.')
+      return
+    }
+
+    setMonthImportSaving(true)
+    setMonthImportMessage(null)
+    setLedgerError(null)
+    const progressToast = toast.loading(`ALL… 0/${targets.length}`)
+    try {
+      const result = await importMonthForAllPermanent({
+        personnel,
+        adminTechs,
+        year: analysisYear,
+        month: selectedMonth,
+        transactionTypes,
+        onProgress: ({ index, total, name }) => {
+          toast.loading(`ALL ${index}/${total}: ${name}`, { id: progressToast })
+        },
+      })
+      setMonthImportMessage(result.message)
+      setLedgerTick((n) => n + 1)
+      if (result.failed > 0) {
+        toast.error(result.message, { id: progressToast, duration: 8000 })
+      } else {
+        toast.success(result.message, { id: progressToast, duration: 6000 })
+      }
+      const errors = (result.details || []).filter((d) => d.status === 'error')
+      if (errors.length) {
+        console.warn('[ΔΗΜΙΟΥΡΓΙΑ ALL] σφάλματα:', errors)
+      }
+    } catch (err) {
+      const msg = err?.message || String(err)
+      setLedgerError(msg)
+      toast.error(msg, { id: progressToast })
+    } finally {
+      setMonthImportSaving(false)
+    }
+  }
+
+  const handleMonthImport = () => {
+    if (!tech?.id || monthImportSaving) return
+    setMonthImportChoiceOpen(true)
+  }
+
+  const confirmMonthImportOne = async () => {
+    setMonthImportChoiceOpen(false)
+    await runMonthImportOne()
+  }
+
+  const confirmMonthImportAll = async () => {
+    setMonthImportChoiceOpen(false)
+    await runMonthImportAll()
+  }
+
+  const monthImportChoiceMeta = useMemo(() => {
+    const monthLabel = MONTH_LABELS[selectedMonth - 1] || String(selectedMonth)
+    const currentName =
+      [tech?.last_name, tech?.first_name].filter(Boolean).join(' ') ||
+      tech?.displayName ||
+      tech?.name ||
+      'αυτόν τον υπάλληλο'
+    const permanentCount = (personnel || []).filter(
+      (p) =>
+        p &&
+        p.is_active !== false &&
+        !isTemporaryPersonnel(p) &&
+        p.tech_id != null &&
+        String(p.tech_id).trim() !== ''
+    ).length
+    return { monthLabel, currentName, permanentCount }
+  }, [tech, selectedMonth, personnel])
 
   const monthlyPayrolls = useMemo(() => {
     if (!tech) return []
@@ -2391,7 +2475,7 @@ export default function TechAnalysisModal({
                     type="button"
                     onClick={handleMonthImport}
                     disabled={monthImportSaving || ledgerLoading || !tech}
-                    title="Εισαγωγη στο ledger μονο για Αποδοχες με τικ (ποσο > 0)"
+                    title="ΔΗΜΙΟΥΡΓΙΑ: ρωτάει για ALL ή μόνο τον επιλεγμένο — Αποδοχές με τικ και ποσό > 0"
                     className="shrink-0 rounded-xl border border-cyan-500/40 bg-cyan-500/15 px-3 py-2.5 text-left text-xs font-semibold uppercase tracking-wide text-cyan-100 transition hover:bg-cyan-500/25 disabled:cursor-not-allowed disabled:opacity-40 lg:w-full"
                   >
                     {monthImportSaving ? 'ΔΗΜΙΟΥΡΓΙΑ...' : 'ΔΗΜΙΟΥΡΓΙΑ'}
@@ -3305,6 +3389,72 @@ export default function TechAnalysisModal({
           </div>
         </div>
       ) : null}
+
+      {monthImportChoiceOpen
+        ? createPortal(
+            <div className="fixed inset-0 z-[200] flex items-center justify-center p-4">
+              <div
+                className="absolute inset-0 bg-slate-950/50 backdrop-blur-none"
+                aria-hidden
+              />
+              <div
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="month-import-choice-title"
+                className="relative w-full max-w-md rounded-2xl border border-cyan-500/35 bg-slate-900 p-5 shadow-2xl shadow-cyan-950/30"
+              >
+                <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-cyan-400/80">
+                  Καρτέλα
+                </p>
+                <h3 id="month-import-choice-title" className="mt-1 text-lg font-bold text-white">
+                  ΔΗΜΙΟΥΡΓΙΑ — {monthImportChoiceMeta.monthLabel} {analysisYear}
+                </h3>
+                <p className="mt-2 text-sm leading-relaxed text-slate-300">
+                  Θα μπουν μόνο Αποδοχές με τικ και ποσό &gt; 0. Οι υπάρχουσες ίδιες γραμμές
+                  παραλείπονται.
+                </p>
+                {earningsDirty ? (
+                  <p className="mt-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
+                    Για ALL χρησιμοποιούνται μόνο αποθηκευμένες Αποδοχές από τη βάση.
+                  </p>
+                ) : null}
+                <div className="mt-5 flex flex-col gap-2">
+                  <button
+                    type="button"
+                    onClick={confirmMonthImportAll}
+                    disabled={monthImportSaving}
+                    className="w-full rounded-xl border border-emerald-500/45 bg-emerald-500/20 px-4 py-3 text-left text-sm font-bold text-emerald-100 transition hover:bg-emerald-500/30 disabled:opacity-50"
+                  >
+                    ALL
+                    <span className="mt-0.5 block text-xs font-semibold text-emerald-100/70">
+                      {monthImportChoiceMeta.permanentCount} ενεργοί μόνιμοι
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={confirmMonthImportOne}
+                    disabled={monthImportSaving}
+                    className="w-full rounded-xl border border-cyan-500/40 bg-cyan-500/15 px-4 py-3 text-left text-sm font-bold text-cyan-100 transition hover:bg-cyan-500/25 disabled:opacity-50"
+                  >
+                    Μόνο επιλεγμένος
+                    <span className="mt-0.5 block truncate text-xs font-semibold text-cyan-100/70">
+                      {monthImportChoiceMeta.currentName}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setMonthImportChoiceOpen(false)}
+                    disabled={monthImportSaving}
+                    className="mt-1 w-full rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm font-semibold text-slate-200 transition hover:bg-white/10 disabled:opacity-50"
+                  >
+                    Ακύρωση
+                  </button>
+                </div>
+              </div>
+            </div>,
+            document.body
+          )
+        : null}
     </>
   )
 
