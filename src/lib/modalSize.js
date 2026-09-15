@@ -39,6 +39,7 @@ export function saveModalSize(storageKey, size) {
 export const PERSONNEL_FORM_MODAL_SIZE_KEY = 'dias-erp:personnel-form-modal-size'
 export const PERSONNEL_CATALOG_MODAL_SIZE_KEY = 'dias-erp:personnel-catalog-modal-size'
 export const PERSONNEL_SIDEBAR_WIDTH_KEY = 'dias-erp:personnel-sidebar-width'
+export const MOVEMENT_MODAL_SIZE_KEY = 'dias-erp:movement-modal-size'
 
 export function loadSidebarWidth(storageKey, fallback = 320) {
   if (typeof window === 'undefined') return fallback
