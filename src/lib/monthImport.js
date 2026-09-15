@@ -3,9 +3,15 @@
  * Δημιουργεί payroll_entries μόνο για πεδία με ποσό > 0 και auto_transfer_settings[key] === true.
  */
 
-import { diasClient } from './supabase'
+import { diasClient, fetchAllRows } from './supabase'
 import { monthDateRange } from './techLedger'
-import { personnelIssuesInvoice, routesExtrasToInvoice } from './personnel'
+import {
+  isTemporaryPersonnel,
+  personnelAsTech,
+  personnelIssuesInvoice,
+  routesExtrasToInvoice,
+} from './personnel'
+import { earningsFromDb } from './techEarnings'
 import { parseElNumber } from './numberFormat'
 import {
   isSalaryLedgerGroup,
@@ -155,6 +161,7 @@ export async function importMonthFromAgreements({
   agreements,
   transactionTypes,
   existingLedgerRows = [],
+  softEmpty = false,
 }) {
   if (!tech?.id) throw new Error('Δεν έχει επιλεγεί υπάλληλος')
 
@@ -167,6 +174,16 @@ export async function importMonthFromAgreements({
     issuesInvoice: personnelIssuesInvoice(tech),
   })
   if (!lines.length) {
+    if (softEmpty) {
+      return {
+        inserted: 0,
+        repaired: 0,
+        skipped: [],
+        lines: [],
+        empty: true,
+        message: 'Δεν βρέθηκαν επιλεγμένα ποσά στις Αποδοχές (checkbox + ποσό > 0).',
+      }
+    }
     throw new Error(
       'Δεν βρέθηκαν επιλεγμένα ποσά στις Αποδοχές (checkbox + ποσό > 0) για εισαγωγή.'
     )
@@ -265,5 +282,160 @@ export async function importMonthFromAgreements({
     skipped,
     lines: [...toInsert, ...toRepair],
     message: parts.join(' '),
+  }
+}
+
+function personDisplayName(person) {
+  return (
+    String(person?.tech_name || '').trim() ||
+    [person?.last_name, person?.first_name].filter(Boolean).join(' ').trim() ||
+    String(person?.tech_id || person?.id || '—')
+  )
+}
+
+/**
+ * ΔΗΜΙΟΥΡΓΙΑ για όλους τους ενεργούς μόνιμους του επιλεγμένου μήνα.
+ * Ίδια λογική με importMonthFromAgreements ανά άτομο (idempotent: skip/repair).
+ * Διαβάζει αποθηκευμένες Αποδοχές από DB — όχι unsaved UI.
+ */
+export async function importMonthForAllPermanent({
+  personnel = [],
+  adminTechs = [],
+  year,
+  month,
+  transactionTypes = [],
+  onProgress = null,
+}) {
+  const targets = (personnel || []).filter(
+    (p) =>
+      p &&
+      p.is_active !== false &&
+      !isTemporaryPersonnel(p) &&
+      p.tech_id != null &&
+      String(p.tech_id).trim() !== ''
+  )
+
+  if (!targets.length) {
+    return {
+      total: 0,
+      ok: 0,
+      empty: 0,
+      unchanged: 0,
+      failed: 0,
+      inserted: 0,
+      repaired: 0,
+      details: [],
+      message: 'Δεν βρέθηκαν ενεργοί μόνιμοι υπάλληλοι.',
+    }
+  }
+
+  const techIds = [...new Set(targets.map((p) => String(p.tech_id)))]
+
+  const [earningsRows, ledgerRows] = await Promise.all([
+    fetchAllRows(diasClient, 'tech_earnings', (q) => q.in('tech_id', techIds)),
+    fetchAllRows(diasClient, 'tech_ledger_view', (q) =>
+      q.eq('year', Number(year)).eq('month', Number(month))
+    ),
+  ])
+
+  const earningsByTech = new Map()
+  for (const row of earningsRows || []) {
+    const id = String(row.tech_id ?? '')
+    if (id) earningsByTech.set(id, row)
+  }
+
+  const ledgerByTech = new Map()
+  for (const row of ledgerRows || []) {
+    const id = String(row.tech_id ?? '')
+    if (!id) continue
+    if (!ledgerByTech.has(id)) ledgerByTech.set(id, [])
+    ledgerByTech.get(id).push(row)
+  }
+
+  const details = []
+  let ok = 0
+  let empty = 0
+  let unchanged = 0
+  let failed = 0
+  let inserted = 0
+  let repaired = 0
+
+  for (let i = 0; i < targets.length; i += 1) {
+    const person = targets[i]
+    const name = personDisplayName(person)
+    const tech = personnelAsTech(person, adminTechs)
+    const techId = String(tech?.id || person.tech_id)
+
+    if (typeof onProgress === 'function') {
+      try {
+        onProgress({ index: i + 1, total: targets.length, name })
+      } catch {
+        /* ignore UI progress errors */
+      }
+    }
+
+    try {
+      const result = await importMonthFromAgreements({
+        tech,
+        year,
+        month,
+        earningsForm: earningsFromDb(earningsByTech.get(techId) || null),
+        agreements: [],
+        transactionTypes,
+        existingLedgerRows: ledgerByTech.get(techId) || [],
+        softEmpty: true,
+      })
+
+      inserted += Number(result.inserted) || 0
+      repaired += Number(result.repaired) || 0
+
+      if (result.empty) {
+        empty += 1
+        details.push({ techId, name, status: 'empty', message: result.message })
+      } else if (!(result.inserted > 0) && !(result.repaired > 0)) {
+        unchanged += 1
+        details.push({ techId, name, status: 'unchanged', message: result.message })
+      } else {
+        ok += 1
+        details.push({
+          techId,
+          name,
+          status: 'ok',
+          inserted: result.inserted,
+          repaired: result.repaired,
+          message: result.message,
+        })
+      }
+    } catch (err) {
+      failed += 1
+      details.push({
+        techId,
+        name,
+        status: 'error',
+        message: err?.message || String(err),
+      })
+    }
+  }
+
+  const parts = [
+    `Μόνιμοι ${targets.length}: ${ok} ενημερώθηκαν`,
+    `${unchanged} ήδη εντάξει`,
+    `${empty} χωρίς ποσά`,
+  ]
+  if (failed) parts.push(`${failed} σφάλμα`)
+  if (inserted || repaired) {
+    parts.push(`(+${inserted} νέες / ${repaired} διορθώσεις)`)
+  }
+
+  return {
+    total: targets.length,
+    ok,
+    empty,
+    unchanged,
+    failed,
+    inserted,
+    repaired,
+    details,
+    message: parts.join(' · ') + '.',
   }
 }
