@@ -1,10 +1,9 @@
 import React, { useState } from 'react'
-import { adminClient } from '../lib/supabase'
+import { adminClient, diasClient } from '../lib/supabase'
 
 /**
- * Login στο Admin Supabase project (ίδια credentials με admin-app).
- * Χρειάζεται για RLS σε assignments / daily_status / jobs.
- * Δεν τροποποιεί admin-app ή mobile-app.
+ * Ενιαίο login: Admin (ώρες) + DIAS (οικονομικά) με ίδια credentials.
+ * Αν αποτύχει το DIAS → rollback Admin session.
  */
 export default function AdminLoginScreen({ onSignedIn }) {
   const [email, setEmail] = useState('')
@@ -16,21 +15,35 @@ export default function AdminLoginScreen({ onSignedIn }) {
     e.preventDefault()
     setBusy(true)
     setError(null)
+    const creds = { email: email.trim(), password }
     try {
-      const { error: signError } = await adminClient.auth.signInWithPassword({
-        email: email.trim(),
-        password,
-      })
-      if (signError) {
+      const { error: adminError } = await adminClient.auth.signInWithPassword(creds)
+      if (adminError) {
         setError(
-          signError.message === 'Invalid login credentials'
+          adminError.message === 'Invalid login credentials'
             ? 'Λάθος email ή κωδικός.'
-            : signError.message
+            : adminError.message
         )
         return
       }
+
+      const { error: diasError } = await diasClient.auth.signInWithPassword(creds)
+      if (diasError) {
+        await adminClient.auth.signOut()
+        setError(
+          'Δεν βρέθηκε αντίστοιχος λογαριασμός στο DIAS. Επικοινωνήστε με τον διαχειριστή.'
+        )
+        return
+      }
+
       onSignedIn?.()
     } catch (err) {
+      try {
+        await adminClient.auth.signOut()
+        await diasClient.auth.signOut()
+      } catch {
+        /* ignore */
+      }
       setError(err.message || String(err))
     } finally {
       setBusy(false)
@@ -56,10 +69,10 @@ export default function AdminLoginScreen({ onSignedIn }) {
           <p className="text-xs font-semibold uppercase tracking-[0.2em] text-cyan-400/80">
             DIAS ERP
           </p>
-          <h1 className="mt-1 text-2xl font-bold text-white">Σύνδεση Admin (Read-Only)</h1>
+          <h1 className="mt-1 text-2xl font-bold text-white">Σύνδεση</h1>
           <p className="mt-2 text-sm text-slate-400">
             Χρησιμοποίησε τα <strong className="text-slate-200">ίδια</strong> email/κωδικό με το
-            admin-app. Χωρίς login το RLS κρύβει assignments &amp; daily_status.
+            admin-app. Απαιτείται λογαριασμός και στο DIAS Authentication.
           </p>
         </div>
 
