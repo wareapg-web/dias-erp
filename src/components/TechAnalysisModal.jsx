@@ -1855,7 +1855,6 @@ export default function TechAnalysisModal({
                 </span>
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-sm font-semibold">{t.name}</span>
-                  <span className="block text-[10px] text-slate-500">#{t.id}</span>
                 </span>
               </button>
             )
@@ -3230,12 +3229,6 @@ export default function TechAnalysisModal({
               onClick={handleTransferHours}
             >
               {hoursTransferSaving ? 'Μεταφορά...' : 'Μεταφορά Ωρών'}
-            </ActionButton>
-            <ActionButton
-              tone="slate"
-              onClick={() => toast('Εκτύπωση — σύντομα', { icon: 'ℹ️' })}
-            >
-              Εκτύπωση
             </ActionButton>
             <div className="mx-1 hidden h-6 w-px bg-white/10 sm:block" />
           </>

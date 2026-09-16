@@ -43,6 +43,47 @@ import {
   syncLatestPeriodFromForm,
 } from '../lib/personnelPeriods'
 
+const SIDEBAR_DENSITY_KEY = 'dias-erp:personnel-sidebar-density'
+const SIDEBAR_DENSITY_OPTIONS = [
+  {
+    id: 'comfortable',
+    label: 'Κανονική',
+    row: 'mb-0.5 gap-1.5 px-2 py-1.5',
+    avatar: 'h-9 w-9 text-xs',
+    name: 'text-sm font-semibold',
+    tick: 'h-2.5 w-2.5 text-[6px]',
+    tickWrap: 'w-2.5',
+  },
+  {
+    id: 'compact',
+    label: 'Μεσαία',
+    row: 'mb-0 gap-1 px-1.5 py-1',
+    avatar: 'h-7 w-7 text-[10px]',
+    name: 'text-xs font-semibold',
+    tick: 'h-2 w-2 text-[5px]',
+    tickWrap: 'w-2',
+  },
+  {
+    id: 'dense',
+    label: 'Συμπαγής',
+    row: 'mb-0 gap-1 px-1.5 py-0.5',
+    avatar: 'h-6 w-6 text-[9px]',
+    name: 'text-[11px] font-semibold leading-tight',
+    tick: 'h-1.5 w-1.5 text-[4px]',
+    tickWrap: 'w-1.5',
+  },
+]
+
+function loadSidebarDensity() {
+  try {
+    const v = localStorage.getItem(SIDEBAR_DENSITY_KEY)
+    if (SIDEBAR_DENSITY_OPTIONS.some((o) => o.id === v)) return v
+  } catch {
+    /* ignore */
+  }
+  return 'comfortable'
+}
+
 export default function PersonnelPanel({
   variant = 'catalog',
   inModal = false,
@@ -66,6 +107,9 @@ export default function PersonnelPanel({
   const [sidebarKind, setSidebarKind] = useState(
     initialSidebarKind === 'temporary' ? 'temporary' : 'permanent'
   )
+  const [sidebarDensity, setSidebarDensity] = useState(loadSidebarDensity)
+  const [densityMenuOpen, setDensityMenuOpen] = useState(false)
+  const densityMenuRef = useRef(null)
   const [formOpen, setFormOpen] = useState(false)
   const [form, setForm] = useState(emptyPersonnelForm())
   const [editingId, setEditingId] = useState(null)
@@ -89,6 +133,39 @@ export default function PersonnelPanel({
     if (!isSidebar || typeof onSidebarKindChange !== 'function') return
     onSidebarKindChange(sidebarKind)
   }, [isSidebar, sidebarKind, onSidebarKindChange])
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(SIDEBAR_DENSITY_KEY, sidebarDensity)
+    } catch {
+      /* ignore */
+    }
+  }, [sidebarDensity])
+
+  useEffect(() => {
+    if (!densityMenuOpen) return
+    const onDown = (e) => {
+      if (densityMenuRef.current && !densityMenuRef.current.contains(e.target)) {
+        setDensityMenuOpen(false)
+      }
+    }
+    const onKey = (e) => {
+      if (e.key === 'Escape') setDensityMenuOpen(false)
+    }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [densityMenuOpen])
+
+  const densityStyle = useMemo(
+    () =>
+      SIDEBAR_DENSITY_OPTIONS.find((o) => o.id === sidebarDensity) ||
+      SIDEBAR_DENSITY_OPTIONS[0],
+    [sidebarDensity]
+  )
 
   useEffect(() => {
     saveModalSize(PERSONNEL_FORM_MODAL_SIZE_KEY, formSize)
@@ -495,9 +572,64 @@ export default function PersonnelPanel({
       <div className={`border-b border-white/10 px-3 ${isSidebar ? 'py-3' : 'pb-3 pt-2'}`}>
         {isSidebar ? (
           <>
-            <p className="text-[10px] font-semibold tracking-[0.18em] text-cyan-400/80">
-              {greekCapsLabel('Προσωπικό DIAS')}
-            </p>
+            <div className="flex items-start justify-between gap-2">
+              <p className="text-[10px] font-semibold tracking-[0.18em] text-cyan-400/80">
+                {greekCapsLabel('Προσωπικό DIAS')}
+              </p>
+              <div className="relative shrink-0" ref={densityMenuRef}>
+                <button
+                  type="button"
+                  title="Πυκνότητα λίστας"
+                  aria-label="Πυκνότητα λίστας"
+                  aria-expanded={densityMenuOpen}
+                  aria-haspopup="menu"
+                  onClick={() => setDensityMenuOpen((o) => !o)}
+                  className={`inline-flex h-6 w-6 items-center justify-center rounded-md border transition ${
+                    densityMenuOpen
+                      ? 'border-cyan-500/50 bg-cyan-500/20 text-cyan-100'
+                      : 'border-white/10 bg-slate-950/50 text-slate-400 hover:border-white/20 hover:text-slate-200'
+                  }`}
+                >
+                  <svg viewBox="0 0 16 16" fill="currentColor" className="h-3.5 w-3.5" aria-hidden>
+                    <path d="M2 3.5h12a.75.75 0 010 1.5H2a.75.75 0 010-1.5zm0 4h12a.75.75 0 010 1.5H2a.75.75 0 010-1.5zm0 4h12a.75.75 0 010 1.5H2a.75.75 0 010-1.5z" />
+                  </svg>
+                </button>
+                {densityMenuOpen ? (
+                  <div
+                    role="menu"
+                    className="absolute right-0 top-full z-40 mt-1 min-w-[8.5rem] overflow-hidden rounded-lg border border-white/10 bg-slate-900 py-1 shadow-xl shadow-black/40"
+                  >
+                    {SIDEBAR_DENSITY_OPTIONS.map((opt) => {
+                      const active = opt.id === sidebarDensity
+                      return (
+                        <button
+                          key={opt.id}
+                          type="button"
+                          role="menuitemradio"
+                          aria-checked={active}
+                          onClick={() => {
+                            setSidebarDensity(opt.id)
+                            setDensityMenuOpen(false)
+                          }}
+                          className={`flex w-full items-center justify-between gap-2 px-2.5 py-1.5 text-left text-[11px] font-semibold transition ${
+                            active
+                              ? 'bg-cyan-500/20 text-cyan-100'
+                              : 'text-slate-300 hover:bg-white/5 hover:text-white'
+                          }`}
+                        >
+                          <span>{opt.label}</span>
+                          {active ? (
+                            <span className="text-[10px] text-cyan-300/90" aria-hidden>
+                              ✓
+                            </span>
+                          ) : null}
+                        </button>
+                      )
+                    })}
+                  </div>
+                ) : null}
+              </div>
+            </div>
             <p className="mt-0.5 text-sm font-semibold text-white">
               {sidebarKind === 'temporary' ? 'Ενεργοί έκτακτοι' : 'Ενεργοί μόνιμοι'}
             </p>
@@ -645,20 +777,20 @@ export default function PersonnelPanel({
                   openEdit(p)
                 }}
                 title="Κλικ: επιλογή · Διπλό κλικ: καρτέλα υπαλλήλου"
-                className={`mb-0.5 flex w-full items-center gap-1.5 rounded-xl border px-2 py-1.5 text-left transition ${
+                className={`flex w-full items-center rounded-xl border text-left transition ${densityStyle.row} ${
                   selected
                     ? 'border-cyan-500/40 bg-cyan-500/15 text-cyan-100'
                     : 'border-transparent text-slate-300 hover:bg-white/5 hover:text-white'
                 }`}
               >
                 <span
-                  className="flex w-2.5 shrink-0 items-center justify-center"
+                  className={`flex shrink-0 items-center justify-center ${densityStyle.tickWrap}`}
                   aria-hidden={!showInvoiceMark}
                 >
                   {showInvoiceMark ? (
                     <span
                       title="Κόβει τιμολόγιο"
-                      className="flex h-2.5 w-2.5 items-center justify-center rounded-[2px] bg-amber-500 text-[6px] font-bold leading-none text-slate-950"
+                      className={`flex items-center justify-center rounded-[2px] bg-amber-500 font-bold leading-none text-slate-950 ${densityStyle.tick}`}
                     >
                       Τ
                     </span>
@@ -668,13 +800,10 @@ export default function PersonnelPanel({
                   photoUrl={p.photo_url}
                   initials={initials}
                   name={p.tech_name}
-                  className={`h-9 w-9 ${avatarTone}`}
+                  className={`${densityStyle.avatar} ${avatarTone}`}
                 />
                 <span className="min-w-0 flex-1">
-                  <span className="block truncate text-sm font-semibold">{p.tech_name}</span>
-                  <span className="block truncate text-[10px] text-slate-500">
-                    #{p.code || p.tech_id}
-                  </span>
+                  <span className={`block truncate ${densityStyle.name}`}>{p.tech_name}</span>
                 </span>
               </button>
             ) : (
@@ -708,14 +837,14 @@ export default function PersonnelPanel({
                     photoUrl={p.photo_url}
                     initials={initials}
                     name={p.tech_name}
-                    className={`h-9 w-9 ${avatarTone}`}
+                    className={`h-9 w-9 text-xs ${avatarTone}`}
                   />
                   <span className="min-w-0 flex-1">
                     <span className="block truncate text-sm font-semibold text-white">
                       {p.tech_name}
                     </span>
                     <span className="block truncate text-[10px] text-slate-500">
-                      #{p.code || p.tech_id} - {employmentLabel(p.employment_type)}
+                      {employmentLabel(p.employment_type)}
                       {!p.is_active ? ' - Απολυμένος' : ''}
                     </span>
                   </span>
@@ -1367,7 +1496,7 @@ function PersonAvatar({ photoUrl, initials, name, className = '' }) {
   }
   return (
     <span
-      className={`inline-flex shrink-0 items-center justify-center overflow-hidden rounded-full text-xs font-bold ${className}`}
+      className={`inline-flex shrink-0 items-center justify-center overflow-hidden rounded-full font-bold ${className}`}
       aria-hidden={!name}
       title={name || undefined}
     >

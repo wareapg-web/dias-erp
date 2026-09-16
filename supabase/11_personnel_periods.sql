@@ -38,3 +38,14 @@ comment on column public.personnel_periods.end_date is 'Μέχρι (λήξη)· 
 --       personnel_id with =,
 --       daterange(start_date, coalesce(end_date, 'infinity'::date), '[]') with &&
 --     );
+
+-- RLS (ίδιο pattern με personnel / tech_earnings — ανοιχτό anon για το DIAS SPA)
+alter table public.personnel_periods enable row level security;
+
+drop policy if exists personnel_periods_anon_all on public.personnel_periods;
+create policy personnel_periods_anon_all on public.personnel_periods
+  for all to anon using (true) with check (true);
+
+drop policy if exists personnel_periods_authenticated_all on public.personnel_periods;
+create policy personnel_periods_authenticated_all on public.personnel_periods
+  for all to authenticated using (true) with check (true);

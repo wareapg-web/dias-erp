@@ -66,6 +66,7 @@ export default function App() {
   const catalogResizeRef = useRef(null)
   const catalogFrameRef = useRef(null)
   const [adminSession, setAdminSession] = useState(null)
+  const [diasSession, setDiasSession] = useState(null)
   const [authLoading, setAuthLoading] = useState(true)
   const {
     panelStyle: catalogPanelStyle,
@@ -148,18 +149,36 @@ export default function App() {
 
   useEffect(() => {
     let mounted = true
-    adminClient.auth.getSession().then(({ data }) => {
-      if (!mounted) return
-      setAdminSession(data.session)
-      setAuthLoading(false)
-    })
-    const { data: sub } = adminClient.auth.onAuthStateChange((_event, session) => {
+
+    async function loadSessions() {
+      try {
+        const [adminRes, diasRes] = await Promise.all([
+          adminClient.auth.getSession(),
+          diasClient.auth.getSession(),
+        ])
+        if (!mounted) return
+        setAdminSession(adminRes.data.session)
+        setDiasSession(diasRes.data.session)
+      } finally {
+        if (mounted) setAuthLoading(false)
+      }
+    }
+
+    loadSessions()
+
+    const { data: adminSub } = adminClient.auth.onAuthStateChange((_event, session) => {
       setAdminSession(session)
       setAuthLoading(false)
     })
+    const { data: diasSub } = diasClient.auth.onAuthStateChange((_event, session) => {
+      setDiasSession(session)
+      setAuthLoading(false)
+    })
+
     return () => {
       mounted = false
-      sub.subscription.unsubscribe()
+      adminSub.subscription.unsubscribe()
+      diasSub.subscription.unsubscribe()
     }
   }, [])
 
@@ -201,11 +220,11 @@ export default function App() {
   }, [adminSession])
 
   useEffect(() => {
-    if (!adminSession) return
+    if (!adminSession || !diasSession) return
     loadAdminTechs()
     loadPersonnel()
     loadPayrolls()
-  }, [adminSession, loadAdminTechs, loadPersonnel, loadPayrolls])
+  }, [adminSession, diasSession, loadAdminTechs, loadPersonnel, loadPayrolls])
 
   useEffect(() => {
     if (payrollsMissing) return undefined
@@ -330,12 +349,12 @@ export default function App() {
   if (authLoading) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-slate-950 text-slate-400">
-        Έλεγχος σύνδεσης Admin...
+        Έλεγχος σύνδεσης...
       </div>
     )
   }
 
-  if (!adminSession) {
+  if (!adminSession || !diasSession) {
     return <AdminLoginScreen onSignedIn={() => {}} />
   }
 
@@ -380,7 +399,7 @@ export default function App() {
               <button
                 type="button"
                 onClick={async () => {
-                  await adminClient.auth.signOut()
+                  await Promise.all([adminClient.auth.signOut(), diasClient.auth.signOut()])
                 }}
                 className="rounded-xl border border-rose-500/40 bg-rose-500/15 px-3 py-1.5 text-xs font-bold text-rose-100 transition hover:bg-rose-500/25"
               >
