@@ -63,7 +63,8 @@ export const FIXED_EXPENSE_DEFAULT_TRUE_KEYS = new Set([
  */
 export const EARNINGS_KEY_BY_TYPE_ID = {
   3: 'salary',
-  4: 'bonus',
+  4: 'bonus', // Υπόλοιπο Μισθού (πρώην «Bonus»)
+  5: 'manual_bonus', // Bonus (πρώην Extra Bonus) — χειροκίνητο, πάντα μεταβλητό
   41: 'bonus_plus',
   21: 'driver_allowance',
   23: 'accountant',
@@ -111,6 +112,7 @@ export const EARNINGS_KEY_BY_TYPE_CODE = {
 
 /**
  * Αντιστοίχιση γραμμής ledger → κλειδί αποδοχών (ή null αν άγνωστο → μεταβλητό).
+ * id 4 = Υπόλοιπο Μισθού (bonus) · id 5 = Bonus χειροκίνητο (manual_bonus).
  */
 export function earningsKeyFromLedgerRow(row) {
   if (!row) return null
@@ -121,12 +123,19 @@ export function earningsKeyFromLedgerRow(row) {
   const typeStr = String(row.type || row.type_code || '')
     .trim()
     .toLowerCase()
+  // Ακριβές «Bonus» χωρίς type_id → χειροκίνητο (όχι Υπόλοιπο Μισθού)
+  if (typeStr === 'bonus' || typeStr === 'extra bonus') {
+    return 'manual_bonus'
+  }
   if (typeStr && EARNINGS_KEY_BY_TYPE_CODE[typeStr]) {
     return EARNINGS_KEY_BY_TYPE_CODE[typeStr]
   }
   const desc = String(row.description || row.notes || '')
     .trim()
     .toLowerCase()
+  if (desc === 'bonus' || desc === 'extra bonus') {
+    return 'manual_bonus'
+  }
   for (const [needle, key] of Object.entries(EARNINGS_KEY_BY_TYPE_CODE)) {
     if (desc === needle || desc.startsWith(`${needle} `)) return key
   }

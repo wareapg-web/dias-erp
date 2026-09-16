@@ -23,39 +23,48 @@ function defaultBounds() {
   }
 }
 
-function loadBounds(storageKey) {
-  if (!storageKey) return defaultBounds()
+function loadWindowState(storageKey, defaultMaximized = false) {
+  if (!storageKey) {
+    return { bounds: defaultBounds(), maximized: defaultMaximized }
+  }
   if (boundsMemory.has(storageKey)) return boundsMemory.get(storageKey)
   try {
     const raw = localStorage.getItem(storageKey)
-    if (!raw) return defaultBounds()
+    if (!raw) {
+      return { bounds: defaultBounds(), maximized: defaultMaximized }
+    }
     const parsed = JSON.parse(raw)
+    const maximized = parsed?.maximized ?? defaultMaximized
     const vw = window.innerWidth
     const vh = window.innerHeight
     const width = clamp(Number(parsed?.width) || MIN_W, MIN_W, vw - 8)
     const height = clamp(Number(parsed?.height) || MIN_H, MIN_H, vh - 8)
     const next = {
-      width,
-      height,
-      x: clamp(Number(parsed?.x) || 0, 0, Math.max(0, vw - 80)),
-      y: clamp(Number(parsed?.y) || 0, 0, Math.max(0, vh - 48)),
+      bounds: {
+        width,
+        height,
+        x: clamp(Number(parsed?.x) || 0, 0, Math.max(0, vw - 80)),
+        y: clamp(Number(parsed?.y) || 0, 0, Math.max(0, vh - 48)),
+      },
+      maximized,
     }
     boundsMemory.set(storageKey, next)
     return next
   } catch {
-    return defaultBounds()
+    return { bounds: defaultBounds(), maximized: defaultMaximized }
   }
 }
 
-function saveBounds(storageKey, bounds) {
+function saveWindowState(storageKey, bounds, maximized) {
   if (!storageKey || !bounds) return
   const next = {
     x: Math.round(bounds.x),
     y: Math.round(bounds.y),
     width: Math.round(bounds.width),
     height: Math.round(bounds.height),
+    maximized: Boolean(maximized),
   }
-  boundsMemory.set(storageKey, next)
+  boundsMemory.set(storageKey, { bounds, maximized: next.maximized })
   try {
     localStorage.setItem(storageKey, JSON.stringify(next))
   } catch {
@@ -67,9 +76,19 @@ function saveBounds(storageKey, bounds) {
  * Windows-like floating window: drag title bar, resize edges/corners, maximize.
  * @param {string} [storageKey] — κρατάει θέση/μέγεθος σε μνήμη + localStorage
  */
-export default function ErpWindow({ titleBar, children, className = '', storageKey = null }) {
-  const [bounds, setBounds] = useState(() => loadBounds(storageKey))
-  const [maximized, setMaximized] = useState(false)
+export default function ErpWindow({
+  titleBar,
+  children,
+  className = '',
+  storageKey = null,
+  defaultMaximized = false,
+}) {
+  const initialStateRef = useRef(null)
+  if (initialStateRef.current == null) {
+    initialStateRef.current = loadWindowState(storageKey, defaultMaximized)
+  }
+  const [bounds, setBounds] = useState(initialStateRef.current.bounds)
+  const [maximized, setMaximized] = useState(initialStateRef.current.maximized)
   const restoreRef = useRef(null)
   const dragRef = useRef(null)
   const frameRef = useRef(null)
@@ -90,7 +109,7 @@ export default function ErpWindow({ titleBar, children, className = '', storageK
           x: clamp(b.x, 0, Math.max(0, vw - width)),
           y: clamp(b.y, 0, Math.max(0, vh - height)),
         }
-        saveBounds(storageKey, next)
+        saveWindowState(storageKey, next, maximized)
         return next
       })
     }
@@ -100,20 +119,19 @@ export default function ErpWindow({ titleBar, children, className = '', storageK
 
   const toggleMaximize = useCallback(() => {
     setMaximized((m) => {
+      const nextMaximized = !m
       if (m) {
-        if (restoreRef.current) setBounds(restoreRef.current)
+        if (restoreRef.current) {
+          setBounds(restoreRef.current)
+          saveWindowState(storageKey, restoreRef.current, false)
+        }
         return false
       }
       restoreRef.current = bounds
-      setBounds({
-        x: 0,
-        y: 0,
-        width: window.innerWidth,
-        height: window.innerHeight,
-      })
-      return true
+      saveWindowState(storageKey, bounds, true)
+      return nextMaximized
     })
-  }, [bounds])
+  }, [bounds, storageKey])
 
   const startDrag = useCallback(
     (e) => {
@@ -199,7 +217,7 @@ export default function ErpWindow({ titleBar, children, className = '', storageK
     const onUp = () => {
       if (!dragRef.current) return
       dragRef.current = null
-      if (!maximized) saveBounds(storageKey, boundsRef.current)
+      if (!maximized) saveWindowState(storageKey, boundsRef.current, false)
     }
 
     window.addEventListener('pointermove', onMove)

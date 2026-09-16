@@ -310,56 +310,11 @@ function emptyTemplateRow(type, monthContext = null) {
   }
 }
 
-/**
- * Σταθερή σειρά εμφάνισης στο μηνιαίο grid (μετά την ημερομηνία).
- * Μισθός → Υπόλοιπο Μισθού → Λογιστής → Οδηγού → ώρες → λοιπά/έξτρα.
- */
-export const LEDGER_DISPLAY_TYPE_ORDER = {
-  3: 10, // Μισθός
-  4: 20, // Υπόλοιπο Μισθού
-  23: 30, // Λογιστής
-  21: 40, // Επίδομα οδηγού
-  7: 50, // Υπερωρίες
-  8: 51, // Αργίες
-  9: 52, // Νυχτερινά
-  25: 53, // Μετρό
-  22: 54, // Διανυκτέρευση
-  13: 70, // Επίδομα Αδείας
-  11: 80, // Δώρο Πάσχα
-  12: 81, // Δώρο Χριστουγέννων
-  5: 90, // Bonus (χειροκίνητο)
-  41: 91, // Bonus+ (ιστορικό)
-  2: 200, // Προκαταβολή
-  91: 210, // Εξόφληση Μισθού
-  92: 211, // Εξόφληση Λοιπών
-  93: 212, // Εξόφληση Τιμολογίου
-  94: 220, // Δόση Δανείου
-  95: 221, // Εκταμίευση Δανείου
-}
-
-const LEDGER_DISPLAY_ORDER_FALLBACK = 500
-
-function ledgerRowTypeId(row) {
-  const fromType = Number(row?.__type?.id ?? row?.ept_id ?? row?.type_id)
-  if (Number.isFinite(fromType) && fromType > 0) return fromType
-  return null
-}
-
-function ledgerDisplayOrder(row) {
-  const id = ledgerRowTypeId(row)
-  if (id != null && Object.prototype.hasOwnProperty.call(LEDGER_DISPLAY_TYPE_ORDER, id)) {
-    return LEDGER_DISPLAY_TYPE_ORDER[id]
-  }
-  return LEDGER_DISPLAY_ORDER_FALLBACK
-}
-
+/** Χρονολογικό ημερολόγιο: entry_date → created_at → id (tie-breaker). */
 function compareSavedEntries(a, b) {
   const dateA = String(a.entry_date || '')
   const dateB = String(b.entry_date || '')
   if (dateA !== dateB) return dateA.localeCompare(dateB)
-  const orderA = ledgerDisplayOrder(a)
-  const orderB = ledgerDisplayOrder(b)
-  if (orderA !== orderB) return orderA - orderB
   const createdA = String(a.created_at || '')
   const createdB = String(b.created_at || '')
   if (createdA !== createdB) return createdA.localeCompare(createdB)
@@ -367,13 +322,8 @@ function compareSavedEntries(a, b) {
 }
 
 function applyTypeLabelGrouping(rows) {
-  return rows.map((row, index, allRows) => {
-    const typeId = row.__type?.id ?? row.ept_id ?? null
-    const prev = index > 0 ? allRows[index - 1] : null
-    const prevTypeId = prev?.__type?.id ?? prev?.ept_id ?? null
-    const showTypeLabel = typeId == null ? true : typeId !== prevTypeId
-    return { ...row, __showTypeLabel: showTypeLabel }
-  })
+  // Πάντα εμφάνιση Τύπου — χωρίς κρύψιμο σε διαδοχικές ίδιες γραμμές
+  return (rows || []).map((row) => ({ ...row, __showTypeLabel: true }))
 }
 
 /**

@@ -340,7 +340,7 @@ export default function App() {
   }
 
   return (
-    <div className="relative min-h-screen overflow-hidden bg-gradient-to-br from-slate-950 via-slate-900 to-indigo-950">
+    <div className="relative h-screen min-h-screen overflow-hidden bg-gradient-to-br from-slate-950 via-slate-900 to-indigo-950">
       <div
         className="pointer-events-none absolute inset-0 opacity-30"
         aria-hidden
@@ -352,6 +352,7 @@ export default function App() {
 
       <ErpWindow
         storageKey="dias-erp:modal-pos:main-window"
+        defaultMaximized
         titleBar={
           <div className="flex w-full min-w-0 items-center gap-3 pr-2">
             <div className="min-w-0 shrink-0">

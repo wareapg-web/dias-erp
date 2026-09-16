@@ -59,7 +59,7 @@ import {
 } from '../lib/techPayments'
 import { buildPaymentsDisplayList, isLoanDisbursementRow, isLoanInstallmentRow, loanRowAmount } from '../lib/loanUi'
 import { exportMonthPayrollToExcel } from '../lib/monthPayrollExport'
-import { exportMonthInvoicesToExcel, exportMonthTemporaryToExcel } from '../lib/monthInvoiceExport'
+import { exportMonthInvoicesToExcel, exportMonthTemporaryToExcel, exportMonthTemporaryOtherToExcel } from '../lib/monthInvoiceExport'
 import {
   computeLedgerBalances,
   ledgerRowKey,
@@ -185,6 +185,7 @@ export default function TechAnalysisModal({
   const [monthExporting, setMonthExporting] = useState(false)
   const [invoiceExporting, setInvoiceExporting] = useState(false)
   const [temporaryExporting, setTemporaryExporting] = useState(false)
+  const [temporaryOtherExporting, setTemporaryOtherExporting] = useState(false)
   const [personnelSidebarKind, setPersonnelSidebarKind] = useState(workspaceSeed.sidebarKind)
   const [temporaryPayablesOpen, setTemporaryPayablesOpen] = useState(false)
   const [temporaryPayablesHint, setTemporaryPayablesHint] = useState({
@@ -1170,7 +1171,7 @@ export default function TechAnalysisModal({
         year: analysisYear,
         personnel,
       })
-      toast.success(`Εξαγωγή ολοκληρώθηκε · ${rowCount} τεχνικοί · ${filename}`)
+      toast.success(`Εξαγωγή ΚΟΣΤΟΣ · ${rowCount} μόνιμοι · ${filename}`)
     } catch (err) {
       const msg = err?.message || String(err)
       toast.error(msg || 'Αποτυχία εξαγωγής')
@@ -1201,19 +1202,35 @@ export default function TechAnalysisModal({
     if (temporaryExporting) return
     setTemporaryExporting(true)
     try {
-      const { rowCount, invoiceCount, cashCount, filename } = await exportMonthTemporaryToExcel({
+      const { rowCount, filename } = await exportMonthTemporaryToExcel({
         month: selectedMonth,
         year: analysisYear,
         personnel,
       })
-      toast.success(
-        `Εξαγωγή έκτακτων · ${rowCount} γραμμές (ΤΙΜ ${invoiceCount} · μετρητά ${cashCount}) · ${filename}`
-      )
+      toast.success(`Εξαγωγή ΤΙΜΟΛΟΓΙΑ · ${rowCount} γραμμές · ${filename}`)
     } catch (err) {
       const msg = err?.message || String(err)
-      toast.error(msg || 'Αποτυχία εξαγωγής έκτακτων')
+      toast.error(msg || 'Αποτυχία εξαγωγής τιμολογίων')
     } finally {
       setTemporaryExporting(false)
+    }
+  }
+
+  const handleTemporaryOtherExcelExport = async () => {
+    if (temporaryOtherExporting) return
+    setTemporaryOtherExporting(true)
+    try {
+      const { rowCount, filename } = await exportMonthTemporaryOtherToExcel({
+        month: selectedMonth,
+        year: analysisYear,
+        personnel,
+      })
+      toast.success(`Εξαγωγή ΛΟΙΠΑ · ${rowCount} γραμμές · ${filename}`)
+    } catch (err) {
+      const msg = err?.message || String(err)
+      toast.error(msg || 'Αποτυχία εξαγωγής λοιπών')
+    } finally {
+      setTemporaryOtherExporting(false)
     }
   }
 
@@ -2030,9 +2047,22 @@ export default function TechAnalysisModal({
                   <div className="flex items-center gap-1.5">
                     <button
                       type="button"
+                      onClick={handleTemporaryOtherExcelExport}
+                      disabled={temporaryOtherExporting}
+                      title="Εξαγωγή έκτακτων χωρίς τιμολόγιο: άθροισμα Λοιπά Χρ. ανά μήνα (χωρίς εξόφληση)"
+                      className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-500/40 bg-emerald-500/15 px-3 py-1.5 text-xs font-bold text-emerald-100 transition hover:bg-emerald-500/25 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      <svg viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4 shrink-0" aria-hidden>
+                        <path d="M10.75 2.75a.75.75 0 00-1.5 0v8.69L6.3 8.49a.75.75 0 00-1.1 1.02l4.25 4.5a.75.75 0 001.1 0l4.25-4.5a.75.75 0 10-1.1-1.02l-2.95 3.12V2.75z" />
+                        <path d="M3.5 12.75a.75.75 0 00-1.5 0v2.5A2.75 2.75 0 004.75 18h10.5A2.75 2.75 0 0018 15.25v-2.5a.75.75 0 00-1.5 0v2.5c0 .69-.56 1.25-1.25 1.25H4.75c-.69 0-1.25-.56-1.25-1.25v-2.5z" />
+                      </svg>
+                      {temporaryOtherExporting ? '...' : 'ΛΟΙΠΑ'}
+                    </button>
+                    <button
+                      type="button"
                       onClick={handleTemporaryExcelExport}
                       disabled={temporaryExporting}
-                      title="Εξαγωγή έκτακτων μήνα: φύλλο Τιμολόγια (καθαρό + ΦΠΑ) και φύλλο Μετρητά (ποσό)"
+                      title="Εξαγωγή έκτακτων με τιμολόγιο: άθροισμα ΤΙΜ Χρ. ανά μήνα (χωρίς εξόφληση) + ΦΠΑ 24% + Τελικό Πληρωτέο"
                       className="inline-flex items-center gap-1.5 rounded-xl border border-amber-500/40 bg-amber-500/15 px-3 py-1.5 text-xs font-bold text-amber-100 transition hover:bg-amber-500/25 disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       <svg viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4 shrink-0" aria-hidden>
@@ -2080,7 +2110,7 @@ export default function TechAnalysisModal({
                     type="button"
                     onClick={handleInvoiceExcelExport}
                     disabled={invoiceExporting}
-                    title="Εξαγωγή Αξίας Τιμολογίου = Υπόλοιπο ΤΙΜ ÷ 0,8 (ίδιο με την προσαύξηση στην οθόνη)"
+                    title="Εξαγωγή Οδηγού Τιμολογίου: ΤΙΜ Χρ. (+ προσαύξηση όπου υπάρχει) · ΦΠΑ 24% · Παρακράτηση · Πληρωτέο"
                     className="inline-flex items-center gap-1.5 rounded-xl border border-amber-500/40 bg-amber-500/15 px-3 py-1.5 text-xs font-bold text-amber-100 transition hover:bg-amber-500/25 disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     <svg viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4 shrink-0" aria-hidden>
@@ -2093,7 +2123,7 @@ export default function TechAnalysisModal({
                     type="button"
                     onClick={handleMonthExcelExport}
                     disabled={monthExporting}
-                    title="Εξαγωγή χρεώσεων (δεδουλευμένων) όλου του προσωπικού για τον επιλεγμένο μήνα"
+                    title="Εξαγωγή μόνιμων: Σταθερά (Μισθός/Λοιπά/ΤΙΜ) · Μεταβλητά (Λοιπά/ΤΙΜ) · Ticket ενημερωτικό"
                     className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-500/40 bg-emerald-500/15 px-3 py-1.5 text-xs font-bold text-emerald-100 transition hover:bg-emerald-500/25 disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     <svg viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4 shrink-0" aria-hidden>

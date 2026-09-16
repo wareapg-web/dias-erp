@@ -1,4 +1,4 @@
-/** Εξαγωγή δεδουλευμένων (χρεώσεις) μήνα σε Excel — όλο το προσωπικό. */
+/** Εξαγωγή δεδουλευμένων (χρεώσεις) μήνα σε Excel — μόνο μόνιμοι. */
 
 import * as XLSX from 'xlsx-js-style'
 import { diasClient, fetchAllRows } from './supabase'
@@ -9,6 +9,7 @@ import {
   normalizeFixedExpenseSettings,
 } from './techEarnings'
 import { MONTH_LABELS } from './payrollAnalysis'
+import { isTemporaryPersonnel } from './personnel'
 
 function round2(n) {
   return Math.round((Number(n) || 0) * 100) / 100
@@ -22,14 +23,35 @@ function hasDebit(row) {
   )
 }
 
-/** Δάνεια 94/95 ή λεκτικό δανείου — εκτός export. */
-function isLoanExcludedRow(row) {
+/**
+ * Πάντα μεταβλητά στο ΚΟΣΤΟΣ (ανεξάρτητα από ticks Αποδοχών):
+ * - Bonus id 5 (πρώην Extra Bonus) · Bonus+ id 41
+ * - Εκταμίευση δανείου id 95
+ * Υπόλοιπο Μισθού (id 4) ΔΕΝ μπαίνει εδώ — ακολουθεί τα ticks.
+ */
+function isAlwaysVariableRow(row) {
   if (!row) return false
-  if (isLoanInstallmentRow(row) || isLoanDisbursementRow(row)) return true
-  const tid = Number(row.type_id)
-  if (tid === 94 || tid === 95) return true
-  const text = `${row.notes || ''} ${row.type || ''} ${row.description || ''}`.toLowerCase()
-  return /δάνει|δανειο|δάνεια|δανεια/.test(text)
+  if (isLoanDisbursementRow(row)) return true
+  const tid = Number(row.type_id ?? row.ept_id)
+  if (tid === 5 || tid === 41 || tid === 95) return true
+  const key = earningsKeyFromLedgerRow(row)
+  if (key === 'manual_bonus' || key === 'bonus_plus') return true
+  return false
+}
+
+function permanentPersonnelList(personnel = []) {
+  return (personnel || []).filter(
+    (p) => !isTemporaryPersonnel(p) && p.is_active !== false
+  )
+}
+
+function techIdSetFromList(list = []) {
+  const set = new Set()
+  for (const p of list) {
+    if (p.tech_id != null && p.tech_id !== '') set.add(String(p.tech_id))
+    if (p.id != null && p.id !== '') set.add(String(p.id))
+  }
+  return set
 }
 
 function personnelNameByTechId(personnel = []) {
@@ -65,7 +87,6 @@ export async function loadTicketByTechForMonth(month, year) {
       q.eq('month', m).eq('year', y)
     )
   } catch (err) {
-    // Fallback: φίλτρο μέσω period YYYY-MM αν λείπουν month/year columns
     try {
       const period = `${y}-${String(m).padStart(2, '0')}`
       rows = await fetchAllRows(diasClient, 'payrolls', (q) => q.eq('period', period))
@@ -102,26 +123,31 @@ export async function loadFixedExpenseSettingsByTech() {
 }
 
 function isFixedForTech(settingsByTech, techId, earningsKey) {
-  // Άγνωστος τύπος → μεταβλητό
   if (!earningsKey) return false
   const settings =
     settingsByTech.get(String(techId)) || normalizeFixedExpenseSettings(null)
   return settings[earningsKey] === true
 }
 
+function emptySlot(techId, name) {
+  return {
+    techId,
+    name,
+    fixedSalary: 0,
+    fixedOther: 0,
+    fixedInvoice: 0,
+    varOther: 0,
+    varInvoice: 0,
+    ticket: 0,
+    total: 0,
+  }
+}
+
 /**
- * Ομαδοποίηση χρεώσεων μήνα ανά τεχνικό · Μισθός/Λοιπά/ΤΙΜ + Σταθερά/Μεταβλητά.
- * @returns {Array<{
- *   techId: string,
- *   name: string,
- *   sumSalary: number,
- *   sumOther: number,
- *   sumInvoice: number,
- *   sumFixed: number,
- *   sumVariable: number,
- *   ticket: number,
- *   total: number
- * }>}
+ * Μόνιμοι: χρεώσεις μήνα χωρισμένες σε Σταθερά (Μισθός/Λοιπά/ΤΙΜ) και Μεταβλητά (Λοιπά/ΤΙΜ).
+ * Bonus (id 5, πρώην Extra Bonus) + Bonus+ + εκταμίευση δανείου (95) → πάντα μεταβλητά.
+ * Υπόλοιπο Μισθού (id 4) → σύμφωνα με ticks. Δόσεις (94) εκτός (μόνο πίστωση).
+ * Ticket ενημερωτικό — εκτός πληρωτέου.
  */
 export function aggregateMonthDebits(
   ledgerRows = [],
@@ -129,51 +155,59 @@ export function aggregateMonthDebits(
   fixedSettingsByTech = new Map(),
   ticketByTech = new Map()
 ) {
-  const names = personnelNameByTechId(personnel)
+  const permanents = permanentPersonnelList(personnel)
+  const names = personnelNameByTechId(permanents)
+  const permanentIds = techIdSetFromList(permanents)
   const byTech = new Map()
 
   for (const row of ledgerRows || []) {
-    if (!hasDebit(row)) continue
     if (isTicketRestaurantRow(row)) continue
-    if (isLoanExcludedRow(row)) continue
+    // Δόσεις 94: μόνο πίστωση — δεν μπαίνουν στο ΚΟΣΤΟΣ (η εκταμίευση 95 καλύπτει το ποσό)
+    if (isLoanInstallmentRow(row)) continue
+    if (!hasDebit(row)) continue
 
     const techId = String(row.tech_id ?? '')
     if (!techId) continue
+    if (permanentIds.size > 0 && !permanentIds.has(techId)) continue
 
     let slot = byTech.get(techId)
     if (!slot) {
-      slot = {
-        techId,
-        name: names.get(techId) || techId,
-        sumSalary: 0,
-        sumOther: 0,
-        sumInvoice: 0,
-        sumFixed: 0,
-        sumVariable: 0,
-        ticket: 0,
-        total: 0,
-      }
+      slot = emptySlot(techId, names.get(techId) || techId)
       byTech.set(techId, slot)
     }
 
     const salary = Number(row.salary_debit) || 0
     const other = Number(row.other_debit) || 0
     const invoice = Number(row.invoice_amount) || 0
-    const debit = round2(salary + other + invoice)
 
-    slot.sumSalary = round2(slot.sumSalary + salary)
-    slot.sumOther = round2(slot.sumOther + other)
-    slot.sumInvoice = round2(slot.sumInvoice + invoice)
-
+    const alwaysVar = isAlwaysVariableRow(row)
     const earningsKey = earningsKeyFromLedgerRow(row)
-    if (isFixedForTech(fixedSettingsByTech, techId, earningsKey)) {
-      slot.sumFixed = round2(slot.sumFixed + debit)
-    } else {
-      slot.sumVariable = round2(slot.sumVariable + debit)
+    const fixed =
+      !alwaysVar && isFixedForTech(fixedSettingsByTech, techId, earningsKey)
+
+    if (salary > 0) {
+      if (!alwaysVar && (fixed || earningsKey === 'salary')) {
+        slot.fixedSalary = round2(slot.fixedSalary + salary)
+      } else {
+        slot.varOther = round2(slot.varOther + salary)
+      }
+    }
+    if (other > 0) {
+      if (fixed) slot.fixedOther = round2(slot.fixedOther + other)
+      else slot.varOther = round2(slot.varOther + other)
+    }
+    if (invoice > 0) {
+      if (fixed) slot.fixedInvoice = round2(slot.fixedInvoice + invoice)
+      else slot.varInvoice = round2(slot.varInvoice + invoice)
     }
 
-    // Πληρωτέο = μόνο μετρητά (χωρίς Ticket)
-    slot.total = round2(slot.sumSalary + slot.sumOther + slot.sumInvoice)
+    slot.total = round2(
+      slot.fixedSalary +
+        slot.fixedOther +
+        slot.fixedInvoice +
+        slot.varOther +
+        slot.varInvoice
+    )
   }
 
   for (const slot of byTech.values()) {
@@ -181,7 +215,7 @@ export function aggregateMonthDebits(
   }
 
   return Array.from(byTech.values())
-    .filter((r) => r.total > 0)
+    .filter((r) => r.total > 0 || r.ticket > 0)
     .sort((a, b) => String(a.name).localeCompare(String(b.name), 'el'))
 }
 
@@ -191,10 +225,20 @@ export function monthExportFilename(month, year) {
   return `Misthodosia_${m}_${y}.xlsx`
 }
 
+function styleHeaderCell(sheet, addr, value) {
+  sheet[addr] = {
+    v: value,
+    t: 's',
+    s: {
+      font: { bold: true, name: 'Calibri', sz: 11 },
+      alignment: { horizontal: 'center', vertical: 'center', wrapText: true },
+    },
+  }
+}
+
 /**
- * Φόρτωση ledger μήνα + Excel download.
+ * Excel μόνιμων: Σταθερά (Μισθός/Λοιπά/Τιμολόγιο) · Μεταβλητά (λοιπά/τιμολόγιο) · Ticket · Πληρωτέο.
  * @param {{ month: number, year: number, personnel?: object[] }} opts
- * @returns {Promise<{ rowCount: number, filename: string }>}
  */
 export async function exportMonthPayrollToExcel({ month, year, personnel = [] }) {
   const m = Number(month)
@@ -206,7 +250,6 @@ export async function exportMonthPayrollToExcel({ month, year, personnel = [] })
   const [ledgerRows, fixedSettingsByTech, ticketByTech] = await Promise.all([
     fetchAllRows(diasClient, 'tech_ledger_view', (q) => q.eq('month', m).eq('year', y)),
     loadFixedExpenseSettingsByTech().catch((err) => {
-      // Αν λείπει η στήλη (migration 30), συνέχισε με defaults (Μισθός=βασικό)
       console.warn('[month export] fixed_expense_settings', err?.message || err)
       return new Map()
     }),
@@ -223,78 +266,69 @@ export async function exportMonthPayrollToExcel({ month, year, personnel = [] })
     ticketByTech
   )
   if (rows.length === 0) {
-    throw new Error('Δεν βρέθηκαν χρεώσεις (δεδουλευμένα) για αυτόν τον μήνα')
+    throw new Error('Δεν βρέθηκαν χρεώσεις μόνιμων για αυτόν τον μήνα')
   }
 
-  const header = [
-    'Ονοματεπώνυμο',
-    'Χρέωση Μισθού (€)',
-    'Χρέωση Λοιπών (€)',
-    'Χρέωση Τιμολογίου (€)',
-    'Σταθερά (€)',
-    'Μεταβλητά (€)',
-    'Ticket Restaurant (€)',
-    'Συνολικό Πληρωτέο (€)',
-  ]
-
-  const monthTitle = String(MONTH_LABELS[m - 1] || `Μήνας ${m}`)
-    .toLocaleUpperCase('el-GR')
+  const monthTitle = String(MONTH_LABELS[m - 1] || `Μήνας ${m}`).toLocaleUpperCase('el-GR')
   const title = `${monthTitle} ${y}`
 
-  const titleCell = {
-    v: title,
-    t: 's',
-    s: {
-      font: { bold: true, sz: 18, name: 'Calibri' },
-      alignment: { horizontal: 'center', vertical: 'center', wrapText: false },
-    },
-  }
+  const aoa = [
+    [title, '', '', '', '', '', '', ''],
+    ['Ονοματεπώνυμο', 'Σταθερά (€)', '', '', 'Μεταβλητά (€)', '', 'Ticket Restaurant (€)', 'Συνολικό Πληρωτέο (€)'],
+    ['', 'Μισθός', 'Λοιπά', 'Τιμολόγιο', 'Λοιπά', 'Τιμολόγιο', '', ''],
+  ]
 
-  const aoa = [[titleCell], header]
-  let totSalary = 0
-  let totOther = 0
-  let totInvoice = 0
-  let totFixed = 0
-  let totVariable = 0
+  let totFixedSalary = 0
+  let totFixedOther = 0
+  let totFixedInvoice = 0
+  let totVarOther = 0
+  let totVarInvoice = 0
   let totTicket = 0
   let totAll = 0
 
   for (const r of rows) {
     aoa.push([
       r.name,
-      r.sumSalary,
-      r.sumOther,
-      r.sumInvoice,
-      r.sumFixed,
-      r.sumVariable,
+      r.fixedSalary,
+      r.fixedOther,
+      r.fixedInvoice,
+      r.varOther,
+      r.varInvoice,
       r.ticket,
       r.total,
     ])
-    totSalary = round2(totSalary + r.sumSalary)
-    totOther = round2(totOther + r.sumOther)
-    totInvoice = round2(totInvoice + r.sumInvoice)
-    totFixed = round2(totFixed + r.sumFixed)
-    totVariable = round2(totVariable + r.sumVariable)
+    totFixedSalary = round2(totFixedSalary + r.fixedSalary)
+    totFixedOther = round2(totFixedOther + r.fixedOther)
+    totFixedInvoice = round2(totFixedInvoice + r.fixedInvoice)
+    totVarOther = round2(totVarOther + r.varOther)
+    totVarInvoice = round2(totVarInvoice + r.varInvoice)
     totTicket = round2(totTicket + r.ticket)
     totAll = round2(totAll + r.total)
   }
 
   aoa.push([
     'ΓΕΝΙΚΟ ΣΥΝΟΛΟ',
-    totSalary,
-    totOther,
-    totInvoice,
-    totFixed,
-    totVariable,
+    totFixedSalary,
+    totFixedOther,
+    totFixedInvoice,
+    totVarOther,
+    totVarInvoice,
     totTicket,
     totAll,
   ])
 
   const sheet = XLSX.utils.aoa_to_sheet(aoa)
 
-  // Τίτλος μήνα/έτους: merged A1:H1, κεντραρισμένο, bold, μεγαλύτερη γραμματοσειρά
-  sheet['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 7 } }]
-  sheet['!rows'] = [{ hpt: 30 }]
+  sheet['!merges'] = [
+    { s: { r: 0, c: 0 }, e: { r: 0, c: 7 } },
+    { s: { r: 1, c: 1 }, e: { r: 1, c: 3 } },
+    { s: { r: 1, c: 4 }, e: { r: 1, c: 5 } },
+    { s: { r: 1, c: 0 }, e: { r: 2, c: 0 } },
+    { s: { r: 1, c: 6 }, e: { r: 2, c: 6 } },
+    { s: { r: 1, c: 7 }, e: { r: 2, c: 7 } },
+  ]
+  sheet['!rows'] = [{ hpt: 30 }, { hpt: 22 }, { hpt: 20 }]
+
   sheet.A1 = {
     v: title,
     t: 's',
@@ -304,13 +338,22 @@ export async function exportMonthPayrollToExcel({ month, year, personnel = [] })
     },
   }
 
+  styleHeaderCell(sheet, 'A2', 'Ονοματεπώνυμο')
+  styleHeaderCell(sheet, 'B2', 'Σταθερά (€)')
+  styleHeaderCell(sheet, 'E2', 'Μεταβλητά (€)')
+  styleHeaderCell(sheet, 'G2', 'Ticket Restaurant (€)')
+  styleHeaderCell(sheet, 'H2', 'Συνολικό Πληρωτέο (€)')
+  styleHeaderCell(sheet, 'B3', 'Μισθός')
+  styleHeaderCell(sheet, 'C3', 'Λοιπά')
+  styleHeaderCell(sheet, 'D3', 'Τιμολόγιο')
+  styleHeaderCell(sheet, 'E3', 'Λοιπά')
+  styleHeaderCell(sheet, 'F3', 'Τιμολόγιο')
+
   const lastRow = aoa.length
   const numCols = ['B', 'C', 'D', 'E', 'F', 'G', 'H']
-  // Δεδομένα από γραμμή 3 (1=τίτλος, 2=headers)
-  for (let r = 3; r <= lastRow; r += 1) {
+  for (let r = 4; r <= lastRow; r += 1) {
     for (const col of numCols) {
-      const addr = `${col}${r}`
-      const cell = sheet[addr]
+      const cell = sheet[`${col}${r}`]
       if (cell && typeof cell.v === 'number') {
         cell.t = 'n'
         cell.z = '0.00'
@@ -320,11 +363,11 @@ export async function exportMonthPayrollToExcel({ month, year, personnel = [] })
 
   sheet['!cols'] = [
     { wch: 36 },
-    { wch: 18 },
-    { wch: 18 },
-    { wch: 20 },
-    { wch: 14 },
-    { wch: 14 },
+    { wch: 12 },
+    { wch: 12 },
+    { wch: 12 },
+    { wch: 12 },
+    { wch: 12 },
     { wch: 20 },
     { wch: 20 },
   ]

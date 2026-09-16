@@ -40,6 +40,14 @@ import {
 
 const INVOICE_CREDIT_TYPE_ID = 93
 const MOVEMENT_MODAL_MIN_W = 560
+
+function isInvoiceTimCreditType(typeOrId) {
+  return Number(typeOrId) === INVOICE_CREDIT_TYPE_ID
+}
+
+function sideIsCredit(side) {
+  return String(side || '').toUpperCase() === 'CREDIT'
+}
 const MOVEMENT_MODAL_MIN_H = 420
 
 function defaultMovementModalSize() {
@@ -374,8 +382,13 @@ export default function MovementModal({
   const pct = Number(taxPercent)
   const safeTaxPercent = Number.isFinite(pct) && pct > 0 ? pct : 20
   const grossUpFactor = 1 - safeTaxPercent / 100
+  const isInvoiceTimCreditSettlement =
+    isInvoiceTimCreditType(selectedTypeId ?? presetTypeId) &&
+    sideIsCredit(form.side || presetSide) &&
+    techIsTemporary !== true &&
+    categoryPolicy.temporary !== true
   const showInvoiceGrossDual =
-    uiCategory === 'INVOICE' &&
+    (uiCategory === 'INVOICE' || isInvoiceTimCreditSettlement) &&
     techIsTemporary !== true &&
     categoryPolicy.temporary !== true &&
     invoiceGrossUp !== false &&
@@ -399,9 +412,10 @@ export default function MovementModal({
   }, [categoryPolicy, showInvoiceCategory, isEdit, uiCategory])
 
   const categorySelectLocked =
-    categoryPolicy.temporary &&
-    (categoryPolicy.allowedCategories.length <= 1 ||
-      (isEdit && !categoryPolicy.allowedCategories.includes(uiCategory)))
+    (categoryPolicy.temporary &&
+      (categoryPolicy.allowedCategories.length <= 1 ||
+        (isEdit && !categoryPolicy.allowedCategories.includes(uiCategory)))) ||
+    (isInvoiceTimCreditSettlement && !isEdit)
 
   /** Edit / settlement preset: κράτα excluded τύπο ορατό & κλειδωμένο. */
   const exceptionTypeId = useMemo(() => {
@@ -528,6 +542,13 @@ export default function MovementModal({
           : presetPostToInvoice === true || base.post_to_invoice === true
 
         const policy = getLedgerCategoryPolicy(tech)
+        const timCreditSettlement =
+          isInvoiceTimCreditType(presetTypeId ?? match?.id ?? selectedRowData?.type_id ?? selectedRowData?.ept_id) &&
+          sideIsCredit(side) &&
+          (!selectedRowData ||
+            Number(selectedRowData.invoice_credit) > 0 ||
+            bucket === 'invoice_credit' ||
+            presetPostToInvoice === true)
         const category = (() => {
           // Νέα Εισαγωγή (χωρίς edit / χωρίς preset τύπου): default από ledger policy
           let cat
@@ -543,11 +564,13 @@ export default function MovementModal({
             }
           } else {
             cat = resolveUiCategory({
-              postToInvoice: postInvoiceFlag,
+              postToInvoice: postInvoiceFlag || timCreditSettlement,
               ledgerGroup: base.ledger_group,
               type: match,
             })
           }
+          // Εξόφληση ΤΙΜ (93): πάντα Τιμολόγιο — αλλιώς πέφτει σε Μισθό/Λοιπά και χάνεται ο οδηγός
+          if (timCreditSettlement) cat = 'INVOICE'
           // Νέα κίνηση έκτακτου: ποτέ απαγορευμένη κατηγορία στο dropdown
           if (policy.temporary && !selectedRowData && !policy.allowedCategories.includes(cat)) {
             cat = policy.defaultCategory
@@ -589,15 +612,33 @@ export default function MovementModal({
           !selectedRowData && presetAmount != null && presetAmount !== ''
             ? String(presetAmount)
             : base.amount
+        const safePctInit = Number(taxPercent) > 0 ? Number(taxPercent) : 20
+        const factorInit = 1 - safePctInit / 100
+        let nextDescription =
+          !selectedRowData && presetDescription
+            ? presetDescription
+            : isBareEuroText(base.description)
+              ? ''
+              : base.description
+        const dualOk =
+          (category === 'INVOICE' || timCreditSettlement) &&
+          techIsTemporary !== true &&
+          policy.temporary !== true &&
+          invoiceGrossUp !== false
+        if (timCreditSettlement && dualOk && factorInit > 0 && factorInit < 1) {
+          const netN = parseElNumber(nextAmount)
+          if (netN != null && netN > 0) {
+            nextDescription = mergeInvoiceBreakdownDescription(
+              nextDescription,
+              netN,
+              safePctInit
+            )
+          }
+        }
         setForm({
           ...base,
           type: chosen?.description || base.type,
-          description:
-            !selectedRowData && presetDescription
-              ? presetDescription
-              : isBareEuroText(base.description)
-                ? ''
-                : base.description,
+          description: nextDescription,
           amount: nextAmount,
           is_salary_type: typeIsSalary(chosen),
           ledger_group: category,
@@ -606,12 +647,6 @@ export default function MovementModal({
         })
 
         // Dual UI: net από preset · gross = net / factor (μόνο μόνιμοι + προσαύξηση)
-        const dualOk =
-          category === 'INVOICE' &&
-          techIsTemporary !== true &&
-          policy.temporary !== true &&
-          invoiceGrossUp !== false
-        const factorInit = 1 - (Number(taxPercent) > 0 ? Number(taxPercent) : 20) / 100
         if (dualOk && factorInit > 0 && factorInit < 1) {
           const netN = parseElNumber(nextAmount)
           setGrossAmountDisplay(
@@ -787,7 +822,6 @@ export default function MovementModal({
     // Εξόφληση ΤΙΜ (μόνο type 93) + προσαύξηση — ΟΧΙ δάνεια 94/95
     const typeId = Number(selectedType.id)
     const isInvoiceCreditSettlement =
-      invoiceFlag &&
       side === 'CREDIT' &&
       invoiceGrossUp !== false &&
       techIsTemporary !== true &&
