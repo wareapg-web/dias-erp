@@ -3,7 +3,7 @@
 import * as XLSX from 'xlsx-js-style'
 import { diasClient, fetchAllRows } from './supabase'
 import { isTicketRestaurantRow, computeInvoiceGrossBreakdown } from './techLedger'
-import { personnelIssuesInvoice } from './personnel'
+import { personnelIssuesInvoice, isTemporaryPersonnel } from './personnel'
 import { MONTH_LABELS } from './payrollAnalysis'
 import { resolveInvoiceTermsForMonth } from './techAgreementVersions'
 
@@ -28,10 +28,11 @@ function personnelNameByTechId(personnel = []) {
   return map
 }
 
-/** tech_id που κόβουν παραστατικό (payment_method invoice/mixed). */
+/** tech_id μόνιμων που κόβουν παραστατικό (payment_method invoice/mixed). */
 function invoiceTechIdSet(personnel = []) {
   const set = new Set()
   for (const p of personnel || []) {
+    if (isTemporaryPersonnel(p)) continue
     if (!personnelIssuesInvoice(p)) continue
     if (p.tech_id != null && p.tech_id !== '') set.add(String(p.tech_id))
     if (p.id != null && p.id !== '') set.add(String(p.id))
