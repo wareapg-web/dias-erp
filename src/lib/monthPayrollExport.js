@@ -232,12 +232,39 @@ function styleHeaderCell(sheet, addr, value) {
     s: {
       font: { bold: true, name: 'Calibri', sz: 11 },
       alignment: { horizontal: 'center', vertical: 'center', wrapText: true },
+      border: {
+        top: { style: 'thin', color: { rgb: '334155' } },
+        bottom: { style: 'thin', color: { rgb: '334155' } },
+        left: { style: 'thin', color: { rgb: '334155' } },
+        right: { style: 'thin', color: { rgb: '334155' } },
+      },
+      fill: { patternType: 'solid', fgColor: { rgb: 'E2E8F0' } },
     },
   }
 }
 
+const CELL_BORDER = {
+  top: { style: 'thin', color: { rgb: '94A3B8' } },
+  bottom: { style: 'thin', color: { rgb: '94A3B8' } },
+  left: { style: 'thin', color: { rgb: '94A3B8' } },
+  right: { style: 'thin', color: { rgb: '94A3B8' } },
+}
+
+function applyDataCellStyle(cell, { zebra = false, bold = false, align = 'right' } = {}) {
+  if (!cell) return
+  cell.s = {
+    ...(cell.s || {}),
+    font: { bold: !!bold, name: 'Calibri', sz: 11 },
+    alignment: { horizontal: align, vertical: 'center' },
+    border: CELL_BORDER,
+    ...(zebra
+      ? { fill: { patternType: 'solid', fgColor: { rgb: 'CBD5E1' } } }
+      : {}),
+  }
+}
+
 /**
- * Excel μόνιμων: Σταθερά (Μισθός/Λοιπά/Τιμολόγιο) · Μεταβλητά (λοιπά/τιμολόγιο) · Ticket · Πληρωτέο.
+ * Excel μόνιμων: Σταθερά (Μισθός/Λοιπά/Τιμολόγιο/σύνολο) · Μεταβλητά (Λοιπά/Τιμολόγιο/σύνολο) · Ticket · Πληρωτέο.
  * @param {{ month: number, year: number, personnel?: object[] }} opts
  */
 export async function exportMonthPayrollToExcel({ month, year, personnel = [] }) {
@@ -272,36 +299,56 @@ export async function exportMonthPayrollToExcel({ month, year, personnel = [] })
   const monthTitle = String(MONTH_LABELS[m - 1] || `Μήνας ${m}`).toLocaleUpperCase('el-GR')
   const title = `${monthTitle} ${y}`
 
+  // A: όνομα · B–E σταθερά · F–H μεταβλητά · I ticket · J πληρωτέο
   const aoa = [
-    [title, '', '', '', '', '', '', ''],
-    ['Ονοματεπώνυμο', 'Σταθερά (€)', '', '', 'Μεταβλητά (€)', '', 'Ticket Restaurant (€)', 'Συνολικό Πληρωτέο (€)'],
-    ['', 'Μισθός', 'Λοιπά', 'Τιμολόγιο', 'Λοιπά', 'Τιμολόγιο', '', ''],
+    [title, '', '', '', '', '', '', '', '', ''],
+    [
+      'Ονοματεπώνυμο',
+      'Σταθερά (€)',
+      '',
+      '',
+      '',
+      'Μεταβλητά (€)',
+      '',
+      '',
+      'Ticket Restaurant (€)',
+      'Συνολικό Πληρωτέο (€)',
+    ],
+    ['', 'Μισθός', 'Λοιπά', 'Τιμολόγιο', 'Σύνολο Σταθερών', 'Λοιπά', 'Τιμολόγιο', 'Σύνολο Μεταβλητών', '', ''],
   ]
 
   let totFixedSalary = 0
   let totFixedOther = 0
   let totFixedInvoice = 0
+  let totFixedSum = 0
   let totVarOther = 0
   let totVarInvoice = 0
+  let totVarSum = 0
   let totTicket = 0
   let totAll = 0
 
   for (const r of rows) {
+    const fixedSum = round2(r.fixedSalary + r.fixedOther + r.fixedInvoice)
+    const varSum = round2(r.varOther + r.varInvoice)
     aoa.push([
       r.name,
       r.fixedSalary,
       r.fixedOther,
       r.fixedInvoice,
+      fixedSum,
       r.varOther,
       r.varInvoice,
+      varSum,
       r.ticket,
       r.total,
     ])
     totFixedSalary = round2(totFixedSalary + r.fixedSalary)
     totFixedOther = round2(totFixedOther + r.fixedOther)
     totFixedInvoice = round2(totFixedInvoice + r.fixedInvoice)
+    totFixedSum = round2(totFixedSum + fixedSum)
     totVarOther = round2(totVarOther + r.varOther)
     totVarInvoice = round2(totVarInvoice + r.varInvoice)
+    totVarSum = round2(totVarSum + varSum)
     totTicket = round2(totTicket + r.ticket)
     totAll = round2(totAll + r.total)
   }
@@ -311,8 +358,10 @@ export async function exportMonthPayrollToExcel({ month, year, personnel = [] })
     totFixedSalary,
     totFixedOther,
     totFixedInvoice,
+    totFixedSum,
     totVarOther,
     totVarInvoice,
+    totVarSum,
     totTicket,
     totAll,
   ])
@@ -320,14 +369,14 @@ export async function exportMonthPayrollToExcel({ month, year, personnel = [] })
   const sheet = XLSX.utils.aoa_to_sheet(aoa)
 
   sheet['!merges'] = [
-    { s: { r: 0, c: 0 }, e: { r: 0, c: 7 } },
-    { s: { r: 1, c: 1 }, e: { r: 1, c: 3 } },
-    { s: { r: 1, c: 4 }, e: { r: 1, c: 5 } },
-    { s: { r: 1, c: 0 }, e: { r: 2, c: 0 } },
-    { s: { r: 1, c: 6 }, e: { r: 2, c: 6 } },
-    { s: { r: 1, c: 7 }, e: { r: 2, c: 7 } },
+    { s: { r: 0, c: 0 }, e: { r: 0, c: 9 } },
+    { s: { r: 1, c: 1 }, e: { r: 1, c: 4 } }, // Σταθερά
+    { s: { r: 1, c: 5 }, e: { r: 1, c: 7 } }, // Μεταβλητά
+    { s: { r: 1, c: 0 }, e: { r: 2, c: 0 } }, // Ονοματεπώνυμο
+    { s: { r: 1, c: 8 }, e: { r: 2, c: 8 } }, // Ticket
+    { s: { r: 1, c: 9 }, e: { r: 2, c: 9 } }, // Πληρωτέο
   ]
-  sheet['!rows'] = [{ hpt: 30 }, { hpt: 22 }, { hpt: 20 }]
+  sheet['!rows'] = [{ hpt: 30 }, { hpt: 22 }, { hpt: 22 }]
 
   sheet.A1 = {
     v: title,
@@ -335,41 +384,77 @@ export async function exportMonthPayrollToExcel({ month, year, personnel = [] })
     s: {
       font: { bold: true, sz: 18, name: 'Calibri' },
       alignment: { horizontal: 'center', vertical: 'center' },
+      border: {
+        top: { style: 'medium', color: { rgb: '334155' } },
+        bottom: { style: 'medium', color: { rgb: '334155' } },
+        left: { style: 'medium', color: { rgb: '334155' } },
+        right: { style: 'medium', color: { rgb: '334155' } },
+      },
     },
+  }
+  // Πλαίσιο σε όλο το merge του τίτλου (A1:J1) — Excel δείχνει border σε κάθε κελί
+  for (const col of ['B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J']) {
+    const addr = `${col}1`
+    if (!sheet[addr]) sheet[addr] = { v: '', t: 's' }
+    sheet[addr].s = {
+      ...(sheet[addr].s || {}),
+      border: {
+        top: { style: 'medium', color: { rgb: '334155' } },
+        bottom: { style: 'medium', color: { rgb: '334155' } },
+        left: { style: 'medium', color: { rgb: '334155' } },
+        right: { style: 'medium', color: { rgb: '334155' } },
+      },
+    }
   }
 
   styleHeaderCell(sheet, 'A2', 'Ονοματεπώνυμο')
   styleHeaderCell(sheet, 'B2', 'Σταθερά (€)')
-  styleHeaderCell(sheet, 'E2', 'Μεταβλητά (€)')
-  styleHeaderCell(sheet, 'G2', 'Ticket Restaurant (€)')
-  styleHeaderCell(sheet, 'H2', 'Συνολικό Πληρωτέο (€)')
+  styleHeaderCell(sheet, 'F2', 'Μεταβλητά (€)')
+  styleHeaderCell(sheet, 'I2', 'Ticket Restaurant (€)')
+  styleHeaderCell(sheet, 'J2', 'Συνολικό Πληρωτέο (€)')
   styleHeaderCell(sheet, 'B3', 'Μισθός')
   styleHeaderCell(sheet, 'C3', 'Λοιπά')
   styleHeaderCell(sheet, 'D3', 'Τιμολόγιο')
-  styleHeaderCell(sheet, 'E3', 'Λοιπά')
-  styleHeaderCell(sheet, 'F3', 'Τιμολόγιο')
+  styleHeaderCell(sheet, 'E3', 'Σύνολο Σταθερών')
+  styleHeaderCell(sheet, 'F3', 'Λοιπά')
+  styleHeaderCell(sheet, 'G3', 'Τιμολόγιο')
+  styleHeaderCell(sheet, 'H3', 'Σύνολο Μεταβλητών')
 
   const lastRow = aoa.length
-  const numCols = ['B', 'C', 'D', 'E', 'F', 'G', 'H']
+  const numCols = ['B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J']
+  // Δεδομένα: γραμμές 4 … lastRow-1 · σύνολο: lastRow · zebra ανά δεύτερη γραμμή δεδομένων
   for (let r = 4; r <= lastRow; r += 1) {
+    const isTotal = r === lastRow
+    const dataIndex = r - 4 // 0-based μεταξύ data rows
+    const zebra = !isTotal && dataIndex % 2 === 1
+
+    const nameCell = sheet[`A${r}`]
+    if (nameCell) {
+      applyDataCellStyle(nameCell, { zebra, bold: isTotal, align: 'left' })
+    }
+
     for (const col of numCols) {
       const cell = sheet[`${col}${r}`]
-      if (cell && typeof cell.v === 'number') {
+      if (!cell) continue
+      if (typeof cell.v === 'number') {
         cell.t = 'n'
         cell.z = '0.00'
       }
+      applyDataCellStyle(cell, { zebra, bold: isTotal, align: 'right' })
     }
   }
 
   sheet['!cols'] = [
     { wch: 36 },
+    { wch: 11 },
+    { wch: 11 },
     { wch: 12 },
+    { wch: 14 },
+    { wch: 11 },
     { wch: 12 },
-    { wch: 12 },
-    { wch: 12 },
-    { wch: 12 },
-    { wch: 20 },
-    { wch: 20 },
+    { wch: 15 },
+    { wch: 18 },
+    { wch: 18 },
   ]
 
   const workbook = XLSX.utils.book_new()
