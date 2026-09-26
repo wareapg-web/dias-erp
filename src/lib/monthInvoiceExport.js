@@ -2,7 +2,7 @@
 
 import * as XLSX from 'xlsx-js-style'
 import { diasClient, fetchAllRows } from './supabase'
-import { isTicketRestaurantRow, computeInvoiceGrossBreakdown } from './techLedger'
+import { isInformationalBenefitRow, computeInvoiceGrossBreakdown } from './techLedger'
 import { personnelIssuesInvoice, isTemporaryPersonnel } from './personnel'
 import { MONTH_LABELS } from './payrollAnalysis'
 import { resolveInvoiceTermsForMonth } from './techAgreementVersions'
@@ -52,7 +52,7 @@ export function aggregateMonthInvoiceGross(ledgerRows = [], personnel = [], term
   const byTech = new Map()
 
   for (const row of ledgerRows || []) {
-    if (isTicketRestaurantRow(row)) continue
+    if (isInformationalBenefitRow(row)) continue
 
     const techId = String(row.tech_id ?? '')
     if (!techId) continue
@@ -300,7 +300,7 @@ export function aggregateMonthTemporaryInvoiceNet(ledgerRows = [], personnel = [
   const byTech = new Map()
 
   for (const row of ledgerRows || []) {
-    if (isTicketRestaurantRow(row)) continue
+    if (isInformationalBenefitRow(row)) continue
     const techId = String(row.tech_id ?? '')
     if (!techId || !ids.has(techId)) continue
 
@@ -340,7 +340,7 @@ export function aggregateMonthTemporaryOtherDebit(ledgerRows = [], personnel = [
   const byTech = new Map()
 
   for (const row of ledgerRows || []) {
-    if (isTicketRestaurantRow(row)) continue
+    if (isInformationalBenefitRow(row)) continue
     const techId = String(row.tech_id ?? '')
     if (!techId || !ids.has(techId)) continue
 

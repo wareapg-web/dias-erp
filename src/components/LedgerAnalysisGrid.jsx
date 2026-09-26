@@ -3,7 +3,7 @@ import {
   computeInvoiceGrossBreakdown,
   formatLedgerAmount,
   formatLedgerImportAt,
-  isTicketRestaurantRow,
+  isInformationalBenefitRow,
   ledgerDescriptionForRow,
   ledgerTypeLabel,
 } from '../lib/techLedger'
@@ -317,9 +317,9 @@ export default function LedgerAnalysisGrid({
     () => getColumnDefs(showInvoice, { showInvoiceMarkup }),
     [showInvoice, showInvoiceMarkup]
   )
-  /** Ticket Restaurant μόνο στη Μήτρα — όχι στον πίνακα κινήσεων μήνα. */
+  /** Ticket / Ασφάλιση μόνο στη Μήτρα — όχι στον πίνακα κινήσεων μήνα. */
   const visibleRows = useMemo(
-    () => (rows || []).filter((row) => !isTicketRestaurantRow(row)),
+    () => (rows || []).filter((row) => !isInformationalBenefitRow(row)),
     [rows]
   )
   const [columnWidths, setColumnWidths] = useState(() => loadColumnWidths(showInvoice))

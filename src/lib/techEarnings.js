@@ -12,6 +12,7 @@ export const EARNINGS_ROW_DEFS = [
   { key: 'night', label: 'Νυχτερινά' },
   { key: 'overnight', label: 'Διανυκτέρευση' },
   { key: 'ticket', label: 'Ticket Restaurant' },
+  { key: 'insurance', label: 'Ασφάλιση' },
   { key: 'metro', label: 'Μετρό' },
 ]
 
@@ -58,7 +59,7 @@ export const FIXED_EXPENSE_DEFAULT_TRUE_KEYS = new Set([
 /**
  * transaction_types.id → κλειδί αποδοχών (για Βασικό/Μεταβλητό ανά μήνα).
  * 3 Μισθός · 4 Υπόλοιπο Μισθού · 21 Οδηγού · 23 Λογιστής ·
- * 7 Υπερωρίες · 8 Αργίες · 9 Νυχτερινά · 22 Διανυκτέρευση · 25 Μετρό · 24 Ticket
+ * 7 Υπερωρίες · 8 Αργίες · 9 Νυχτερινά · 22 Διανυκτέρευση · 25 Μετρό · 24 Ticket · 26 Ασφάλιση
  * (id 41 Bonus+ — μόνο ιστορικό ledger · όχι πλέον UI/Δημιουργία)
  */
 export const EARNINGS_KEY_BY_TYPE_ID = {
@@ -74,6 +75,7 @@ export const EARNINGS_KEY_BY_TYPE_ID = {
   22: 'overnight',
   25: 'metro',
   24: 'ticket',
+  26: 'insurance',
 }
 
 /** type_code / type string → earnings key (payroll_entries στο view). */
@@ -102,6 +104,8 @@ export const EARNINGS_KEY_BY_TYPE_CODE = {
   μετρο: 'metro',
   ticket: 'ticket',
   'ticket restaurant': 'ticket',
+  insurance: 'insurance',
+  ασφάλιση: 'insurance',
   driver_allowance: 'driver_allowance',
   επίδομα_οδηγού: 'driver_allowance',
   'επίδομα οδηγού': 'driver_allowance',

@@ -1075,6 +1075,7 @@ export default function TechAnalysisModal({
           yL: 0,
           yTim: 0,
           ticket: 0,
+          insurance: 0,
           loan: 0,
           loanCount: 0,
         })),
@@ -1085,6 +1086,7 @@ export default function TechAnalysisModal({
           yL: 0,
           yTim: 0,
           ticket: 0,
+          insurance: 0,
           loan: 0,
           loanCount: 0,
         },
@@ -1110,8 +1112,16 @@ export default function TechAnalysisModal({
 
     return buildLedgerYearMatrix(yearLedgerRows, analysisYear, yearPayrolls, {
       earningsTicketAmount: parseElNumber(earningsForm?.ticket_amount) || 0,
+      earningsInsuranceAmount: parseElNumber(earningsForm?.insurance_amount) || 0,
     })
-  }, [tech, analysisYear, yearLedgerRows, payrolls, earningsForm?.ticket_amount])
+  }, [
+    tech,
+    analysisYear,
+    yearLedgerRows,
+    payrolls,
+    earningsForm?.ticket_amount,
+    earningsForm?.insurance_amount,
+  ])
 
   /** Σύνολο εκταμιεύσεων δανείου (τύπος 95) για το επιλεγμένο έτος. */
   const yearLoanDisbursementsTotal = useMemo(() => {
@@ -1502,6 +1512,7 @@ export default function TechAnalysisModal({
       selectedSalary?.sigma ||
       estimateAmount(tech, selectedSummary?.workDays ?? 0, selectedSummary?.totalHours ?? 0)
     const ticket_restaurant = parseElNumber(earningsForm?.ticket_amount) || 0
+    const insurance = parseElNumber(earningsForm?.insurance_amount) || 0
     const driver_allowance = parseElNumber(earningsForm?.driver_allowance) || 0
     try {
       await onSaveToErp?.({
@@ -1520,6 +1531,7 @@ export default function TechAnalysisModal({
         sick_days: selectedSummary?.sickDays ?? 0,
         amount,
         ticket_restaurant,
+        insurance,
         driver_allowance,
         year: analysisYear,
         month: selectedMonth,
@@ -2122,7 +2134,7 @@ export default function TechAnalysisModal({
                     type="button"
                     onClick={handleMonthExcelExport}
                     disabled={monthExporting}
-                    title="Εξαγωγή μόνιμων: Σταθερά (Μισθός/Λοιπά/ΤΙΜ) · Μεταβλητά (Λοιπά/ΤΙΜ) · Ticket ενημερωτικό"
+                    title="Εξαγωγή μόνιμων: Σταθερά (Μισθός/Λοιπά/ΤΙΜ) · Μεταβλητά (Λοιπά/ΤΙΜ) · Ticket / Ασφάλιση ενημερωτικά"
                     className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-500/40 bg-emerald-500/15 px-3 py-1.5 text-xs font-bold text-emerald-100 transition hover:bg-emerald-500/25 disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     <svg viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4 shrink-0" aria-hidden>
@@ -2397,6 +2409,16 @@ export default function TechAnalysisModal({
                           onSelectMonth={requestSelectedMonth}
                           values={salaryMatrix.months.map((m) => formatMatrixTicket(m.ticket))}
                           total={formatMatrixTicket(salaryMatrix.totals.ticket)}
+                        />
+                      ) : null}
+                      {!techIsTemporary ? (
+                        <MatrixRow
+                          label="Ασφάλιση"
+                          hint=""
+                          selectedMonth={selectedMonth}
+                          onSelectMonth={requestSelectedMonth}
+                          values={salaryMatrix.months.map((m) => formatMatrixTicket(m.insurance))}
+                          total={formatMatrixTicket(salaryMatrix.totals.insurance)}
                         />
                       ) : null}
                       {!techIsTemporary ? (

@@ -35,7 +35,7 @@ export const SALARY_CREDIT_IDS = new Set([1, 91])
 export const OTHER_DEBIT_IDS = new Set([7, 8, 9, 22, 25])
 
 /** Other block credit: προκαταβολές, δάνεια, ticket, εξόφληση λοιπών, κλπ. */
-export const OTHER_CREDIT_IDS = new Set([2, 10, 14, 24, 92, 94, 95])
+export const OTHER_CREDIT_IDS = new Set([2, 10, 14, 24, 26, 92, 94, 95])
 
 export const LEDGER_COLUMNS = [
   'salary_debit',
@@ -256,6 +256,7 @@ export function normalizeSavedEntry(entry, transactionType, options = {}) {
 export const DEFAULT_EARNINGS_PREFILL_IDS = new Set([
   3, // Μισθός → salary_debit (πάντα)
   24, // Ticket Restaurant → other_credit
+  26, // Ασφάλιση → other_credit (ίδια λογική με Ticket)
   ...OTHER_DEBIT_IDS, // 7,8,9,22,25 → other_debit
 ])
 
