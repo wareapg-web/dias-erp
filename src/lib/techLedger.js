@@ -198,6 +198,8 @@ export function buildLedgerAmountForType(type, { summary, earningsForm } = {}) {
       return round2(earningsAmount(e, 'bonus_plus'))
     case 24:
       return round2(earningsAmount(e, 'ticket'))
+    case 26:
+      return round2(earningsAmount(e, 'insurance'))
     case 7:
       return round2((Number(s.overtimeHours) || 0) * earningsAmount(e, 'overtime'))
     case 8:
@@ -353,10 +355,24 @@ export function parseMovementAmount(value) {
 /** Ticket Restaurant (EPT_ID 24) — ανεξάρτητη παροχή, εκτός υπολοίπων εξόφλησης. */
 export function isTicketRestaurantRow(row) {
   if (!row) return false
-  const id = Number(row.ept_id ?? row.__type?.id)
+  const id = Number(row.ept_id ?? row.type_id ?? row.__type?.id)
   if (id === 24) return true
   const label = `${row.type || ''} ${row.__type?.description || ''} ${row.description || ''}`.toLowerCase()
   return label.includes('ticket')
+}
+
+/** Ασφάλιση (EPT_ID 26) — ίδια λογική με Ticket Restaurant. */
+export function isInsuranceBenefitRow(row) {
+  if (!row) return false
+  const id = Number(row.ept_id ?? row.type_id ?? row.__type?.id)
+  if (id === 26) return true
+  const label = `${row.type || ''} ${row.__type?.description || ''} ${row.description || ''}`.toLowerCase()
+  return label.includes('ασφάλισ') || label.includes('ασφαλισ') || label === 'insurance'
+}
+
+/** Παροχές τύπου Ticket/Ασφάλιση — εκτός Σ/Π/Υ και πίνακα κινήσεων μήνα. */
+export function isInformationalBenefitRow(row) {
+  return isTicketRestaurantRow(row) || isInsuranceBenefitRow(row)
 }
 
 /** Ποσό γραμμής Ticket από τις στήλες ledger (μία μη-μηδενική στήλη συνήθως). */
@@ -415,19 +431,20 @@ function payrollRowMonthYear(payroll) {
  * Ετήσια μήτρα: Σ/Π/Υ από tech_ledger_view · Ticket από payrolls (hybrid).
  * Type 94: μετράει στα Υ (λογιστική κράτηση) · εξαιρείται από το Π (όχι cash-out).
  * Γραμμή «Δάνειο»: πληροφοριακό άθροισμα δόσεων 94 (όλες οι κατηγορίες) · δεν αλλάζει Σ/Π/Υ.
- * Ticket: γραμμή μήτρας από payrolls (ή fallback Αποδοχές μετά Δημιουργία) ·
- * μόνο display · ΔΕΝ μπαίνει στο Σ · Π/Υ και computeLedgerBalances χωρίς Ticket.
- * Fallback: αν δεν υπάρχει payrolls.ticket για μήνα με PAYROLL ledger (π.χ. μετά Δημιουργία),
- * δείχνει tech_earnings.ticket_amount — μόνο εμφάνιση, χωρίς εγγραφή στο payrolls.
+ * Ticket / Ασφάλιση: γραμμές μήτρας από payrolls (ή fallback Αποδοχές μετά Δημιουργία) ·
+ * μόνο display · ΔΕΝ μπαίνουν στο Σ · Π/Υ και computeLedgerBalances χωρίς αυτές.
+ * Fallback: αν δεν υπάρχει payrolls.ticket/insurance για μήνα με PAYROLL ledger,
+ * δείχνει tech_earnings.*_amount — μόνο εμφάνιση, χωρίς εγγραφή στο payrolls.
  *
  * @param {object[]} ledgerRows
  * @param {number} year
- * @param {object[]} yearPayrolls — εγγραφές payrolls (ήδη φιλτραρισμένες ή όχι) για Ticket
- * @param {{ earningsTicketAmount?: number }} [options]
+ * @param {object[]} yearPayrolls — εγγραφές payrolls (ήδη φιλτραρισμένες ή όχι) για Ticket/Ασφάλιση
+ * @param {{ earningsTicketAmount?: number, earningsInsuranceAmount?: number }} [options]
  */
 export function buildLedgerYearMatrix(ledgerRows = [], year, yearPayrolls = [], options = {}) {
   const y = Number(year)
   const earningsTicket = Math.round((Number(options?.earningsTicketAmount) || 0) * 100) / 100
+  const earningsInsurance = Math.round((Number(options?.earningsInsuranceAmount) || 0) * 100) / 100
   const months = Array.from({ length: 12 }, (_, i) => ({
     month: i + 1,
     sigma: 0,
@@ -436,6 +453,7 @@ export function buildLedgerYearMatrix(ledgerRows = [], year, yearPayrolls = [], 
     yL: 0,
     yTim: 0,
     ticket: 0,
+    insurance: 0,
     loan: 0,
     loanCount: 0,
     salaryDebit: 0,
@@ -455,8 +473,8 @@ export function buildLedgerYearMatrix(ledgerRows = [], year, yearPayrolls = [], 
     if (yy !== y || mm < 1 || mm > 12) continue
     const slot = months[mm - 1]
 
-    // Ticket μόνο από payrolls — ledger ticket rows δεν μετράνε στη μήτρα
-    if (isTicketRestaurantRow(row)) continue
+    // Ticket / Ασφάλιση μόνο από payrolls — ledger rows δεν μετράνε στη μήτρα
+    if (isInformationalBenefitRow(row)) continue
 
     if (String(row.source || '').toUpperCase() === 'PAYROLL') {
       monthsWithPayrollLedger.add(mm)
@@ -495,14 +513,21 @@ export function buildLedgerYearMatrix(ledgerRows = [], year, yearPayrolls = [], 
       (p) => Number(p.ticket_restaurant) || Number(p.ticket_amount) || 0
     )
     let ticket = round2(ticketVals.length ? Math.max(...ticketVals) : 0)
-    // Μετά Δημιουργία, πριν Οριστική Αποθήκευση ERP: δείξε Ticket από Αποδοχές
     if (!(ticket > 0) && earningsTicket > 0 && monthsWithPayrollLedger.has(slot.month)) {
       ticket = earningsTicket
     }
     slot.ticket = ticket
+
+    const insuranceVals = monthPayrolls.map((p) => Number(p.insurance) || Number(p.insurance_amount) || 0)
+    let insurance = round2(insuranceVals.length ? Math.max(...insuranceVals) : 0)
+    if (!(insurance > 0) && earningsInsurance > 0 && monthsWithPayrollLedger.has(slot.month)) {
+      insurance = earningsInsurance
+    }
+    slot.insurance = insurance
+
     slot.loan = round2(slot.loanInstallmentsCredit || 0)
 
-    // Σ μήτρας = μόνο ledger χρεώσεις · Ticket μόνο στη δική του γραμμή (display)
+    // Σ μήτρας = μόνο ledger χρεώσεις · Ticket/Ασφάλιση μόνο στη δική τους γραμμή (display)
     slot.sigma = round2(slot.salaryDebit + slot.otherDebit + slot.invoiceDebit)
     slot.pi = round2(
       slot.salaryCredit +
@@ -523,10 +548,11 @@ export function buildLedgerYearMatrix(ledgerRows = [], year, yearPayrolls = [], 
       yL: round2(acc.yL + m.yL),
       yTim: round2(acc.yTim + m.yTim),
       ticket: round2(acc.ticket + m.ticket),
+      insurance: round2(acc.insurance + m.insurance),
       loan: round2(acc.loan + m.loan),
       loanCount: acc.loanCount + (m.loanCount || 0),
     }),
-    { sigma: 0, pi: 0, yM: 0, yL: 0, yTim: 0, ticket: 0, loan: 0, loanCount: 0 }
+    { sigma: 0, pi: 0, yM: 0, yL: 0, yTim: 0, ticket: 0, insurance: 0, loan: 0, loanCount: 0 }
   )
 
   const monthsWithEarnings = months.filter((m) => m.sigma > 0)
@@ -553,7 +579,7 @@ export function buildLedgerYearMatrix(ledgerRows = [], year, yearPayrolls = [], 
  * Υπόλοιπο (Λ) = Λοιπά Χρ. − Λοιπά Πιστ.
  * Υπόλοιπο (ΤΙΜ) = invoice_amount (Χρ.) − invoice_credit (Πιστ.).
  * Υπόλοιπο = (Μ) + (Λ) + (ΤΙΜ).
- * Ticket Restaurant δεν συμμετέχει.
+ * Ticket Restaurant / Ασφάλιση δεν συμμετέχουν.
  * (tech_earnings.extra είναι % για τον Οδηγό Τιμολογίου — όχι μέρος των balances.)
  *
  * @param {object[]} rows
@@ -569,7 +595,7 @@ export function computeLedgerBalances(rows = []) {
   let y2 = 0
 
   for (const r of rows) {
-    if (isTicketRestaurantRow(r)) continue
+    if (isInformationalBenefitRow(r)) continue
 
     salaryDebit += Number(r.salary_debit) || 0
     salaryCredit += Number(r.salary_credit) || 0

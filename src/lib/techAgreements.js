@@ -13,6 +13,7 @@ export const AGREEMENT_TYPES = [
   { value: 'TRAVEL', label: 'Travel / Μετακίνηση' },
   { value: 'METRO', label: 'Μετρό' },
   { value: 'TICKET', label: 'Ticket' },
+  { value: 'INSURANCE', label: 'Ασφάλιση' },
 ]
 
 export function agreementTypeLabel(code) {
