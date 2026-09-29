@@ -60,6 +60,7 @@ import {
 import { buildPaymentsDisplayList, isLoanDisbursementRow, isLoanInstallmentRow, loanRowAmount } from '../lib/loanUi'
 import { exportMonthPayrollToExcel } from '../lib/monthPayrollExport'
 import { exportMonthInvoicesToExcel, exportMonthTemporaryToExcel, exportMonthTemporaryOtherToExcel } from '../lib/monthInvoiceExport'
+import { exportJobsToExcel } from '../lib/monthJobsExport'
 import {
   computeLedgerBalances,
   ledgerRowKey,
@@ -184,6 +185,8 @@ export default function TechAnalysisModal({
   const [selectedMonth, setSelectedMonth] = useState(workspaceSeed.month)
   const [monthExporting, setMonthExporting] = useState(false)
   const [invoiceExporting, setInvoiceExporting] = useState(false)
+  const [jobsExporting, setJobsExporting] = useState(false)
+  const [jobsExportChoiceOpen, setJobsExportChoiceOpen] = useState(false)
   const [temporaryExporting, setTemporaryExporting] = useState(false)
   const [temporaryOtherExporting, setTemporaryOtherExporting] = useState(false)
   const [personnelSidebarKind, setPersonnelSidebarKind] = useState(workspaceSeed.sidebarKind)
@@ -1208,6 +1211,35 @@ export default function TechAnalysisModal({
     }
   }
 
+  const handleJobsExcelExport = () => {
+    if (jobsExporting) return
+    setJobsExportChoiceOpen(true)
+  }
+
+  const confirmJobsExport = async (scope) => {
+    if (jobsExporting) return
+    const monthLabel = MONTH_LABELS[selectedMonth - 1] || `Μήνας ${selectedMonth}`
+    setJobsExportChoiceOpen(false)
+    setJobsExporting(true)
+    try {
+      const { rowCount, filename } = await exportJobsToExcel({
+        month: selectedMonth,
+        year: analysisYear,
+        personnel,
+        adminTechs,
+        scope,
+      })
+      toast.success(
+        `Εξαγωγή JOBS · ${scope === 'year' ? analysisYear : monthLabel} · ${rowCount} μόνιμοι · ${filename}`
+      )
+    } catch (err) {
+      const msg = err?.message || String(err)
+      toast.error(msg || 'Αποτυχία εξαγωγής JOBS')
+    } finally {
+      setJobsExporting(false)
+    }
+  }
+
   const handleTemporaryExcelExport = async () => {
     if (temporaryExporting) return
     setTemporaryExporting(true)
@@ -2142,6 +2174,19 @@ export default function TechAnalysisModal({
                       <path d="M3.5 12.75a.75.75 0 00-1.5 0v2.5A2.75 2.75 0 004.75 18h10.5A2.75 2.75 0 0018 15.25v-2.5a.75.75 0 00-1.5 0v2.5c0 .69-.56 1.25-1.25 1.25H4.75c-.69 0-1.25-.56-1.25-1.25v-2.5z" />
                     </svg>
                     {monthExporting ? '...' : 'ΚΟΣΤΟΣ'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleJobsExcelExport}
+                    disabled={jobsExporting}
+                    title="Εξαγωγή έργων από Αναλυτικά: Ονοματεπώνυμο · Έργα (μόνο μέρες με ανάθεση)"
+                    className="inline-flex items-center gap-1.5 rounded-xl border border-sky-500/40 bg-sky-500/15 px-3 py-1.5 text-xs font-bold text-sky-100 transition hover:bg-sky-500/25 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <svg viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4 shrink-0" aria-hidden>
+                      <path d="M10.75 2.75a.75.75 0 00-1.5 0v8.69L6.3 8.49a.75.75 0 00-1.1 1.02l4.25 4.5a.75.75 0 001.1 0l4.25-4.5a.75.75 0 10-1.1-1.02l-2.95 3.12V2.75z" />
+                      <path d="M3.5 12.75a.75.75 0 00-1.5 0v2.5A2.75 2.75 0 004.75 18h10.5A2.75 2.75 0 0018 15.25v-2.5a.75.75 0 00-1.5 0v2.5c0 .69-.56 1.25-1.25 1.25H4.75c-.69 0-1.25-.56-1.25-1.25v-2.5z" />
+                    </svg>
+                    {jobsExporting ? '...' : 'JOBS'}
                   </button>
                   {!hasAdminHours && (
                     <span className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[10px] font-semibold text-amber-100">
@@ -3490,6 +3535,69 @@ export default function TechAnalysisModal({
                     type="button"
                     onClick={() => setMonthImportChoiceOpen(false)}
                     disabled={monthImportSaving}
+                    className="mt-1 w-full rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm font-semibold text-slate-200 transition hover:bg-white/10 disabled:opacity-50"
+                  >
+                    Ακύρωση
+                  </button>
+                </div>
+              </div>
+            </div>,
+            document.body
+          )
+        : null}
+
+      {jobsExportChoiceOpen
+        ? createPortal(
+            <div className="fixed inset-0 z-[200] flex items-center justify-center p-4">
+              <button
+                type="button"
+                className="absolute inset-0 bg-slate-950/50 backdrop-blur-none"
+                aria-label="Κλείσιμο"
+                disabled={jobsExporting}
+                onClick={() => setJobsExportChoiceOpen(false)}
+              />
+              <div
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="jobs-export-choice-title"
+                className="relative w-full max-w-md rounded-2xl border border-sky-500/35 bg-slate-900 p-5 shadow-2xl shadow-sky-950/30"
+              >
+                <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-sky-400/80">
+                  Excel
+                </p>
+                <h3 id="jobs-export-choice-title" className="mt-1 text-lg font-bold text-white">
+                  JOBS — έργα από Αναλυτικά
+                </h3>
+                <p className="mt-2 text-sm leading-relaxed text-slate-300">
+                  Ονοματεπώνυμο και διακριτά έργα (μόνο μέρες με ανάθεση).
+                </p>
+                <div className="mt-5 flex flex-col gap-2">
+                  <button
+                    type="button"
+                    onClick={() => confirmJobsExport('month')}
+                    disabled={jobsExporting}
+                    className="w-full rounded-xl border border-sky-500/45 bg-sky-500/20 px-4 py-3 text-left text-sm font-bold text-sky-100 transition hover:bg-sky-500/30 disabled:opacity-50"
+                  >
+                    Τρέχων μήνας
+                    <span className="mt-0.5 block text-xs font-semibold text-sky-100/70">
+                      {MONTH_LABELS[selectedMonth - 1] || selectedMonth} {analysisYear}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => confirmJobsExport('year')}
+                    disabled={jobsExporting}
+                    className="w-full rounded-xl border border-cyan-500/40 bg-cyan-500/15 px-4 py-3 text-left text-sm font-bold text-cyan-100 transition hover:bg-cyan-500/25 disabled:opacity-50"
+                  >
+                    Έτος
+                    <span className="mt-0.5 block text-xs font-semibold text-cyan-100/70">
+                      Όλο το {analysisYear}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setJobsExportChoiceOpen(false)}
+                    disabled={jobsExporting}
                     className="mt-1 w-full rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm font-semibold text-slate-200 transition hover:bg-white/10 disabled:opacity-50"
                   >
                     Ακύρωση
