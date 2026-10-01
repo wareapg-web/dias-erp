@@ -121,9 +121,11 @@ export default function PersonnelPanel({
   const [editingPeriodId, setEditingPeriodId] = useState(null)
   const photoInputRef = useRef(null)
   const formResizeRef = useRef(null)
+  const formSizeRef = useRef(null)
   const [formSize, setFormSize] = useState(() =>
     loadModalSize(PERSONNEL_FORM_MODAL_SIZE_KEY, defaultFormModalSize)
   )
+  formSizeRef.current = formSize
   const { panelStyle, dragHandleProps, dragHandleClassName } = useDraggableModal(
     formOpen,
     MODAL_POS_KEYS.personnelForm
@@ -168,6 +170,11 @@ export default function PersonnelPanel({
   )
 
   useEffect(() => {
+    if (!formOpen) return
+    setFormSize(loadModalSize(PERSONNEL_FORM_MODAL_SIZE_KEY, defaultFormModalSize))
+  }, [formOpen])
+
+  useEffect(() => {
     saveModalSize(PERSONNEL_FORM_MODAL_SIZE_KEY, formSize)
   }, [formSize])
 
@@ -187,10 +194,14 @@ export default function PersonnelPanel({
       if (edge.includes('n')) height = d.orig.height - dy
       width = Math.min(Math.max(width, FORM_MODAL_MIN_W), vw - 24)
       height = Math.min(Math.max(height, FORM_MODAL_MIN_H), vh - 24)
-      setFormSize({ width, height })
+      const next = { width, height }
+      setFormSize(next)
+      saveModalSize(PERSONNEL_FORM_MODAL_SIZE_KEY, next)
     }
     const onUp = () => {
+      if (!formResizeRef.current) return
       formResizeRef.current = null
+      saveModalSize(PERSONNEL_FORM_MODAL_SIZE_KEY, formSizeRef.current)
     }
     window.addEventListener('pointermove', onMove)
     window.addEventListener('pointerup', onUp)

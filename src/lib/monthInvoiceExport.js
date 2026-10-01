@@ -3,6 +3,7 @@
 import * as XLSX from 'xlsx-js-style'
 import { diasClient, fetchAllRows } from './supabase'
 import { isInformationalBenefitRow, computeInvoiceGrossBreakdown } from './techLedger'
+import { isLoanInstallmentRow } from './loanUi'
 import { personnelIssuesInvoice, isTemporaryPersonnel } from './personnel'
 import { MONTH_LABELS } from './payrollAnalysis'
 import { resolveInvoiceTermsForMonth } from './techAgreementVersions'
@@ -41,7 +42,7 @@ function invoiceTechIdSet(personnel = []) {
 }
 
 /**
- * Μόνιμοι με τιμολόγιο: άθροισμα ΤΙΜ Χρ. (χωρίς εξόφληση) → ανάλυση Οδηγού.
+ * Μόνιμοι με τιμολόγιο: ΤΙΜ Χρ. − κράτηση δόσης ΤΙΜ → ανάλυση Οδηγού (ίδια βάση με μήτρα).
  * Αξία = net / (1 − tax%/100) αν invoice_gross_up, αλλιώς = net.
  * @param {Map<string, { invoiceGrossUp: boolean, taxPercent: number }>|null} [termsByTechId]
  * @returns {Array<{ techId: string, name: string, net: number, grossAmount: number, vat: number, tax: number, payable: number, taxPercent: number }>}
@@ -59,7 +60,8 @@ export function aggregateMonthInvoiceGross(ledgerRows = [], personnel = [], term
     if (invoiceTechs.size > 0 && !invoiceTechs.has(techId)) continue
 
     const charge = Number(row.invoice_amount) || 0
-    if (!(charge > 0)) continue
+    const loanHold = isLoanInstallmentRow(row) ? Number(row.invoice_credit) || 0 : 0
+    if (!(charge > 0) && !(loanHold > 0)) continue
 
     let slot = byTech.get(techId)
     if (!slot) {
@@ -70,7 +72,7 @@ export function aggregateMonthInvoiceGross(ledgerRows = [], personnel = [], term
       }
       byTech.set(techId, slot)
     }
-    slot.net = round2(slot.net + charge)
+    slot.net = round2(slot.net + charge - loanHold)
   }
 
   const rows = []
@@ -139,7 +141,7 @@ export function invoiceExportFilename(month, year) {
 
 /**
  * Excel μόνιμων: Ονοματεπώνυμο · Αξία · ΦΠΑ 24% · Παρακράτηση · Πληρωτέο
- * Βάση = άθροισμα ΤΙΜ Χρ. (ανεξάρτητα εξόφλησης) · προσαύξηση όπου υπάρχει.
+ * Βάση = ΤΙΜ Χρ. − κράτηση δόσης ΤΙΜ · προσαύξηση όπου υπάρχει (ίδια με Οδηγό/μήτρα).
  * @param {{ month: number, year: number, personnel?: object[] }} opts
  */
 export async function exportMonthInvoicesToExcel({ month, year, personnel = [] }) {

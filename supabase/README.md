@@ -55,7 +55,8 @@
 - `supabase/31_tech_agreement_versions.sql` (Master snapshots συμφωνιών + RPC create/patch toggles)
 - `supabase/32_rename_bonus_to_salary_remainder.sql` (id 4 · Bonus → Υπόλοιπο Μισθού)
 - `supabase/33_rename_extra_bonus_to_bonus.sql` (id 5 · Extra Bonus → Bonus · χειροκίνητα πριμ)
-- `supabase/34_invoice_gross_up.sql` (tech_earnings.invoice_gross_up · προαιρετική προσαύξηση /0.8)
+- `supabase/39_invoice_partial_payment_type.sql` (transaction_types id 96 · Πληρωμή Τιμολογίου)
+- `supabase/40_salary_other_partial_payment_types.sql` (97 Πληρωμή Μισθού · 98 Πληρωμή Λοιπών)
 
 ### Φωτογραφίες προφίλ (Cloudflare R2 μέσω Edge Function)
 

@@ -1,7 +1,20 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import toast from 'react-hot-toast'
 import { diasClient, formatSupabaseError } from '../lib/supabase'
-import { movementFormFromRow, parseMovementAmount, extractLedgerAmount, isBareEuroText, normalizeEntryDate, mergeInvoiceBreakdownDescription } from '../lib/techLedger'
+import {
+  movementFormFromRow,
+  parseMovementAmount,
+  extractLedgerAmount,
+  isBareEuroText,
+  normalizeEntryDate,
+  mergeInvoiceBreakdownDescription,
+  buildPartialPaymentDescription,
+  settlementTypeStub,
+  settlementTypeIdsForCategory,
+  isSettlementCreditTypeId,
+  isSettlementFullTypeId,
+  settlementCategoryFromTypeId,
+} from '../lib/techLedger'
 import { fromElInputValue, parseElNumber, toElInputDisplay } from '../lib/numberFormat'
 import { formatEuro } from '../lib/payrollAnalysis'
 import { parseToIsoDate, greekCapsLabel } from '../lib/greekDate'
@@ -16,9 +29,6 @@ import {
   buildTypeLookup,
   defaultSideForType,
   isSalaryLedgerGroup,
-  ledgerColumnFor,
-  ledgerColumnLabel,
-  ledgerGroupLabel,
   paymentCreditColumns,
   paymentTypeCodeFromDescription,
   payrollTypeCodeFromDescription,
@@ -38,25 +48,27 @@ import {
   loanSeriesNotesKey,
 } from '../lib/loanUi'
 
-const INVOICE_CREDIT_TYPE_ID = 93
+const INVOICE_SETTLEMENT_TYPE_ID = 93
+const INVOICE_PARTIAL_PAYMENT_TYPE_ID = 96
 const MOVEMENT_MODAL_MIN_W = 560
 
 function isInvoiceTimCreditType(typeOrId) {
-  return Number(typeOrId) === INVOICE_CREDIT_TYPE_ID
+  const id = Number(typeOrId)
+  return id === INVOICE_SETTLEMENT_TYPE_ID || id === INVOICE_PARTIAL_PAYMENT_TYPE_ID
 }
 
 function sideIsCredit(side) {
   return String(side || '').toUpperCase() === 'CREDIT'
 }
-const MOVEMENT_MODAL_MIN_H = 420
+const MOVEMENT_MODAL_MIN_H = 380
 
 function defaultMovementModalSize() {
-  if (typeof window === 'undefined') return { width: 720, height: 640 }
+  if (typeof window === 'undefined') return { width: 680, height: 560 }
   const vw = window.innerWidth
   const vh = window.innerHeight
   return {
-    width: Math.min(760, Math.max(MOVEMENT_MODAL_MIN_W, vw - 32)),
-    height: Math.min(Math.round(vh * 0.88), Math.max(MOVEMENT_MODAL_MIN_H, vh - 32)),
+    width: Math.min(700, Math.max(MOVEMENT_MODAL_MIN_W, vw - 32)),
+    height: Math.min(Math.round(vh * 0.82), Math.max(MOVEMENT_MODAL_MIN_H, vh - 48)),
   }
 }
 
@@ -99,7 +111,7 @@ const CROSS_CATEGORY_DEBIT_IDS = new Set([MANUAL_BONUS_TYPE_ID, ...CROSS_CATEGOR
 
 /** Τύποι που δημιουργούνται αλλού (settlement / LoanModal / αποδοχές) — όχι χειροκίνητα. */
 const EXCLUDED_MANUAL_TYPE_IDS = new Set([
-  1, 2, 3, 4, 10, 14, 24, 26, 91, 92, 93, 94, 95,
+  1, 2, 3, 4, 10, 14, 24, 26, 91, 92, 93, 94, 95, 96, 97, 98,
   // σταθερές αποδοχές / auto-transfer
   21, // Επίδομα Οδηγού
   23, // Λογιστής
@@ -108,7 +120,7 @@ const EXCLUDED_MANUAL_TYPE_IDS = new Set([
 
 /** Λεκτικό backup για μελλοντικά IDs με ίδια σημασία. */
 const EXCLUDED_MANUAL_LABEL_RE =
-  /εξόφλησ|εξοφλησ|προκαταβολ|δάνειο|δανειο|δόση|δοση|εκταμίευσ|εκταμιευσ|ticket|ασφάλισ|ασφαλισ|bonus\s*\+|υπόλοιπο\s*μισθ|υπολοιπο\s*μισθ|επίδομα\s*οδηγ|επιδομα\s*οδηγ|λογιστ/i
+  /εξόφλησ|εξοφλησ|πληρωμή\s*τιμολογ|πληρωμη\s*τιμολογ|πληρωμή\s*μισθ|πληρωμη\s*μισθ|πληρωμή\s*λοιπ|πληρωμη\s*λοιπ|προκαταβολ|δάνειο|δανειο|δόση|δοση|εκταμίευσ|εκταμιευσ|ticket|ασφάλισ|ασφαλισ|bonus\s*\+|υπόλοιπο\s*μισθ|υπολοιπο\s*μισθ|επίδομα\s*οδηγ|επιδομα\s*οδηγ|λογιστ/i
 
 const EMPTY_TYPE_PLACEHOLDER = 'Δεν υπάρχουν διαθέσιμοι τύποι για χειροκίνητη εισαγωγή'
 
@@ -173,7 +185,7 @@ function isExcludedManualTypeId(id, types = []) {
 
 /**
  * Φίλτρο τύπων με βάση Κατηγορία + Κατεύθυνση.
- * Τιμολόγιο: πίστωση → μόνο 93 · χρέωση → δεδουλευμένα (όχι εξοφλήσεις).
+ * Τιμολόγιο: πίστωση → 93 εξόφληση / 96 μερική πληρωμή · χρέωση → δεδουλευμένα.
  * Δώρα 11/12: σε Χρέωση → όλες οι κατηγορίες (και Τιμολόγιο → invoice_amount).
  */
 function filterTypesForCategorySide(types, category, side) {
@@ -189,8 +201,8 @@ function filterTypesForCategorySide(types, category, side) {
     if (!credit && CROSS_CATEGORY_DEBIT_IDS.has(id)) return true
 
     if (cat === 'INVOICE') {
-      if (credit) return id === INVOICE_CREDIT_TYPE_ID
-      if (id === INVOICE_CREDIT_TYPE_ID) return false
+      if (credit) return isInvoiceTimCreditType(id)
+      if (isInvoiceTimCreditType(id)) return false
       if (SALARY_CREDIT_IDS.has(id) || OTHER_CREDIT_IDS.has(id)) return false
       return true
     }
@@ -201,8 +213,8 @@ function filterTypesForCategorySide(types, category, side) {
       return SALARY_DEBIT_IDS.has(id) || !SALARY_CREDIT_IDS.has(id)
     }
 
-    // OTHER — αποκλείουμε 93 (ανήκει στο Τιμολόγιο)
-    if (typeIsSalary(t) || id === INVOICE_CREDIT_TYPE_ID) return false
+    // OTHER — αποκλείουμε 93/96 (ανήκουν στο Τιμολόγιο)
+    if (typeIsSalary(t) || isInvoiceTimCreditType(id)) return false
     if (credit) {
       return (
         OTHER_CREDIT_IDS.has(id) ||
@@ -218,8 +230,16 @@ function filterTypesForCategorySide(types, category, side) {
 /** Μετά το category/side: κόψε auto/settlement τύπους · allowTypeId = edit/preset exception. */
 function applyManualTypeExclusion(types, allowTypeId = null) {
   const allow = allowTypeId != null && allowTypeId !== '' ? Number(allowTypeId) : null
+  const kind = settlementCategoryFromTypeId(allow)
+  const allowPair = kind
+    ? settlementTypeIdsForCategory(
+        kind === 'salary' ? 'SALARY' : kind === 'invoice' ? 'INVOICE' : 'OTHER'
+      )
+    : null
   return (types || []).filter((t) => {
-    if (allow != null && Number(t.id) === allow) return true
+    const id = Number(t.id)
+    if (allow != null && id === allow) return true
+    if (allowPair && (id === allowPair.full || id === allowPair.partial)) return true
     return !isExcludedManualType(t)
   })
 }
@@ -270,6 +290,8 @@ export default function MovementModal({
   presetDescription = null,
   presetAmount = null,
   presetPostToInvoice = null,
+  /** Υπόλοιπο κατηγορίας (net) · για διάκριση εξόφλησης vs μερικής πληρωμής ΤΙΜ. */
+  settlementBalance = null,
   presetMonth = null,
   presetYear = null,
   hasInvoice = false,
@@ -303,12 +325,19 @@ export default function MovementModal({
     dragHandleClassName: deleteDragHandleClassName,
   } = useDraggableModal(loanDeleteOpen, MODAL_POS_KEYS.movementLoanDelete)
   const resizeRef = useRef(null)
+  const modalSizeRef = useRef(null)
   const [modalSize, setModalSize] = useState(() =>
     loadModalSize(MOVEMENT_MODAL_SIZE_KEY, defaultMovementModalSize)
   )
+  modalSizeRef.current = modalSize
   const [deleting, setDeleting] = useState(false)
   /** Edit τιμολογίου χωρίς hasInvoice: κράτα την επιλογή Κατηγορίας σε όλο το session. */
   const [allowInvoiceCategory, setAllowInvoiceCategory] = useState(false)
+
+  useEffect(() => {
+    if (!open) return
+    setModalSize(loadModalSize(MOVEMENT_MODAL_SIZE_KEY, defaultMovementModalSize))
+  }, [open])
 
   useEffect(() => {
     saveModalSize(MOVEMENT_MODAL_SIZE_KEY, modalSize)
@@ -330,10 +359,14 @@ export default function MovementModal({
       if (edge.includes('n')) height = d.orig.height - dy
       width = Math.min(Math.max(width, MOVEMENT_MODAL_MIN_W), vw - 24)
       height = Math.min(Math.max(height, MOVEMENT_MODAL_MIN_H), vh - 24)
-      setModalSize({ width, height })
+      const next = { width, height }
+      setModalSize(next)
+      saveModalSize(MOVEMENT_MODAL_SIZE_KEY, next)
     }
     const onUp = () => {
+      if (!resizeRef.current) return
       resizeRef.current = null
+      saveModalSize(MOVEMENT_MODAL_SIZE_KEY, modalSizeRef.current)
     }
     window.addEventListener('pointermove', onMove)
     window.addEventListener('pointerup', onUp)
@@ -374,7 +407,6 @@ export default function MovementModal({
   const showLoanDelete = isEdit && isLoanInstallmentRow(selectedRowData)
 
   const uiCategory = normalizeCategory(form.ledger_group)
-  const postToInvoice = uiCategory === 'INVOICE'
 
   const showInvoiceCategory = hasInvoice === true || allowInvoiceCategory
   const categoryPolicy = useMemo(() => getLedgerCategoryPolicy(tech), [tech])
@@ -449,15 +481,6 @@ export default function MovementModal({
     [types, selectedTypeId]
   )
 
-  const targetColumn = useMemo(() => {
-    if (!form.side) return null
-    if (postToInvoice || uiCategory === 'INVOICE') {
-      return ledgerColumnFor('INVOICE', form.side)
-    }
-    if (!selectedType) return null
-    return ledgerColumnFor(effectiveLedgerGroup(selectedType, uiCategory), form.side)
-  }, [selectedType, form.side, postToInvoice, uiCategory])
-
   const applyTypeKeepDrivers = (t, category, side) => {
     if (!t) return
     const cat = normalizeCategory(category)
@@ -510,7 +533,14 @@ export default function MovementModal({
         if (cancelled) return
         if (err) throw err
 
-        const list = data || []
+        const list = [...(data || [])]
+        // Stubs αν λείπουν εξόφληση/πληρωμή τύποι από DB
+        for (const id of [91, 92, 93, 96, 97, 98]) {
+          if (!list.some((t) => Number(t.id) === id)) {
+            const stub = settlementTypeStub(id)
+            if (stub) list.push(stub)
+          }
+        }
         setTypes(list)
         const lookup = buildTypeLookup(list)
 
@@ -607,7 +637,6 @@ export default function MovementModal({
           chosen = filtered[0] || null
         }
 
-        setSelectedTypeId(chosen?.id ?? null)
         const nextAmount =
           !selectedRowData && presetAmount != null && presetAmount !== ''
             ? String(presetAmount)
@@ -625,16 +654,80 @@ export default function MovementModal({
           techIsTemporary !== true &&
           policy.temporary !== true &&
           invoiceGrossUp !== false
-        if (timCreditSettlement && dualOk && factorInit > 0 && factorInit < 1) {
-          const netN = parseElNumber(nextAmount)
-          if (netN != null && netN > 0) {
-            nextDescription = mergeInvoiceBreakdownDescription(
-              nextDescription,
-              netN,
-              safePctInit
+
+        const settlementKind =
+          settlementCategoryFromTypeId(chosen?.id ?? presetTypeId) ||
+          (category === 'SALARY'
+            ? 'salary'
+            : category === 'INVOICE'
+              ? 'invoice'
+              : category === 'OTHER'
+                ? 'other'
+                : null)
+        const settlementIds = settlementKind
+          ? settlementTypeIdsForCategory(
+              settlementKind === 'salary'
+                ? 'SALARY'
+                : settlementKind === 'invoice'
+                  ? 'INVOICE'
+                  : 'OTHER'
             )
+          : null
+        const isSettlementCreditFlow =
+          !selectedRowData &&
+          sideIsCredit(side) &&
+          settlementIds != null &&
+          (isSettlementCreditTypeId(chosen?.id ?? presetTypeId) ||
+            settlementBalance != null)
+
+        if (isSettlementCreditFlow && settlementIds) {
+          const netN = parseElNumber(nextAmount)
+          const balance = Number(settlementBalance)
+          const hasBalance = Number.isFinite(balance) && balance > 0.005
+          const clears =
+            netN != null &&
+            netN > 0 &&
+            ((hasBalance && netN >= balance - 0.005) ||
+              (!hasBalance && isSettlementFullTypeId(chosen?.id ?? presetTypeId)))
+          const wantId = clears ? settlementIds.full : settlementIds.partial
+          if (Number(chosen?.id) !== wantId) {
+            const swapped =
+              list.find((t) => Number(t.id) === wantId) || settlementTypeStub(wantId)
+            if (swapped) chosen = swapped
+          }
+          if (netN != null && netN > 0) {
+            if (clears && settlementKind === 'invoice' && dualOk && factorInit > 0 && factorInit < 1) {
+              nextDescription = mergeInvoiceBreakdownDescription(
+                nextDescription,
+                netN,
+                safePctInit
+              )
+            } else if (clears && settlementKind === 'invoice') {
+              if (!nextDescription || isBareEuroText(nextDescription)) {
+                nextDescription = mergeInvoiceBreakdownDescription(
+                  null,
+                  netN,
+                  safePctInit
+                )
+              }
+            } else if (clears) {
+              // πλήρης εξόφληση Μ/Λ — χωρίς ειδικό breakdown
+              if (!nextDescription || isBareEuroText(nextDescription)) {
+                nextDescription = ''
+              }
+            } else {
+              const displayAmt =
+                settlementKind === 'invoice' && dualOk && factorInit > 0 && factorInit < 1
+                  ? netN / factorInit
+                  : netN
+              nextDescription = buildPartialPaymentDescription(displayAmt)
+            }
+          } else if (!isSettlementFullTypeId(chosen?.id ?? presetTypeId)) {
+            nextDescription = ''
           }
         }
+
+        setSelectedTypeId(chosen?.id ?? null)
         setForm({
           ...base,
           type: chosen?.description || base.type,
@@ -686,22 +779,113 @@ export default function MovementModal({
     invoiceGrossUp,
     taxPercent,
     techIsTemporary,
+    settlementBalance,
   ])
 
   if (!open) return null
 
   const patch = (field, value) => setForm((prev) => ({ ...prev, [field]: value }))
 
+  const resolveSettlementPaymentPresentation = (netAmount, list = types) => {
+    const net = Number(netAmount)
+    const hasNet = Number.isFinite(net) && net > 0
+    const balance = Number(settlementBalance)
+    const hasBalance = Number.isFinite(balance) && balance > 0.005
+    const cat = normalizeCategory(form.ledger_group)
+    const kindFromType = settlementCategoryFromTypeId(selectedTypeId ?? presetTypeId)
+    const kind =
+      kindFromType ||
+      (cat === 'SALARY' ? 'salary' : cat === 'INVOICE' ? 'invoice' : cat === 'OTHER' ? 'other' : null)
+    const ids = kind
+      ? settlementTypeIdsForCategory(
+          kind === 'salary' ? 'SALARY' : kind === 'invoice' ? 'INVOICE' : 'OTHER'
+        )
+      : null
+    if (!ids) return { clears: false, targetId: null, targetType: null, description: '', kind: null }
+
+    const clears =
+      hasNet &&
+      ((hasBalance && net >= balance - 0.005) ||
+        (!hasBalance && isSettlementFullTypeId(selectedTypeId ?? presetTypeId)))
+
+    const targetId = clears ? ids.full : ids.partial
+    const targetType =
+      (list || []).find((t) => Number(t.id) === targetId) ||
+      settlementTypeStub(targetId)
+
+    let description = ''
+    if (hasNet) {
+      if (clears && kind === 'invoice') {
+        description =
+          mergeInvoiceBreakdownDescription(
+            null,
+            net,
+            Number(taxPercent) > 0 ? Number(taxPercent) : 20
+          ) || ''
+      } else if (!clears) {
+        const factor = grossUpFactor > 0 && grossUpFactor < 1 ? grossUpFactor : 1
+        const displayAmt =
+          kind === 'invoice' && showInvoiceGrossDual && factor > 0 && factor < 1
+            ? net / factor
+            : net
+        description = buildPartialPaymentDescription(displayAmt)
+      }
+    }
+
+    return { clears, targetId, targetType, description, kind }
+  }
+
+  const applySettlementPaymentPresentation = (netRaw) => {
+    if (isEdit) return
+    if (!sideIsCredit(form.side)) return
+    const cat = normalizeCategory(form.ledger_group)
+    const typeId = selectedTypeId ?? presetTypeId
+    if (
+      !isSettlementCreditTypeId(typeId) &&
+      cat !== 'SALARY' &&
+      cat !== 'OTHER' &&
+      cat !== 'INVOICE'
+    ) {
+      return
+    }
+    // Μόνο όταν ήρθε από ΕΞΟΦΛΗΣΗ/ΠΛΗΡΩΜΗ (υπάρχει υπόλοιπο) ή είναι ήδη settlement type
+    if (settlementBalance == null && !isSettlementCreditTypeId(typeId)) return
+
+    const net = parseElNumber(netRaw)
+    const { targetId, targetType, description, kind } =
+      resolveSettlementPaymentPresentation(net)
+    if (!targetType) return
+    const ledgerGroup =
+      kind === 'salary' ? 'SALARY' : kind === 'invoice' ? 'INVOICE' : 'OTHER'
+    if (Number(selectedTypeId) !== targetId) {
+      setSelectedTypeId(targetId)
+      setForm((prev) => ({
+        ...prev,
+        type: targetType.description,
+        description,
+        ledger_group: ledgerGroup,
+        post_to_invoice: kind === 'invoice',
+      }))
+      return
+    }
+    setForm((prev) => ({ ...prev, description }))
+  }
+
   const patchNetAmount = (raw) => {
     const next = sanitizeAmountRaw(raw)
     patch('amount', next)
-    if (!showInvoiceGrossDual) return
+    if (!showInvoiceGrossDual) {
+      applySettlementPaymentPresentation(next)
+      return
+    }
     const n = parseElNumber(next)
     if (n == null) {
       if (!String(next || '').trim()) setGrossAmountDisplay('')
+      applySettlementPaymentPresentation(next)
       return
     }
     setGrossAmountDisplay(netToGross(n, grossUpFactor))
+    applySettlementPaymentPresentation(next)
   }
 
   const patchGrossAmount = (raw) => {
@@ -710,9 +894,12 @@ export default function MovementModal({
     const g = parseElNumber(next)
     if (g == null) {
       if (!String(next || '').trim()) patch('amount', '')
+      applySettlementPaymentPresentation('')
       return
     }
-    patch('amount', grossToNet(g, grossUpFactor))
+    const netStr = grossToNet(g, grossUpFactor)
+    patch('amount', netStr)
+    applySettlementPaymentPresentation(netStr)
   }
 
   const handleCategoryChange = (value) => {
@@ -808,7 +995,8 @@ export default function MovementModal({
       return
     }
 
-    const effectiveGroup = effectiveLedgerGroup(selectedType, form.ledger_group)
+    let effectiveType = selectedType
+    const effectiveGroup = effectiveLedgerGroup(effectiveType, form.ledger_group)
     const isSalary = isSalaryLedgerGroup(effectiveGroup)
     const side = form.side || 'DEBIT'
     const postAsPayment = shouldPostAsPayment(side)
@@ -819,23 +1007,88 @@ export default function MovementModal({
     let description =
       rawDescription && !isBareEuroText(rawDescription) ? rawDescription : null
 
-    // Εξόφληση ΤΙΜ (μόνο type 93) + προσαύξηση — ΟΧΙ δάνεια 94/95
-    const typeId = Number(selectedType.id)
-    const isInvoiceCreditSettlement =
+    // Πίστωση εξόφλησης/πληρωμής: πλήρης → 91/92/93 · μερική → 97/98/96 + «πληρωμή X»
+    const typeId = Number(effectiveType.id)
+    const settlementKind =
+      settlementCategoryFromTypeId(typeId) ||
+      (invoiceFlag
+        ? 'invoice'
+        : isSalaryLedgerGroup(effectiveGroup)
+          ? 'salary'
+          : side === 'CREDIT' && isSettlementCreditTypeId(typeId)
+            ? 'other'
+            : null)
+    const settlementIds = settlementKind
+      ? settlementTypeIdsForCategory(
+          settlementKind === 'salary'
+            ? 'SALARY'
+            : settlementKind === 'invoice'
+              ? 'INVOICE'
+              : 'OTHER'
+        )
+      : null
+    const isSettlementCredit =
       side === 'CREDIT' &&
-      invoiceGrossUp !== false &&
-      techIsTemporary !== true &&
-      categoryPolicy.temporary !== true &&
-      typeId === INVOICE_CREDIT_TYPE_ID &&
+      settlementIds != null &&
+      (isSettlementCreditTypeId(typeId) ||
+        invoiceFlag ||
+        settlementBalance != null) &&
       typeId !== LOAN_INSTALLMENT_TYPE_ID &&
       typeId !== LOAN_DISBURSEMENT_TYPE_ID
 
-    if (isInvoiceCreditSettlement && amount > 0) {
-      description = mergeInvoiceBreakdownDescription(
-        description,
-        amount,
-        Number(taxPercent) > 0 ? Number(taxPercent) : 20
-      )
+    if (isSettlementCredit && amount > 0) {
+      const balance = Number(settlementBalance)
+      const hasBalance = Number.isFinite(balance) && balance > 0.005
+      const clears = hasBalance
+        ? amount >= balance - 0.005
+        : isSettlementFullTypeId(typeId) &&
+          !/^πληρωμ[ήη]\b/i.test(String(form.description || ''))
+
+      if (!isEdit && !clears) {
+        const realPartial = types.find(
+          (t) => Number(t.id) === settlementIds.partial && t.__stub !== true
+        )
+        effectiveType = realPartial || {
+          id: settlementIds.full,
+          description:
+            settlementKind === 'salary'
+              ? 'Πληρωμή Μισθού'
+              : settlementKind === 'invoice'
+                ? 'Πληρωμή Τιμολογίου'
+                : 'Πληρωμή Λοιπών',
+          ledger_group:
+            settlementKind === 'salary' ? 'SALARY' : 'OTHER',
+          is_for_sum: false,
+        }
+      }
+      if (!isEdit && clears) {
+        const realFull = types.find(
+          (t) => Number(t.id) === settlementIds.full && t.__stub !== true
+        )
+        effectiveType =
+          realFull || settlementTypeStub(settlementIds.full) || effectiveType
+      }
+
+      const useGrossUp =
+        settlementKind === 'invoice' &&
+        invoiceGrossUp !== false &&
+        techIsTemporary !== true &&
+        categoryPolicy.temporary !== true &&
+        grossUpFactor > 0 &&
+        grossUpFactor < 1
+
+      if (clears) {
+        if (useGrossUp) {
+          description = mergeInvoiceBreakdownDescription(
+            null,
+            amount,
+            Number(taxPercent) > 0 ? Number(taxPercent) : 20
+          )
+        }
+      } else {
+        const displayAmt = useGrossUp ? amount / grossUpFactor : amount
+        description = buildPartialPaymentDescription(displayAmt)
+      }
     }
 
     const notes = form.notes?.trim() || null
@@ -864,14 +1117,14 @@ export default function MovementModal({
       if (isEdit) {
         if (rowSource === 'PAYMENT') {
           const paymentType = paymentTypeCodeFromDescription(
-            selectedType.description,
+            effectiveType.description,
             effectiveGroup
           )
           const credits = paymentCreditColumns({
             amount,
             paymentType,
             postToInvoice: invoiceFlag,
-            typeId: selectedType.id,
+            typeId: effectiveType.id,
             ledgerGroup: effectiveGroup,
           })
           const { error } = await diasClient
@@ -888,7 +1141,7 @@ export default function MovementModal({
               tech_name: tech.displayName || tech.name || null,
               month: periodMonth,
               year: periodYear,
-              type_id: Number(selectedType.id) || null,
+              type_id: Number(effectiveType.id) || null,
             })
             .eq('id', selectedRowData.id)
           if (error) throw error
@@ -897,7 +1150,7 @@ export default function MovementModal({
             .from('payroll_entries')
             .update({
               reference_date: entryDateIso,
-              type_code: payrollTypeCodeFromDescription(selectedType.description),
+              type_code: payrollTypeCodeFromDescription(effectiveType.description),
               description,
               notes,
               amount,
@@ -911,14 +1164,14 @@ export default function MovementModal({
         }
       } else if (postAsPayment) {
         const paymentType = paymentTypeCodeFromDescription(
-          selectedType.description,
+          effectiveType.description,
           effectiveGroup
         )
         const credits = paymentCreditColumns({
           amount,
           paymentType,
           postToInvoice: invoiceFlag,
-          typeId: selectedType.id,
+          typeId: effectiveType.id,
           ledgerGroup: effectiveGroup,
         })
         const { error } = await diasClient.from('payment_entries').insert({
@@ -934,14 +1187,14 @@ export default function MovementModal({
           description,
           month: periodMonth,
           year: periodYear,
-          type_id: Number(selectedType.id) || null,
+          type_id: Number(effectiveType.id) || null,
         })
         if (error) throw error
       } else {
         const { error } = await diasClient.from('payroll_entries').insert({
           tech_id: String(tech.id),
           reference_date: entryDateIso,
-          type_code: payrollTypeCodeFromDescription(selectedType.description),
+          type_code: payrollTypeCodeFromDescription(effectiveType.description),
           description,
           notes,
           amount,
@@ -1096,17 +1349,17 @@ export default function MovementModal({
         {resizeHandle('sw', 'nesw-resize', 'bottom-0 left-0 h-3 w-3')}
         {resizeHandle('se', 'nwse-resize', 'bottom-0 right-0 h-4 w-4')}
         <div
-          className={`flex shrink-0 items-start justify-between gap-3 border-b border-white/10 px-5 pt-5 pb-3 ${dragHandleClassName}`}
+          className={`flex shrink-0 items-start justify-between gap-2 border-b border-white/10 px-4 pt-3 pb-2 ${dragHandleClassName}`}
           {...dragHandleProps}
         >
           <div>
-            <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-cyan-400/80">
+            <p className="text-[9px] font-semibold uppercase tracking-[0.18em] text-cyan-400/80">
               Καρτέλα
             </p>
-            <h3 className="text-lg font-bold text-white">
+            <h3 className="text-base font-bold text-white">
               {isEdit ? 'Επεξεργασία Κίνησης' : 'Κίνηση'}
             </h3>
-            <p className="mt-0.5 text-xs text-slate-400">
+            <p className="text-[11px] text-slate-400">
               {typesLoading
                 ? 'Φόρτωση τύπων από transaction_types...'
                 : isEdit
@@ -1120,19 +1373,19 @@ export default function MovementModal({
             type="button"
             onClick={onClose}
             disabled={saving || deleting}
-            className="rounded-lg border border-white/10 bg-white/5 px-2 py-1 text-sm text-slate-300 hover:bg-white/10 disabled:opacity-50"
+            className="rounded-lg border border-white/10 bg-white/5 px-2 py-0.5 text-sm text-slate-300 hover:bg-white/10 disabled:opacity-50"
           >
             ✕
           </button>
         </div>
 
-        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
-        <div className="space-y-3 rounded-xl border border-white/10 bg-slate-950/40 p-4">
-          <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Στοιχεία</p>
+        <div className="min-h-0 flex-1 overflow-y-auto px-4 py-2.5">
+        <div className="space-y-2 rounded-xl border border-white/10 bg-slate-950/40 p-3">
+          <p className="text-[9px] font-semibold uppercase tracking-wider text-slate-500">Στοιχεία</p>
 
           {(typesError || typesLoading) && (
             <div
-              className={`rounded-lg border px-3 py-2 text-xs ${
+              className={`rounded-lg border px-2.5 py-1.5 text-xs ${
                 typesError
                   ? 'border-amber-500/40 bg-amber-500/10 text-amber-100'
                   : 'border-white/10 bg-white/5 text-slate-400'
@@ -1142,7 +1395,7 @@ export default function MovementModal({
             </div>
           )}
 
-          <fieldset disabled={formDisabled} className="space-y-3 disabled:opacity-60">
+          <fieldset disabled={formDisabled} className="space-y-2 disabled:opacity-60">
             <div>
               <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
                 {greekCapsLabel('Ημερομηνία')}
@@ -1151,11 +1404,11 @@ export default function MovementModal({
                 value={form.entry_date || ''}
                 onChange={(iso) => patch('entry_date', iso)}
                 withPicker
-                className="w-full rounded-xl border border-white/10 bg-slate-950/60 px-3 py-2 text-sm text-white"
+                className="mt-0.5 w-full rounded-lg border border-white/10 bg-slate-950/60 px-2.5 py-1.5 text-sm text-white"
               />
             </div>
 
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-2 gap-2">
               <div>
                 <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
                   {greekCapsLabel('Κατηγορία')}
@@ -1163,7 +1416,7 @@ export default function MovementModal({
                 <DarkSelect
                   value={uiCategory}
                   onChange={(v) => handleCategoryChange(v)}
-                  className="mt-1 w-full"
+                  className="mt-0.5 w-full"
                   options={categoryOptions}
                   disabled={categorySelectLocked}
                 />
@@ -1175,15 +1428,12 @@ export default function MovementModal({
                 <DarkSelect
                   value={form.side || 'DEBIT'}
                   onChange={() => {}}
-                  className="mt-1 w-full"
+                  className="mt-0.5 w-full"
                   options={SIDE_OPTIONS.filter(
                     (o) => o.value === String(form.side || 'DEBIT').toUpperCase()
                   )}
                   disabled
                 />
-                <p className="mt-1 text-[10px] text-slate-500">
-                  Κλειδωμένη · ορίζεται αυτόματα (εισαγωγή / εξόφληση / υπάρχουσα εγγραφή).
-                </p>
               </div>
             </div>
 
@@ -1195,25 +1445,13 @@ export default function MovementModal({
                 <DarkSelect
                   value={noAvailableTypes ? '' : (selectedTypeId ?? '')}
                   onChange={(v) => handleTypeChange(v)}
-                  className="mt-1 w-full"
+                  className="mt-0.5 w-full"
                   options={typeSelectOptions}
                   disabled={typeSelectLocked || noAvailableTypes}
                   placeholder={EMPTY_TYPE_PLACEHOLDER}
                 />
-                {typeSelectLocked && (
-                  <p className="mt-1 text-[10px] text-slate-500">
-                    Ο τύπος ορίστηκε αυτόματα και δεν αλλάζει χειροκίνητα.
-                  </p>
-                )}
               </div>
             ) : null}
-
-            {targetColumn && (
-              <p className="rounded-lg border border-white/5 bg-slate-900/60 px-3 py-2 text-[11px] text-slate-400">
-                Στόχος στο grid:{' '}
-                <span className="font-semibold text-slate-200">{ledgerColumnLabel(targetColumn)}</span>
-              </p>
-            )}
 
             <div>
               <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
@@ -1224,15 +1462,15 @@ export default function MovementModal({
                 value={form.description}
                 onChange={(e) => patch('description', e.target.value)}
                 placeholder="π.χ. 20.00 ώρα/ες x 15.00 €"
-                className="mt-1 w-full rounded-xl border border-white/10 bg-slate-950/60 px-3 py-2 text-sm text-white placeholder:text-slate-600"
+                className="mt-0.5 w-full rounded-lg border border-white/10 bg-slate-950/60 px-2.5 py-1.5 text-sm text-white placeholder:text-slate-600"
               />
             </div>
 
             {showInvoiceGrossDual ? (
-              <div className="space-y-3">
-                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                  <div className="rounded-xl border border-cyan-400/30 bg-cyan-500/[0.07] px-2.5 py-2">
-                    <label className="text-xs font-bold uppercase tracking-wider text-cyan-100">
+              <div className="space-y-2">
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                  <div className="rounded-lg border border-cyan-400/30 bg-cyan-500/[0.07] px-2 py-1.5">
+                    <label className="text-[10px] font-bold uppercase tracking-wider text-cyan-100">
                       {greekCapsLabel('Καθαρό Ποσό')}
                     </label>
                     <input
@@ -1247,11 +1485,11 @@ export default function MovementModal({
                         if (n == null || n === 0) e.target.select()
                       }}
                       onBlur={() => setNetAmountFocused(false)}
-                      className="mt-1 w-full rounded-lg border border-cyan-400/35 bg-slate-950/70 px-3 py-2.5 font-mono text-lg font-bold tabular-nums text-white outline-none focus:border-cyan-300/55 focus:ring-1 focus:ring-cyan-400/20"
+                      className="mt-0.5 w-full rounded-lg border border-cyan-400/35 bg-slate-950/70 px-2.5 py-1.5 font-mono text-base font-bold tabular-nums text-white outline-none focus:border-cyan-300/55 focus:ring-1 focus:ring-cyan-400/20"
                     />
                   </div>
-                  <div className="rounded-xl border border-amber-500/35 bg-amber-500/10 px-2.5 py-2">
-                    <label className="text-xs font-bold uppercase tracking-wider text-amber-100">
+                  <div className="rounded-lg border border-amber-500/35 bg-amber-500/10 px-2 py-1.5">
+                    <label className="text-[10px] font-bold uppercase tracking-wider text-amber-100">
                       {greekCapsLabel(`Προσαύξηση ${safeTaxPercent}%`)}
                     </label>
                     <input
@@ -1267,7 +1505,7 @@ export default function MovementModal({
                         if (n == null || n === 0) e.target.select()
                       }}
                       onBlur={() => setGrossAmountFocused(false)}
-                      className="mt-1 w-full rounded-lg border border-amber-500/40 bg-slate-950/70 px-3 py-2.5 font-mono text-lg font-bold tabular-nums text-amber-50 outline-none focus:border-amber-300/55 focus:ring-1 focus:ring-amber-400/20"
+                      className="mt-0.5 w-full rounded-lg border border-amber-500/40 bg-slate-950/70 px-2.5 py-1.5 font-mono text-base font-bold tabular-nums text-amber-50 outline-none focus:border-amber-300/55 focus:ring-1 focus:ring-amber-400/20"
                     />
                   </div>
                 </div>
@@ -1283,24 +1521,24 @@ export default function MovementModal({
                   const withhold = round2(grossN * (safeTaxPercent / 100))
                   const payable = round2(grossN + vat - withhold)
                   return (
-                    <div className="rounded-xl border border-slate-700/50 bg-slate-800/50 px-3 py-2.5 text-xs">
-                      <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                    <div className="rounded-lg border border-slate-700/50 bg-slate-800/50 px-2.5 py-1.5 text-xs">
+                      <p className="mb-1 text-[9px] font-semibold uppercase tracking-wider text-slate-500">
                         {greekCapsLabel('Οδηγός πληρωμής')}
                       </p>
-                      <div className="flex justify-between gap-3 py-0.5 text-slate-300">
+                      <div className="flex justify-between gap-2 py-px text-slate-300">
                         <span>Αξία Τιμολογίου</span>
                         <span className="font-mono tabular-nums">{formatEuro(grossN)}</span>
                       </div>
-                      <div className="flex justify-between gap-3 py-0.5 text-slate-300">
+                      <div className="flex justify-between gap-2 py-px text-slate-300">
                         <span>ΦΠΑ 24%</span>
                         <span className="font-mono tabular-nums">+ {formatEuro(vat)}</span>
                       </div>
-                      <div className="flex justify-between gap-3 py-0.5 text-slate-300">
+                      <div className="flex justify-between gap-2 py-px text-slate-300">
                         <span>Παρακρ. Φόρου ({safeTaxPercent}%)</span>
                         <span className="font-mono tabular-nums">− {formatEuro(withhold)}</span>
                       </div>
-                      <hr className="my-1.5 border-slate-600" />
-                      <div className="flex justify-between gap-3 py-0.5 font-bold text-slate-100">
+                      <hr className="my-1 border-slate-600" />
+                      <div className="flex justify-between gap-2 py-px font-bold text-slate-100">
                         <span>Πληρωτέο</span>
                         <span className="font-mono tabular-nums">{formatEuro(payable)}</span>
                       </div>
@@ -1309,8 +1547,8 @@ export default function MovementModal({
                 })()}
               </div>
             ) : (
-              <div className="rounded-xl border border-cyan-400/30 bg-cyan-500/[0.07] px-2.5 py-2">
-                <label className="text-xs font-bold uppercase tracking-wider text-cyan-100">
+              <div className="rounded-lg border border-cyan-400/30 bg-cyan-500/[0.07] px-2 py-1.5">
+                <label className="text-[10px] font-bold uppercase tracking-wider text-cyan-100">
                   {greekCapsLabel('Ποσό (€)')}
                 </label>
                 <input
@@ -1326,17 +1564,10 @@ export default function MovementModal({
                     if (n == null || n === 0) e.target.select()
                   }}
                   onBlur={() => setNetAmountFocused(false)}
-                  className="mt-1 w-full rounded-lg border border-cyan-400/35 bg-slate-950/70 px-3 py-2.5 font-mono text-lg font-bold tabular-nums text-white outline-none focus:border-cyan-300/55 focus:ring-1 focus:ring-cyan-400/20"
+                  className="mt-0.5 w-full rounded-lg border border-cyan-400/35 bg-slate-950/70 px-2.5 py-1.5 font-mono text-base font-bold tabular-nums text-white outline-none focus:border-cyan-300/55 focus:ring-1 focus:ring-cyan-400/20"
                 />
               </div>
             )}
-
-            {selectedType && !typesLoading && !categoryPolicy.temporary ? (
-              <p className="text-[11px] text-slate-500">
-                id={selectedType.id} · {ledgerGroupLabel(selectedType.ledger_group)} · is_for_sum=
-                {String(selectedType.is_for_sum)}
-              </p>
-            ) : null}
 
             <div>
               <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
@@ -1345,26 +1576,26 @@ export default function MovementModal({
               <textarea
                 value={form.notes}
                 onChange={(e) => patch('notes', e.target.value)}
-                rows={2}
-                className="mt-1 w-full rounded-xl border border-white/10 bg-slate-950/60 px-3 py-2 text-sm text-white"
+                rows={1}
+                className="mt-0.5 w-full rounded-lg border border-white/10 bg-slate-950/60 px-2.5 py-1.5 text-sm text-white"
               />
             </div>
           </fieldset>
         </div>
 
         {displayError && (
-          <div className="mt-3 rounded-xl border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-xs text-rose-100">
+          <div className="mt-2 rounded-lg border border-rose-500/40 bg-rose-500/10 px-2.5 py-1.5 text-xs text-rose-100">
             {displayError}
           </div>
         )}
         </div>
 
-        <div className="flex shrink-0 gap-2 border-t border-white/10 bg-slate-900 px-5 py-3">
+        <div className="flex shrink-0 gap-1.5 border-t border-white/10 bg-slate-900 px-4 py-2">
           <button
             type="button"
             onClick={onClose}
             disabled={saving || deleting}
-            className="rounded-xl border border-rose-500/40 bg-rose-500/15 px-4 py-2.5 text-sm font-bold text-rose-100 disabled:opacity-50"
+            className="rounded-lg border border-rose-500/40 bg-rose-500/15 px-3 py-1.5 text-sm font-bold text-rose-100 disabled:opacity-50"
           >
             Έξοδος
           </button>
@@ -1373,7 +1604,7 @@ export default function MovementModal({
               type="button"
               onClick={() => setLoanDeleteOpen(true)}
               disabled={saving || deleting}
-              className="rounded-xl border border-red-500/50 bg-red-600/30 px-4 py-2.5 text-sm font-bold text-red-100 hover:bg-red-600/45 disabled:opacity-50"
+              className="rounded-lg border border-red-500/50 bg-red-600/30 px-3 py-1.5 text-sm font-bold text-red-100 hover:bg-red-600/45 disabled:opacity-50"
             >
               Διαγραφή
             </button>
@@ -1381,7 +1612,7 @@ export default function MovementModal({
           <button
             type="submit"
             disabled={saveDisabled}
-            className="flex-1 rounded-xl border border-emerald-500/40 bg-emerald-500/20 px-4 py-2.5 text-sm font-bold text-emerald-100 disabled:opacity-50"
+            className="flex-1 rounded-lg border border-emerald-500/40 bg-emerald-500/20 px-3 py-1.5 text-sm font-bold text-emerald-100 disabled:opacity-50"
           >
             {saving ? 'Αποθήκευση...' : typesLoading ? 'Φόρτωση...' : 'Αποθήκευση'}
           </button>

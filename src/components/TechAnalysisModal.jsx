@@ -79,7 +79,6 @@ import { transferHoursToLedger } from '../lib/transferHours'
 import {
   buildTypeLookup,
   fetchTransactionTypes,
-  resolveTransactionType,
 } from '../lib/transactionTypes'
 import { employmentLabel, personnelIssuesInvoice, getLedgerCategoryPolicy, isTemporaryPersonnel } from '../lib/personnel'
 import PersonnelPanel from './PersonnelPanel'
@@ -100,6 +99,12 @@ import {
 import LedgerAnalysisGrid, {
   LedgerCompactHeadersToggle,
 } from './LedgerAnalysisGrid'
+import {
+  loadRowDensity,
+  saveRowDensity,
+  nextRowDensity,
+  ROW_DENSITY_META,
+} from '../lib/rowDensity'
 import DarkSelect from './DarkSelect'
 
 const MATRIX_BALANCES_STORAGE_KEY = 'dias_show_matrix_balances'
@@ -187,6 +192,8 @@ export default function TechAnalysisModal({
   const [invoiceExporting, setInvoiceExporting] = useState(false)
   const [jobsExporting, setJobsExporting] = useState(false)
   const [jobsExportChoiceOpen, setJobsExportChoiceOpen] = useState(false)
+  const [settlementChoiceOpen, setSettlementChoiceOpen] = useState(false)
+  const [settlementChoiceMode, setSettlementChoiceMode] = useState('full') // 'full' | 'partial'
   const [temporaryExporting, setTemporaryExporting] = useState(false)
   const [temporaryOtherExporting, setTemporaryOtherExporting] = useState(false)
   const [personnelSidebarKind, setPersonnelSidebarKind] = useState(workspaceSeed.sidebarKind)
@@ -268,11 +275,20 @@ export default function TechAnalysisModal({
       return false
     }
   })
+  const [rowDensity, setRowDensity] = useState(() => loadRowDensity())
+  const cycleRowDensity = () => {
+    setRowDensity((prev) => {
+      const next = nextRowDensity(prev)
+      saveRowDensity(next)
+      return next
+    })
+  }
   const [movementPresetTypeId, setMovementPresetTypeId] = useState(null)
   const [movementPresetSide, setMovementPresetSide] = useState(null)
   const [movementPresetDescription, setMovementPresetDescription] = useState(null)
   const [movementPresetAmount, setMovementPresetAmount] = useState(null)
   const [movementPresetPostToInvoice, setMovementPresetPostToInvoice] = useState(null)
+  const [movementSettlementBalance, setMovementSettlementBalance] = useState(null)
   const [transactionTypes, setTransactionTypes] = useState([])
   const [transactionTypesError, setTransactionTypesError] = useState(null)
 
@@ -751,6 +767,7 @@ export default function TechAnalysisModal({
     setMovementPresetDescription(null)
     setMovementPresetAmount(null)
     setMovementPresetPostToInvoice(null)
+    setMovementSettlementBalance(null)
   }, [activeTab])
 
   // Έκτακτοι: χωρίς Αποδοχές / Συμφωνίες / Αναλυτικά — fallback στο analysis
@@ -775,6 +792,11 @@ export default function TechAnalysisModal({
     setMovementPresetSide(preset.side ?? null)
     setMovementPresetPostToInvoice(
       preset.postToInvoice === true ? true : preset.postToInvoice === false ? false : null
+    )
+    setMovementSettlementBalance(
+      preset.settlementBalance != null && Number(preset.settlementBalance) > 0
+        ? Number(preset.settlementBalance)
+        : null
     )
 
     const ctx = { summary: selectedSummary, earningsForm }
@@ -811,6 +833,7 @@ export default function TechAnalysisModal({
       side: 'CREDIT',
       postToInvoice: invoice,
       amount,
+      settlementBalance: amount,
     })
   }
 
@@ -852,6 +875,7 @@ export default function TechAnalysisModal({
     setMovementPresetDescription(null)
     setMovementPresetAmount(null)
     setMovementPresetPostToInvoice(null)
+    setMovementSettlementBalance(null)
     setMovementOpen(true)
   }
 
@@ -932,10 +956,8 @@ export default function TechAnalysisModal({
     setMovementPresetDescription(null)
     setMovementPresetAmount(null)
     setMovementPresetPostToInvoice(null)
+    setMovementSettlementBalance(null)
   }
-
-  const findTypeByDescription = (label) =>
-    resolveTransactionType(typeLookup, { description: label, typeCode: label })
 
   const handleMovementSaved = async ({ wasPayment } = {}) => {
     setLedgerTick((n) => n + 1)
@@ -1081,6 +1103,11 @@ export default function TechAnalysisModal({
           insurance: 0,
           loan: 0,
           loanCount: 0,
+          disbursement: 0,
+          disbursementCount: 0,
+          salaryDebit: 0,
+          otherDebit: 0,
+          invoiceDebit: 0,
         })),
         totals: {
           sigma: 0,
@@ -1092,6 +1119,11 @@ export default function TechAnalysisModal({
           insurance: 0,
           loan: 0,
           loanCount: 0,
+          disbursement: 0,
+          disbursementCount: 0,
+          salaryDebit: 0,
+          otherDebit: 0,
+          invoiceDebit: 0,
         },
         avg: 0,
         selectedSettled: () => false,
@@ -1116,14 +1148,17 @@ export default function TechAnalysisModal({
     return buildLedgerYearMatrix(yearLedgerRows, analysisYear, yearPayrolls, {
       earningsTicketAmount: parseElNumber(earningsForm?.ticket_amount) || 0,
       earningsInsuranceAmount: parseElNumber(earningsForm?.insurance_amount) || 0,
+      agreementVersions,
+      earningsForm,
+      techIsTemporary: isTemporaryPersonnel(tech),
     })
   }, [
     tech,
     analysisYear,
     yearLedgerRows,
     payrolls,
-    earningsForm?.ticket_amount,
-    earningsForm?.insurance_amount,
+    earningsForm,
+    agreementVersions,
   ])
 
   /** Σύνολο εκταμιεύσεων δανείου (τύπος 95) για το επιλεγμένο έτος. */
@@ -1371,48 +1406,61 @@ export default function TechAnalysisModal({
     }
   }
 
-  /** Δεξιά στήλη ενεργειών — ΚΕΦΑΛΑΙΑ χωρίς τόνους · εξοφλήσεις autofill από υπόλοιπα. */
-  const ledgerActionButtons = useMemo(() => {
-    const policy = getLedgerCategoryPolicy(tech)
-    const bal1 = Number(ledgerBalances?.balance1) || 0
-    const bal2 = Number(ledgerBalances?.balance2) || 0
-    const balInv = Number(ledgerBalances?.invoice) || 0
-    const items = [
+  /** Δεξιά στήλη — ΔΙΑΓΡΑΦΗ · εξοφλήσεις μέσω ενιαίου κουμπιού + choice modal. */
+  const ledgerActionButtons = useMemo(
+    () => [
       {
         label: 'ΔΙΑΓΡΑΦΗ',
         action: handleDeleteLedgerEntry,
         disabled: !selectedLedgerRowKey,
       },
-    ]
+    ],
+    [selectedLedgerRowKey]
+  )
+
+  /** Επιλογές εξόφλησης Μ/Λ/ΤΙΜ — ίδια presets με τα παλιά 3 κουμπιά. */
+  const settlementOptions = useMemo(() => {
+    const policy = getLedgerCategoryPolicy(tech)
+    const bal1 = Number(ledgerBalances?.balance1) || 0
+    const bal2 = Number(ledgerBalances?.balance2) || 0
+    const balInv = Number(ledgerBalances?.invoice) || 0
+    const opts = []
     if (policy.allowSalary) {
-      items.push({
-        label: 'ΕΞΟΦΛΗΣΗ(Μ)',
+      opts.push({
+        key: 'salary',
+        label: 'Μισθός',
         typeId: 91,
         side: 'CREDIT',
+        postToInvoice: false,
         amount: bal1 > 0 ? bal1 : null,
         disabled: !tech || bal1 <= 0,
         title:
           bal1 <= 0
             ? 'Δεν υπάρχει υπόλοιπο μισθού για εξόφληση'
             : 'Εξοφληση μισθου (Μισθος Πιστ.)',
+        balanceText: formatEuro(bal1),
       })
     }
     if (policy.allowOther) {
-      items.push({
-        label: 'ΕΞΟΦΛΗΣΗ(Λ)',
+      opts.push({
+        key: 'other',
+        label: 'Λοιπά',
         typeId: 92,
         side: 'CREDIT',
+        postToInvoice: false,
         amount: bal2 > 0 ? bal2 : null,
         disabled: !tech || bal2 <= 0,
         title:
           bal2 <= 0
             ? 'Δεν υπάρχει υπόλοιπο λοιπών για εξόφληση'
             : 'Εξοφληση λοιπων (Λοιπα Πιστ.)',
+        balanceText: formatEuro(bal2),
       })
     }
     if (policy.allowInvoice) {
-      items.push({
-        label: 'ΕΞΟΦΛΗΣΗ(ΤΙΜ)',
+      opts.push({
+        key: 'invoice',
+        label: 'Τιμολόγιο',
         typeId: 93,
         side: 'CREDIT',
         postToInvoice: true,
@@ -1422,10 +1470,61 @@ export default function TechAnalysisModal({
           balInv <= 0
             ? 'Δεν υπάρχει υπόλοιπο τιμολογίου για εξόφληση'
             : 'Εξοφληση τιμολογιου (Τιμολογιο Πιστ.)',
+        balanceText: formatEuro(balInv),
       })
     }
-    return items
-  }, [tech, selectedLedgerRowKey, ledgerBalances])
+    return opts
+  }, [tech, ledgerBalances])
+
+  const settlementButtonDisabled =
+    !tech || settlementOptions.length === 0 || settlementOptions.every((o) => o.disabled)
+
+  const confirmSettlementOption = (option, mode = settlementChoiceMode) => {
+    if (!option || option.disabled) {
+      toast.error(option?.title || 'Δεν υπάρχει υπόλοιπο για εξόφληση')
+      return
+    }
+    const isPartial = mode === 'partial'
+    const amountToPass = isPartial ? 0 : option.amount
+    if (!isPartial && (amountToPass == null || !(Number(amountToPass) > 0))) {
+      toast.error(option?.title || 'Δεν υπάρχει υπόλοιπο για εξόφληση')
+      return
+    }
+    notifyLoanHoldsInMonth()
+    setSettlementChoiceOpen(false)
+    const isInvoice = option.postToInvoice === true || option.key === 'invoice'
+    const isSalary = option.key === 'salary'
+    // Μερική: 97 μισθός / 98 λοιπά / 96 τιμολόγιο · πλήρης: 91 / 92 / 93
+    const typeId = isPartial
+      ? isInvoice
+        ? 96
+        : isSalary
+          ? 97
+          : 98
+      : option.typeId
+    openMovementCreate({
+      typeId,
+      side: option.side || 'CREDIT',
+      postToInvoice: option.postToInvoice === true,
+      amount: amountToPass,
+      settlementBalance: option.amount,
+      description: isPartial ? '' : undefined,
+    })
+  }
+
+  const openSettlementChoice = (mode = 'full') => {
+    if (settlementButtonDisabled) {
+      toast.error('Δεν υπάρχει υπόλοιπο για εξόφληση')
+      return
+    }
+    setSettlementChoiceMode(mode)
+    const enabled = settlementOptions.filter((o) => !o.disabled)
+    if (enabled.length === 1) {
+      confirmSettlementOption(enabled[0], mode)
+      return
+    }
+    setSettlementChoiceOpen(true)
+  }
 
   const ledgerCategoryPolicy = useMemo(() => getLedgerCategoryPolicy(tech), [tech])
   const techIsTemporary = isTemporaryPersonnel(tech)
@@ -1918,7 +2017,10 @@ export default function TechAnalysisModal({
         : 'Επίλεξε τεχνικό από τη λίστα αριστερά.'}
     </div>
   ) : (
-    <div className={`relative flex min-w-0 flex-1 flex-col ${embedded ? 'space-y-4' : 'flex-1 overflow-hidden'}`}>
+    <div
+      className={`relative flex min-w-0 flex-1 flex-col ${embedded ? 'space-y-4' : 'flex-1 overflow-hidden'}`}
+      data-row-density={rowDensity}
+    >
       {!embedded && (
         <div
           className={`relative flex items-center justify-between border-b border-white/10 px-5 py-3 ${analysisDragHandleClassName}`}
@@ -2233,24 +2335,33 @@ export default function TechAnalysisModal({
             </button>
           ))}
           {!techIsTemporary ? (
-            <div className="ml-auto flex shrink-0 flex-col items-end gap-0.5 self-center pr-1">
-              <button
-                type="button"
-                onClick={() => setLoanManagementOpen(true)}
-                disabled={!tech}
-                title="Διαχείριση δανείων τεχνικού"
-                className="rounded-xl border border-amber-500/40 bg-transparent px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-amber-100/90 transition hover:border-amber-400/60 hover:bg-amber-500/10 disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                {greekCapsLabel('Διαχείριση Δανείων')}
-              </button>
-              {tech ? (
-                <p className="mr-2 max-w-[16rem] self-start text-left text-[11px] font-bold leading-tight text-slate-300">
-                  Εκταμιεύσεις {analysisYear}:{' '}
-                  <span className="font-mono tabular-nums text-amber-100/90">
-                    {formatEuro(yearLoanDisbursementsTotal)}
-                  </span>
-                </p>
+            <div className="ml-auto flex shrink-0 items-center gap-2 self-center pr-1">
+              {activeTab !== 'analysis' ? (
+                <RowDensityToggle density={rowDensity} onCycle={cycleRowDensity} />
               ) : null}
+              <div className="flex flex-col items-end gap-0.5">
+                <button
+                  type="button"
+                  onClick={() => setLoanManagementOpen(true)}
+                  disabled={!tech}
+                  title="Διαχείριση δανείων τεχνικού"
+                  className="rounded-xl border border-amber-500/40 bg-transparent px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-amber-100/90 transition hover:border-amber-400/60 hover:bg-amber-500/10 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  {greekCapsLabel('Διαχείριση Δανείων')}
+                </button>
+                {tech ? (
+                  <p className="mr-2 max-w-[16rem] self-start text-left text-[11px] font-bold leading-tight text-slate-300">
+                    Εκταμιεύσεις {analysisYear}:{' '}
+                    <span className="font-mono tabular-nums text-amber-100/90">
+                      {formatEuro(yearLoanDisbursementsTotal)}
+                    </span>
+                  </p>
+                ) : null}
+              </div>
+            </div>
+          ) : activeTab !== 'analysis' ? (
+            <div className="ml-auto flex shrink-0 items-center self-center pr-1">
+              <RowDensityToggle density={rowDensity} onCycle={cycleRowDensity} />
             </div>
           ) : null}
         </div>
@@ -2301,58 +2412,61 @@ export default function TechAnalysisModal({
                   <h3 className="text-sm font-semibold text-white">
                     Ετήσια Μήτρα Απολαβών · {analysisYear}
                   </h3>
-                  <button
-                    type="button"
-                    onClick={toggleMatrixBalances}
-                    aria-pressed={showMatrixBalances}
-                    aria-label={
-                      showMatrixBalances
-                        ? 'Απόκρυψη γραμμών υπολοίπων'
-                        : 'Εμφάνιση γραμμών υπολοίπων'
-                    }
-                    title={
-                      showMatrixBalances
-                        ? 'Υπόλοιπα ορατά — κλικ για απόκρυψη'
-                        : 'Υπόλοιπα κρυφά — κλικ για εμφάνιση'
-                    }
-                    className={`group shrink-0 inline-flex h-8 w-8 items-center justify-center rounded-full border transition duration-200 ${
-                      showMatrixBalances
-                        ? 'border-cyan-400/35 bg-cyan-500/15 text-cyan-200 shadow-[0_0_12px_rgba(34,211,238,0.18)] hover:bg-cyan-500/25'
-                        : 'border-white/10 bg-white/5 text-slate-400 hover:border-white/20 hover:bg-white/10 hover:text-slate-200'
-                    }`}
-                  >
-                    {showMatrixBalances ? (
-                      <svg
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="1.75"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        className="h-[15px] w-[15px]"
-                        aria-hidden
-                      >
-                        <path d="M2.5 12s3.5-6.5 9.5-6.5S21.5 12 21.5 12s-3.5 6.5-9.5 6.5S2.5 12 2.5 12z" />
-                        <circle cx="12" cy="12" r="2.75" />
-                      </svg>
-                    ) : (
-                      <svg
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="1.75"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        className="h-[15px] w-[15px]"
-                        aria-hidden
-                      >
-                        <path d="M3 3l18 18" />
-                        <path d="M10.6 10.6a2.75 2.75 0 003.8 3.8" />
-                        <path d="M9.9 5.1A10.4 10.4 0 0112 4.9c5.2 0 9 5.3 9.5 6.1a1.1 1.1 0 010 1.2c-.3.5-1.2 1.8-2.7 3.1" />
-                        <path d="M6.1 6.2C4.3 7.6 3 9.2 2.5 10a1.1 1.1 0 000 1.2C3 12 6.8 17.1 12 17.1c1.1 0 2.1-.2 3-.5" />
-                      </svg>
-                    )}
-                  </button>
+                  <div className="flex shrink-0 items-center gap-1.5">
+                    <RowDensityToggle density={rowDensity} onCycle={cycleRowDensity} />
+                    <button
+                      type="button"
+                      onClick={toggleMatrixBalances}
+                      aria-pressed={showMatrixBalances}
+                      aria-label={
+                        showMatrixBalances
+                          ? 'Απόκρυψη γραμμών υπολοίπων'
+                          : 'Εμφάνιση γραμμών υπολοίπων'
+                      }
+                      title={
+                        showMatrixBalances
+                          ? 'Υπόλοιπα ορατά — κλικ για απόκρυψη'
+                          : 'Υπόλοιπα κρυφά — κλικ για εμφάνιση'
+                      }
+                      className={`group inline-flex h-8 w-8 items-center justify-center rounded-full border transition duration-200 ${
+                        showMatrixBalances
+                          ? 'border-cyan-400/35 bg-cyan-500/15 text-cyan-200 shadow-[0_0_12px_rgba(34,211,238,0.18)] hover:bg-cyan-500/25'
+                          : 'border-white/10 bg-white/5 text-slate-400 hover:border-white/20 hover:bg-white/10 hover:text-slate-200'
+                      }`}
+                    >
+                      {showMatrixBalances ? (
+                        <svg
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="1.75"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          className="h-[15px] w-[15px]"
+                          aria-hidden
+                        >
+                          <path d="M2.5 12s3.5-6.5 9.5-6.5S21.5 12 21.5 12s-3.5 6.5-9.5 6.5S2.5 12 2.5 12z" />
+                          <circle cx="12" cy="12" r="2.75" />
+                        </svg>
+                      ) : (
+                        <svg
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="1.75"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          className="h-[15px] w-[15px]"
+                          aria-hidden
+                        >
+                          <path d="M3 3l18 18" />
+                          <path d="M10.6 10.6a2.75 2.75 0 003.8 3.8" />
+                          <path d="M9.9 5.1A10.4 10.4 0 0112 4.9c5.2 0 9 5.3 9.5 6.1a1.1 1.1 0 010 1.2c-.3.5-1.2 1.8-2.7 3.1" />
+                          <path d="M6.1 6.2C4.3 7.6 3 9.2 2.5 10a1.1 1.1 0 000 1.2C3 12 6.8 17.1 12 17.1c1.1 0 2.1-.2 3-.5" />
+                        </svg>
+                      )}
+                    </button>
+                  </div>
                 </div>
                 <p className="text-xs text-slate-400">
                   {techIsTemporary
@@ -2414,6 +2528,39 @@ export default function TechAnalysisModal({
                         values={salaryMatrix.months.map((m) => formatMatrixCell(m.pi))}
                         total={formatMatrixCell(salaryMatrix.totals.pi)}
                       />
+                      {!techIsTemporary || ledgerCategoryPolicy.allowSalary ? (
+                        <MatrixRow
+                          label="Μισθός"
+                          hint="Χρεώσεις"
+                          indent
+                          selectedMonth={selectedMonth}
+                          onSelectMonth={requestSelectedMonth}
+                          values={salaryMatrix.months.map((m) => formatMatrixCell(m.salaryDebit))}
+                          total={formatMatrixCell(salaryMatrix.totals.salaryDebit)}
+                        />
+                      ) : null}
+                      {!techIsTemporary || ledgerCategoryPolicy.allowOther ? (
+                        <MatrixRow
+                          label="Λοιπά"
+                          hint="Χρεώσεις"
+                          indent
+                          selectedMonth={selectedMonth}
+                          onSelectMonth={requestSelectedMonth}
+                          values={salaryMatrix.months.map((m) => formatMatrixCell(m.otherDebit))}
+                          total={formatMatrixCell(salaryMatrix.totals.otherDebit)}
+                        />
+                      ) : null}
+                      {!techIsTemporary || ledgerCategoryPolicy.allowInvoice ? (
+                        <MatrixRow
+                          label="Τιμολόγιο"
+                          hint="Χρεώσεις"
+                          indent
+                          selectedMonth={selectedMonth}
+                          onSelectMonth={requestSelectedMonth}
+                          values={salaryMatrix.months.map((m) => formatMatrixCell(m.invoiceDebit))}
+                          total={formatMatrixCell(salaryMatrix.totals.invoiceDebit)}
+                        />
+                      ) : null}
                       {showMatrixBalances && !techIsTemporary ? (
                         <MatrixRow
                           label="Υ (Μ)"
@@ -2466,16 +2613,35 @@ export default function TechAnalysisModal({
                           total={formatMatrixTicket(salaryMatrix.totals.insurance)}
                         />
                       ) : null}
-                      {!techIsTemporary ? (
+                      {!techIsTemporary &&
+                      (Number(salaryMatrix.totals.loan) > 0 ||
+                        Number(salaryMatrix.totals.loanCount) > 0) ? (
                         <MatrixRow
                           label="Δάνειο"
-                          hint=""
+                          hint="Δόσεις"
                           selectedMonth={selectedMonth}
                           onSelectMonth={requestSelectedMonth}
                           values={salaryMatrix.months.map((m) =>
                             formatMatrixLoan(m.loan, m.loanCount)
                           )}
                           total={formatMatrixLoan(salaryMatrix.totals.loan)}
+                        />
+                      ) : null}
+                      {!techIsTemporary &&
+                      (Number(salaryMatrix.totals.disbursement) > 0 ||
+                        Number(salaryMatrix.totals.disbursementCount) > 0) ? (
+                        <MatrixRow
+                          label="Εκταμίευση"
+                          hint="Δάνειο"
+                          selectedMonth={selectedMonth}
+                          onSelectMonth={requestSelectedMonth}
+                          values={salaryMatrix.months.map((m) =>
+                            formatMatrixLoan(m.disbursement, m.disbursementCount)
+                          )}
+                          total={formatMatrixLoan(
+                            salaryMatrix.totals.disbursement,
+                            salaryMatrix.totals.disbursementCount
+                          )}
                         />
                       ) : null}
                     </tbody>
@@ -2550,7 +2716,11 @@ export default function TechAnalysisModal({
                     invoice: formatEuro(ledgerBalances.invoice || 0),
                   }}
                   invoiceGuideData={{
-                    netAmount: ledgerBalances.invoice,
+                    // ΤΙΜ Χρ. − κράτηση δόσης · μετά προσαύξηση = ίδια Αξία με μήτρα (π.χ. 725 / 650)
+                    netAmount: ledgerBalances.invoiceDebit || 0,
+                    // Υπόλοιπο για προσαύξηση στο chip Υ(ΤΙΜ)
+                    remainingNet: ledgerBalances.invoice || 0,
+                    settled: Math.abs(Number(ledgerBalances.invoice) || 0) < 0.005,
                     // Έκτακτοι: απλό καθαρό + ΦΠΑ 24% · χωρίς /0.8 και παρακράτηση
                     simpleVatOnly: techIsTemporary,
                     // Μόνιμοι: όροι από συμφωνία που κάλυπτε τον επιλεγμένο μήνα
@@ -2599,34 +2769,38 @@ export default function TechAnalysisModal({
                     title={item.title}
                     onClick={() => {
                       if (typeof item.action === 'function') item.action()
-                      else if (item.typeId) {
-                        if (item.amount == null && (item.typeId === 91 || item.typeId === 92 || item.typeId === 93)) {
-                          toast.error(item.title || 'Δεν υπάρχει υπόλοιπο για εξόφληση')
-                          return
-                        }
-                        if (item.typeId === 91 || item.typeId === 92 || item.typeId === 93) {
-                          notifyLoanHoldsInMonth()
-                        }
-                        openMovementCreate({
-                          typeId: item.typeId,
-                          side: item.side,
-                          postToInvoice: item.postToInvoice === true,
-                          amount: item.amount ?? undefined,
-                        })
-                      } else {
-                        const tt = findTypeByDescription(item.label)
-                        openMovementCreate({
-                          typeId: tt?.id ?? item.typeId,
-                          side: item.side || 'DEBIT',
-                          postToInvoice: item.postToInvoice === true,
-                        })
-                      }
                     }}
                     className="shrink-0 rounded-xl border border-white/10 bg-slate-900/80 px-3 py-2.5 text-left text-xs font-semibold uppercase tracking-wide text-slate-200 transition hover:border-cyan-500/40 hover:bg-cyan-500/10 hover:text-cyan-100 disabled:cursor-not-allowed disabled:opacity-40 lg:w-full"
                   >
                     {item.label}
                   </button>
                 ))}
+                <button
+                  type="button"
+                  onClick={() => openSettlementChoice('full')}
+                  disabled={settlementButtonDisabled}
+                  title={
+                    settlementButtonDisabled
+                      ? 'Δεν υπάρχει υπόλοιπο για εξόφληση'
+                      : 'Πλήρης εξόφληση — προσυμπληρώνει το υπόλοιπο'
+                  }
+                  className="shrink-0 rounded-xl border border-white/10 bg-slate-900/80 px-3 py-2.5 text-left text-xs font-semibold uppercase tracking-wide text-slate-200 transition hover:border-cyan-500/40 hover:bg-cyan-500/10 hover:text-cyan-100 disabled:cursor-not-allowed disabled:opacity-40 lg:w-full"
+                >
+                  ΕΞΟΦΛΗΣΗ
+                </button>
+                <button
+                  type="button"
+                  onClick={() => openSettlementChoice('partial')}
+                  disabled={settlementButtonDisabled}
+                  title={
+                    settlementButtonDisabled
+                      ? 'Δεν υπάρχει υπόλοιπο για πληρωμή έναντι'
+                      : 'Πληρωμή έναντι — ποσό 0,00 · συμπλήρωσε χειροκίνητα'
+                  }
+                  className="shrink-0 rounded-xl border border-white/10 bg-slate-900/80 px-3 py-2.5 text-left text-xs font-semibold uppercase tracking-wide text-slate-200 transition hover:border-emerald-500/40 hover:bg-emerald-500/10 hover:text-emerald-100 disabled:cursor-not-allowed disabled:opacity-40 lg:w-full"
+                >
+                  ΠΛΗΡΩΜΗ
+                </button>
               </aside>
             </div>
 
@@ -2644,6 +2818,7 @@ export default function TechAnalysisModal({
               presetDescription={movementPresetDescription}
               presetAmount={movementPresetAmount}
               presetPostToInvoice={movementPresetPostToInvoice}
+              settlementBalance={movementSettlementBalance}
               presetMonth={selectedMonth}
               presetYear={analysisYear}
               hasInvoice={ledgerMonthContext.hasInvoice}
@@ -3608,6 +3783,83 @@ export default function TechAnalysisModal({
             document.body
           )
         : null}
+
+      {settlementChoiceOpen
+        ? createPortal(
+            <div className="fixed inset-0 z-[200] flex items-center justify-center p-4">
+              <button
+                type="button"
+                className="absolute inset-0 bg-slate-950/50 backdrop-blur-none"
+                aria-label="Κλείσιμο"
+                onClick={() => setSettlementChoiceOpen(false)}
+              />
+              <div
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="settlement-choice-title"
+                className={`relative w-full max-w-md rounded-2xl border bg-slate-900 p-5 shadow-2xl ${
+                  settlementChoiceMode === 'partial'
+                    ? 'border-emerald-500/35 shadow-emerald-950/30'
+                    : 'border-cyan-500/35 shadow-cyan-950/30'
+                }`}
+              >
+                <p
+                  className={`text-[10px] font-semibold uppercase tracking-[0.18em] ${
+                    settlementChoiceMode === 'partial'
+                      ? 'text-emerald-400/80'
+                      : 'text-cyan-400/80'
+                  }`}
+                >
+                  Καρτέλα
+                </p>
+                <h3 id="settlement-choice-title" className="mt-1 text-lg font-bold text-white">
+                  {settlementChoiceMode === 'partial' ? 'ΠΛΗΡΩΜΗ' : 'ΕΞΟΦΛΗΣΗ'}
+                </h3>
+                <p className="mt-2 text-sm leading-relaxed text-slate-300">
+                  {settlementChoiceMode === 'partial'
+                    ? 'Έναντι — επίλεξε κατηγορία · το ποσό μένει 0,00 για χειροκίνητη συμπλήρωση.'
+                    : 'Επίλεξε κατηγορία — συμπληρώνεται αυτόματα το υπόλοιπο.'}
+                </p>
+                <div className="mt-5 flex flex-col gap-2">
+                  {settlementOptions.map((opt) => (
+                    <button
+                      key={opt.key}
+                      type="button"
+                      disabled={opt.disabled}
+                      title={opt.title}
+                      onClick={() => confirmSettlementOption(opt, settlementChoiceMode)}
+                      className={`w-full rounded-xl border px-4 py-3 text-left text-sm font-bold transition disabled:cursor-not-allowed disabled:opacity-40 ${
+                        settlementChoiceMode === 'partial'
+                          ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-100 hover:bg-emerald-500/25'
+                          : 'border-cyan-500/40 bg-cyan-500/15 text-cyan-100 hover:bg-cyan-500/25'
+                      }`}
+                    >
+                      {opt.label}
+                      <span
+                        className={`mt-0.5 block text-xs font-semibold ${
+                          settlementChoiceMode === 'partial'
+                            ? 'text-emerald-100/70'
+                            : 'text-cyan-100/70'
+                        }`}
+                      >
+                        Υπόλοιπο: {opt.balanceText}
+                        {settlementChoiceMode === 'partial' ? ' · ποσό: 0,00' : ''}
+                      </span>
+                    </button>
+                  ))}
+                  <button
+                    type="button"
+                    onClick={() => setSettlementChoiceOpen(false)}
+                    className="mt-1 w-full rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm font-semibold text-slate-200 transition hover:bg-white/10"
+                  >
+                    Ακύρωση
+                  </button>
+                </div>
+              </div>
+            </div>,
+            document.body
+          )
+        : null}
     </>
   )
 
@@ -3688,6 +3940,40 @@ function InfoField({ label, value }) {
   )
 }
 
+/** Κουμπί 3 επιπέδων πυκνότητας γραμμών (Ανοιχτό → Μέτριο → Σφιχτό). */
+function RowDensityToggle({ density, onCycle, className = '' }) {
+  const level = Number(density) === 1 || Number(density) === 2 ? Number(density) : 0
+  const meta = ROW_DENSITY_META[level]
+  return (
+    <button
+      type="button"
+      onClick={onCycle}
+      aria-label={`Πυκνότητα γραμμών: ${meta.label}`}
+      title={`${meta.title} — κλικ για αλλαγή`}
+      className={`inline-flex h-8 items-center gap-1 rounded-full border border-white/10 bg-white/5 px-2 text-[10px] font-bold uppercase tracking-wide text-slate-300 transition hover:border-cyan-400/40 hover:bg-cyan-500/10 hover:text-cyan-100 ${className}`}
+    >
+      <span className="flex flex-col justify-center gap-[2px]" aria-hidden>
+        <span
+          className={`block h-[2px] rounded-full bg-current ${
+            level === 0 ? 'w-3.5' : level === 1 ? 'w-3' : 'w-2.5'
+          }`}
+        />
+        <span
+          className={`block h-[2px] rounded-full bg-current ${
+            level === 0 ? 'w-3.5 opacity-80' : level === 1 ? 'w-3 opacity-90' : 'w-2.5'
+          }`}
+        />
+        <span
+          className={`block h-[2px] rounded-full bg-current ${
+            level === 0 ? 'w-3.5 opacity-60' : level === 1 ? 'w-3 opacity-70' : 'w-2.5'
+          }`}
+        />
+      </span>
+      <span className="min-w-[0.85rem] text-center tabular-nums">{meta.short}</span>
+    </button>
+  )
+}
+
 function SummaryStat({ label, value }) {
   return (
     <div>
@@ -3697,13 +3983,27 @@ function SummaryStat({ label, value }) {
   )
 }
 
-function MatrixRow({ label, hint, values, total, selectedMonth, onSelectMonth }) {
+function MatrixRow({ label, hint, values, total, selectedMonth, onSelectMonth, indent = false }) {
   const activeMonth = Number(selectedMonth)
   return (
     <tr className="border-b border-white/5">
-      <td className="sticky left-0 bg-slate-900/95 px-3 py-2 font-bold text-cyan-200">
-        <span title={hint}>{label}</span>
-        <span className="ml-1 text-[10px] font-normal text-slate-500">{hint}</span>
+      <td
+        className={`sticky left-0 bg-slate-900/95 px-3 py-2 ${
+          indent
+            ? 'pl-6 font-semibold text-slate-400'
+            : 'font-bold text-cyan-200'
+        }`}
+      >
+        <span title={hint || undefined}>{label}</span>
+        {hint ? (
+          <span
+            className={`ml-1 text-[10px] font-normal ${
+              indent ? 'text-slate-600' : 'text-slate-500'
+            }`}
+          >
+            {hint}
+          </span>
+        ) : null}
       </td>
       {values.map((value, i) => {
         const monthNum = i + 1
@@ -3716,17 +4016,27 @@ function MatrixRow({ label, hint, values, total, selectedMonth, onSelectMonth })
             e.preventDefault()
             onSelectMonth?.(monthNum)
           }}
-          className={`cursor-pointer px-2 py-2 text-center font-mono text-[11px] transition hover:bg-white/5 ${
+          className={`cursor-pointer px-2 py-2 text-center font-mono transition hover:bg-white/5 ${
+            indent ? 'text-[10px]' : 'text-[11px]'
+          } ${
             isActive
               ? 'bg-amber-400/25 font-semibold text-amber-100'
-              : 'bg-transparent text-slate-300'
+              : indent
+                ? 'bg-transparent text-slate-400'
+                : 'bg-transparent text-slate-300'
           }`}
         >
           {value || '·'}
         </td>
         )
       })}
-      <td className="px-3 py-2 text-right font-semibold text-cyan-200">{total}</td>
+      <td
+        className={`px-3 py-2 text-right font-semibold ${
+          indent ? 'text-slate-400' : 'text-cyan-200'
+        }`}
+      >
+        {total}
+      </td>
     </tr>
   )
 }

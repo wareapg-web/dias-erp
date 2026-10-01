@@ -1,36 +1,57 @@
-/** Persist resizable modal dimensions across sessions. */
+/** Persist resizable modal dimensions: in-memory (ίδιο session) + localStorage. */
+
+const sizeMemory = new Map()
+
+function resolveFallback(fallback) {
+  return typeof fallback === 'function' ? fallback() : fallback
+}
+
+function clampSize(size) {
+  if (!size) return null
+  const width = Number(size.width)
+  const height = Number(size.height)
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width < 200 || height < 200) {
+    return null
+  }
+  if (typeof window === 'undefined') {
+    return { width: Math.round(width), height: Math.round(height) }
+  }
+  const vw = window.innerWidth
+  const vh = window.innerHeight
+  return {
+    width: Math.min(Math.max(Math.round(width), 200), vw - 24),
+    height: Math.min(Math.max(Math.round(height), 200), vh - 24),
+  }
+}
 
 export function loadModalSize(storageKey, fallback) {
-  if (typeof window === 'undefined') {
-    return typeof fallback === 'function' ? fallback() : fallback
+  if (!storageKey) return resolveFallback(fallback)
+  if (sizeMemory.has(storageKey)) {
+    const cached = clampSize(sizeMemory.get(storageKey))
+    if (cached) return cached
   }
+  if (typeof window === 'undefined') return resolveFallback(fallback)
   try {
     const raw = localStorage.getItem(storageKey)
-    if (!raw) return typeof fallback === 'function' ? fallback() : fallback
+    if (!raw) return resolveFallback(fallback)
     const parsed = JSON.parse(raw)
-    const width = Number(parsed?.width)
-    const height = Number(parsed?.height)
-    if (!Number.isFinite(width) || !Number.isFinite(height) || width < 200 || height < 200) {
-      return typeof fallback === 'function' ? fallback() : fallback
-    }
-    const vw = window.innerWidth
-    const vh = window.innerHeight
-    return {
-      width: Math.min(Math.max(width, 200), vw - 24),
-      height: Math.min(Math.max(height, 200), vh - 24),
-    }
+    const next = clampSize(parsed)
+    if (!next) return resolveFallback(fallback)
+    sizeMemory.set(storageKey, next)
+    return next
   } catch {
-    return typeof fallback === 'function' ? fallback() : fallback
+    return resolveFallback(fallback)
   }
 }
 
 export function saveModalSize(storageKey, size) {
-  if (typeof window === 'undefined' || !size) return
+  if (!storageKey || !size) return
+  const next = clampSize(size)
+  if (!next) return
+  sizeMemory.set(storageKey, next)
+  if (typeof window === 'undefined') return
   try {
-    localStorage.setItem(
-      storageKey,
-      JSON.stringify({ width: Math.round(size.width), height: Math.round(size.height) })
-    )
+    localStorage.setItem(storageKey, JSON.stringify(next))
   } catch {
     /* ignore quota / private mode */
   }
@@ -40,6 +61,8 @@ export const PERSONNEL_FORM_MODAL_SIZE_KEY = 'dias-erp:personnel-form-modal-size
 export const PERSONNEL_CATALOG_MODAL_SIZE_KEY = 'dias-erp:personnel-catalog-modal-size'
 export const PERSONNEL_SIDEBAR_WIDTH_KEY = 'dias-erp:personnel-sidebar-width'
 export const MOVEMENT_MODAL_SIZE_KEY = 'dias-erp:movement-modal-size'
+export const LOAN_MODAL_SIZE_KEY = 'dias-erp:loan-modal-size'
+export const TEMPORARY_PAYABLES_MODAL_SIZE_KEY = 'dias-erp:temporary-payables-modal-size'
 
 export function loadSidebarWidth(storageKey, fallback = 320) {
   if (typeof window === 'undefined') return fallback

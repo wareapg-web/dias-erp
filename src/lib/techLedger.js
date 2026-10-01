@@ -2,6 +2,7 @@
 
 import { formatElNumber, parseElNumber } from './numberFormat'
 import { isLoanDisbursementRow, isLoanInstallmentRow } from './loanUi'
+import { resolveInvoiceTermsForMonth } from './techAgreementVersions'
 
 export function monthDateRange(year, month) {
   const y = Number(year)
@@ -32,6 +33,62 @@ export function ledgerTypeLabel(type) {
     BONUS_PAYOUT: 'Πληρωμή Bonus',
   }
   return map[type] || type || '—'
+}
+
+/** Synthetic τύποι εξόφλησης/μερικής πληρωμής όταν λείπουν από DB. */
+export function settlementTypeStub(typeId) {
+  const id = Number(typeId)
+  const stubs = {
+    91: { id: 91, description: 'Εξόφληση Μισθού', ledger_group: 'SALARY', is_for_sum: false },
+    92: { id: 92, description: 'Εξόφληση Λοιπών', ledger_group: 'OTHER', is_for_sum: false },
+    93: { id: 93, description: 'Εξόφληση Τιμολογίου', ledger_group: 'OTHER', is_for_sum: false },
+    96: { id: 96, description: 'Πληρωμή Τιμολογίου', ledger_group: 'OTHER', is_for_sum: false },
+    97: { id: 97, description: 'Πληρωμή Μισθού', ledger_group: 'SALARY', is_for_sum: false },
+    98: { id: 98, description: 'Πληρωμή Λοιπών', ledger_group: 'OTHER', is_for_sum: false },
+  }
+  const base = stubs[id]
+  if (!base) return null
+  return { ...base, is_active: true, __stub: true }
+}
+
+/** @deprecated use settlementTypeStub */
+export function invoiceCreditTypeStub(typeId) {
+  return settlementTypeStub(typeId)
+}
+
+/**
+ * Κατηγορία εξόφλησης από type id.
+ * @returns {'salary'|'other'|'invoice'|null}
+ */
+export function settlementCategoryFromTypeId(typeId) {
+  const id = Number(typeId)
+  if (id === 91 || id === 97) return 'salary'
+  if (id === 92 || id === 98) return 'other'
+  if (id === 93 || id === 96) return 'invoice'
+  return null
+}
+
+/** full / partial type ids ανά κατηγορία. */
+export function settlementTypeIdsForCategory(category) {
+  const cat = String(category || '').toUpperCase()
+  if (cat === 'SALARY') return { full: 91, partial: 97 }
+  if (cat === 'INVOICE') return { full: 93, partial: 96 }
+  if (cat === 'OTHER') return { full: 92, partial: 98 }
+  return null
+}
+
+export function isSettlementFullTypeId(typeId) {
+  const id = Number(typeId)
+  return id === 91 || id === 92 || id === 93
+}
+
+export function isSettlementPartialTypeId(typeId) {
+  const id = Number(typeId)
+  return id === 96 || id === 97 || id === 98
+}
+
+export function isSettlementCreditTypeId(typeId) {
+  return isSettlementFullTypeId(typeId) || isSettlementPartialTypeId(typeId)
 }
 
 export function formatLedgerAmount(value) {
@@ -75,13 +132,13 @@ export function computeInvoiceGrossBreakdown(netAmount, taxPercent = 20) {
   return { net, gross, vat, tax, payable, taxPercent: safePct, factor }
 }
 
-/** Πραγματική εξόφληση τιμολογίου (type 93) — ΟΧΙ δάνεια 94/95 ακόμα κι αν είναι σε invoice_credit. */
+/** Πραγματική εξόφληση τιμολογίου (type 93) — ΟΧΙ μερική πληρωμή 96 · ΟΧΙ δάνεια 94/95. */
 export function isInvoiceSettlementCreditRow(row) {
   if (!row || row.__template) return false
   if (isLoanInstallmentRow(row) || isLoanDisbursementRow(row)) return false
 
   const id = Number(row.type_id ?? row.ept_id ?? row.__type?.id)
-  if (id === 94 || id === 95) return false
+  if (id === 94 || id === 95 || id === 96) return false
   if (id === 93) return true
 
   const t = String(row.type || row.__type?.description || '')
@@ -89,6 +146,15 @@ export function isInvoiceSettlementCreditRow(row) {
     return (Number(row.invoice_credit) || 0) > 0
   }
   return false
+}
+
+/** Μερική πληρωμή τιμολογίου (type 96). */
+export function isInvoicePartialPaymentCreditRow(row) {
+  if (!row || row.__template) return false
+  const id = Number(row.type_id ?? row.ept_id ?? row.__type?.id)
+  if (id === 96) return true
+  const t = String(row.type || row.__type?.description || '')
+  return /πληρωμή\s*τιμολογ/i.test(t) && (Number(row.invoice_credit) || 0) > 0
 }
 
 export function descriptionHasInvoiceBreakdown(description) {
@@ -116,6 +182,26 @@ export function mergeInvoiceBreakdownDescription(existingDescription, netAmount,
   if (!raw || isBareEuroText(raw)) return breakdown
   if (descriptionHasInvoiceBreakdown(raw)) return raw
   return `${raw} (${breakdown})`
+}
+
+/** Μερική πληρωμή: απλό λεκτικό «πληρωμή 375» (χωρίς Αξία/ΦΠΑ/…). */
+export function buildPartialPaymentDescription(displayAmount) {
+  const n = Number(displayAmount)
+  if (!Number.isFinite(n) || !(n > 0)) return ''
+  const rounded = Math.round(n * 100) / 100
+  const text =
+    Math.abs(rounded - Math.round(rounded)) < 0.001
+      ? String(Math.round(rounded))
+      : rounded.toLocaleString('el-GR', {
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2,
+        })
+  return `πληρωμή ${text}`
+}
+
+/** @deprecated use buildPartialPaymentDescription */
+export function buildInvoicePartialPaymentDescription(displayAmount) {
+  return buildPartialPaymentDescription(displayAmount)
 }
 
 function earningsAmount(earningsForm, prefix) {
@@ -428,23 +514,32 @@ function payrollRowMonthYear(payroll) {
 }
 
 /**
- * Ετήσια μήτρα: Σ/Π/Υ από tech_ledger_view · Ticket από payrolls (hybrid).
- * Type 94: μετράει στα Υ (λογιστική κράτηση) · εξαιρείται από το Π (όχι cash-out).
- * Γραμμή «Δάνειο»: πληροφοριακό άθροισμα δόσεων 94 (όλες οι κατηγορίες) · δεν αλλάζει Σ/Π/Υ.
- * Ticket / Ασφάλιση: γραμμές μήτρας από payrolls (ή fallback Αποδοχές μετά Δημιουργία) ·
- * μόνο display · ΔΕΝ μπαίνουν στο Σ · Π/Υ και computeLedgerBalances χωρίς αυτές.
- * Fallback: αν δεν υπάρχει payrolls.ticket/insurance για μήνα με PAYROLL ledger,
- * δείχνει tech_earnings.*_amount — μόνο εμφάνιση, χωρίς εγγραφή στο payrolls.
+ * Ετήσια μήτρα: Σ/Π/Υ από tech_ledger_view · Ticket/Ασφάλιση από payrolls (hybrid).
+ * Εκταμίευση 95: μετράει στο Μ/Λ/ΤΙΜ (ανά κατηγορία) · γραμμή «Εκταμίευση» μόνο οπτική.
+ * Δόση 94: κράτηση στο συρτάρι · γραμμή «Δάνειο» · ΔΕΝ μετράει στο Π.
+ * Μισθός / Λοιπά / Τιμολόγιο: χρέωση − κράτηση δόσης μόνο (όχι εξοφλήσεις) —
+ * ώστε να φαίνεται τι είχες σύνολο να πληρώσεις τον μήνα.
+ * Υ (ΤΙΜ) / Τιμολόγιο / Π(ΤΙΜ): με προσαύξηση όταν εφαρμόζεται.
+ * Σ = Μ + Λ + Τ (χρέωση − κράτηση · Τ με προσαύξηση) + Ticket + Ασφάλιση.
  *
  * @param {object[]} ledgerRows
  * @param {number} year
- * @param {object[]} yearPayrolls — εγγραφές payrolls (ήδη φιλτραρισμένες ή όχι) για Ticket/Ασφάλιση
- * @param {{ earningsTicketAmount?: number, earningsInsuranceAmount?: number }} [options]
+ * @param {object[]} yearPayrolls
+ * @param {{
+ *   earningsTicketAmount?: number,
+ *   earningsInsuranceAmount?: number,
+ *   agreementVersions?: object[],
+ *   earningsForm?: object,
+ *   techIsTemporary?: boolean,
+ * }} [options]
  */
 export function buildLedgerYearMatrix(ledgerRows = [], year, yearPayrolls = [], options = {}) {
   const y = Number(year)
   const earningsTicket = Math.round((Number(options?.earningsTicketAmount) || 0) * 100) / 100
   const earningsInsurance = Math.round((Number(options?.earningsInsuranceAmount) || 0) * 100) / 100
+  const techIsTemporary = options?.techIsTemporary === true
+  const agreementVersions = options?.agreementVersions || []
+  const earningsForm = options?.earningsForm || null
   const months = Array.from({ length: 12 }, (_, i) => ({
     month: i + 1,
     sigma: 0,
@@ -456,6 +551,8 @@ export function buildLedgerYearMatrix(ledgerRows = [], year, yearPayrolls = [], 
     insurance: 0,
     loan: 0,
     loanCount: 0,
+    disbursement: 0,
+    disbursementCount: 0,
     salaryDebit: 0,
     salaryCredit: 0,
     otherDebit: 0,
@@ -463,6 +560,9 @@ export function buildLedgerYearMatrix(ledgerRows = [], year, yearPayrolls = [], 
     invoiceDebit: 0,
     invoiceCredit: 0,
     loanInstallmentsCredit: 0,
+    loanSalaryCredit: 0,
+    loanOtherCredit: 0,
+    loanInvoiceCredit: 0,
   }))
 
   /** Μήνες με payroll ledger (Δημιουργία / αποδοχές) — όχι payments-only. */
@@ -473,7 +573,7 @@ export function buildLedgerYearMatrix(ledgerRows = [], year, yearPayrolls = [], 
     if (yy !== y || mm < 1 || mm > 12) continue
     const slot = months[mm - 1]
 
-    // Ticket / Ασφάλιση μόνο από payrolls — ledger rows δεν μετράνε στη μήτρα
+    // Ticket / Ασφάλιση μόνο από payrolls
     if (isInformationalBenefitRow(row)) continue
 
     if (String(row.source || '').toUpperCase() === 'PAYROLL') {
@@ -487,22 +587,50 @@ export function buildLedgerYearMatrix(ledgerRows = [], year, yearPayrolls = [], 
     const id = Number(row.invoice_amount) || 0
     const ic = Number(row.invoice_credit) || 0
 
+    // Εκταμίευση 95: χρέωση στο συρτάρι (Μ/Λ/ΤΙΜ) + οπτική γραμμή
+    if (isLoanDisbursementRow(row)) {
+      const amt = sd + od + id
+      slot.disbursement += amt
+      slot.disbursementCount += 1
+      slot.salaryDebit += sd
+      slot.otherDebit += od
+      slot.invoiceDebit += id
+      continue
+    }
+
+    // Δόση 94: κράτηση στο συρτάρι + γραμμή Δάνειο · όχι στο Π
+    if (isLoanInstallmentRow(row)) {
+      slot.loanInstallmentsCredit += sc + oc + ic
+      slot.loanCount += 1
+      slot.loanSalaryCredit += sc
+      slot.loanOtherCredit += oc
+      slot.loanInvoiceCredit += ic
+      slot.salaryCredit += sc
+      slot.otherCredit += oc
+      slot.invoiceCredit += ic
+      continue
+    }
+
     slot.salaryDebit += sd
     slot.salaryCredit += sc
     slot.otherDebit += od
     slot.otherCredit += oc
     slot.invoiceDebit += id
     slot.invoiceCredit += ic
-
-    // Type 94: μετράει στα Υ · εξαιρείται από το Pi (όχι πραγματικό cash-out)
-    if (isLoanInstallmentRow(row)) {
-      const loanAmt = sc + oc + ic
-      slot.loanInstallmentsCredit += loanAmt
-      slot.loanCount += 1
-    }
   }
 
   const round2 = (n) => Math.round(n * 100) / 100
+
+  /** net → αξία με προσαύξηση (ίδιο factor με Οδηγό ΤΙΜ / BalanceChip). */
+  const grossUpAmount = (amount, taxPercent) => {
+    const n = Number(amount) || 0
+    if (Math.abs(n) < 0.0005) return 0
+    const pct = Number(taxPercent)
+    const safePct = Number.isFinite(pct) && pct > 0 ? pct : 20
+    const factor = 1 - safePct / 100
+    if (!(factor > 0 && factor < 1)) return round2(n)
+    return round2(n / factor)
+  }
 
   for (const slot of months) {
     const monthPayrolls = (yearPayrolls || []).filter((p) => {
@@ -526,18 +654,66 @@ export function buildLedgerYearMatrix(ledgerRows = [], year, yearPayrolls = [], 
     slot.insurance = insurance
 
     slot.loan = round2(slot.loanInstallmentsCredit || 0)
+    slot.disbursement = round2(slot.disbursement || 0)
 
-    // Σ μήτρας = μόνο ledger χρεώσεις · Ticket/Ασφάλιση μόνο στη δική τους γραμμή (display)
-    slot.sigma = round2(slot.salaryDebit + slot.otherDebit + slot.invoiceDebit)
-    slot.pi = round2(
-      slot.salaryCredit +
-        slot.otherCredit +
-        slot.invoiceCredit -
-        (slot.loanInstallmentsCredit || 0)
+    const salaryDebit = round2(slot.salaryDebit)
+    const salaryCredit = round2(slot.salaryCredit)
+    const otherDebit = round2(slot.otherDebit)
+    const otherCredit = round2(slot.otherCredit)
+    const invoiceDebit = round2(slot.invoiceDebit)
+    const invoiceCredit = round2(slot.invoiceCredit)
+    const loanSal = round2(slot.loanSalaryCredit || 0)
+    const loanOth = round2(slot.loanOtherCredit || 0)
+    const loanInv = round2(slot.loanInvoiceCredit || 0)
+
+    // Breakdown: χρέωση − μόνο κράτηση δόσης (όχι εξοφλήσεις) — τι είχες να πληρώσεις
+    const salaryDue = round2(salaryDebit - loanSal)
+    const otherDue = round2(otherDebit - loanOth)
+    const invoiceDueNet = round2(invoiceDebit - loanInv)
+
+    const terms = resolveInvoiceTermsForMonth(
+      agreementVersions,
+      y,
+      slot.month,
+      earningsForm
     )
-    slot.yM = round2(slot.salaryDebit - slot.salaryCredit)
-    slot.yL = round2(slot.otherDebit - slot.otherCredit)
-    slot.yTim = round2(slot.invoiceDebit - slot.invoiceCredit)
+    const applyGrossUp =
+      !techIsTemporary &&
+      terms.invoiceGrossUp !== false &&
+      Number(terms.taxPercent) > 0
+
+    // Τιμολόγιο breakdown: με προσαύξηση όπως Υ (ΤΙΜ) / chip
+    const invoiceDue = applyGrossUp
+      ? grossUpAmount(invoiceDueNet, terms.taxPercent)
+      : invoiceDueNet
+
+    slot.salaryDebit = salaryDue
+    slot.otherDebit = otherDue
+    slot.invoiceDebit = invoiceDue
+    slot.salaryCredit = salaryCredit
+    slot.otherCredit = otherCredit
+    slot.invoiceCredit = invoiceCredit
+
+    // Υ = χρέωση − όλες οι πιστώσεις (εξοφλήσεις + κράτηση)
+    const yM = round2(salaryDebit - salaryCredit)
+    const yL = round2(otherDebit - otherCredit)
+    const yTimNet = round2(invoiceDebit - invoiceCredit)
+
+    slot.yM = yM
+    slot.yL = yL
+    // Υ (ΤΙΜ): με προσαύξηση όπως το chip / Οδηγός
+    slot.yTim = applyGrossUp ? grossUpAmount(yTimNet, terms.taxPercent) : yTimNet
+    slot._yTimNet = yTimNet
+    // Σ = Μ + Λ + Τ (Τ με προσαύξηση) + Ticket + Ασφάλιση
+    slot.sigma = round2(salaryDue + otherDue + invoiceDue + ticket + insurance)
+    // Π: Μ/Λ καθαρά · ΤΙΜ εξοφλήσεις με προσαύξηση · χωρίς δόσεις 94
+    const salaryPay = round2(salaryCredit - loanSal)
+    const otherPay = round2(otherCredit - loanOth)
+    const invoicePayNet = round2(invoiceCredit - loanInv)
+    const invoicePay = applyGrossUp
+      ? grossUpAmount(invoicePayNet, terms.taxPercent)
+      : invoicePayNet
+    slot.pi = round2(salaryPay + otherPay + invoicePay)
   }
 
   const totals = months.reduce(
@@ -551,8 +727,28 @@ export function buildLedgerYearMatrix(ledgerRows = [], year, yearPayrolls = [], 
       insurance: round2(acc.insurance + m.insurance),
       loan: round2(acc.loan + m.loan),
       loanCount: acc.loanCount + (m.loanCount || 0),
+      disbursement: round2(acc.disbursement + (m.disbursement || 0)),
+      disbursementCount: acc.disbursementCount + (m.disbursementCount || 0),
+      salaryDebit: round2(acc.salaryDebit + m.salaryDebit),
+      otherDebit: round2(acc.otherDebit + m.otherDebit),
+      invoiceDebit: round2(acc.invoiceDebit + m.invoiceDebit),
     }),
-    { sigma: 0, pi: 0, yM: 0, yL: 0, yTim: 0, ticket: 0, insurance: 0, loan: 0, loanCount: 0 }
+    {
+      sigma: 0,
+      pi: 0,
+      yM: 0,
+      yL: 0,
+      yTim: 0,
+      ticket: 0,
+      insurance: 0,
+      loan: 0,
+      loanCount: 0,
+      disbursement: 0,
+      disbursementCount: 0,
+      salaryDebit: 0,
+      otherDebit: 0,
+      invoiceDebit: 0,
+    }
   )
 
   const monthsWithEarnings = months.filter((m) => m.sigma > 0)
@@ -564,11 +760,19 @@ export function buildLedgerYearMatrix(ledgerRows = [], year, yearPayrolls = [], 
   const selectedSettled = (month) => {
     const m = months[month - 1]
     if (!m || m.sigma <= 0) return false
-    return Math.abs(m.yM) + Math.abs(m.yL) + Math.abs(m.yTim) < 0.015
+    const yTim = m._yTimNet != null ? m._yTimNet : m.yTim
+    return Math.abs(m.yM) + Math.abs(m.yL) + Math.abs(yTim) < 0.015
   }
 
   const yearSettled =
-    totals.sigma > 0 && Math.abs(totals.yM) + Math.abs(totals.yL) + Math.abs(totals.yTim) < 0.015
+    totals.sigma > 0 &&
+    (() => {
+      let yTimNetSum = 0
+      for (const m of months) {
+        yTimNetSum += Number(m._yTimNet != null ? m._yTimNet : m.yTim) || 0
+      }
+      return Math.abs(totals.yM) + Math.abs(totals.yL) + Math.abs(round2(yTimNetSum)) < 0.015
+    })()
 
   return { months, totals, avg, selectedSettled, yearSettled }
 }
@@ -578,6 +782,7 @@ export function buildLedgerYearMatrix(ledgerRows = [], year, yearPayrolls = [], 
  * Υπόλοιπο (Μ) = Μισθός Χρ. − Μισθός Πιστ.
  * Υπόλοιπο (Λ) = Λοιπά Χρ. − Λοιπά Πιστ.
  * Υπόλοιπο (ΤΙΜ) = invoice_amount (Χρ.) − invoice_credit (Πιστ.).
+ * invoiceDebit = ΤΙΜ Χρ. − κράτηση δόσης στο ΤΙΜ (βάση Οδηγού / ίδια με μήτρα πριν την προσαύξηση).
  * Υπόλοιπο = (Μ) + (Λ) + (ΤΙΜ).
  * Ticket Restaurant / Ασφάλιση δεν συμμετέχουν.
  * (tech_earnings.extra είναι % για τον Οδηγό Τιμολογίου — όχι μέρος των balances.)
@@ -591,18 +796,26 @@ export function computeLedgerBalances(rows = []) {
   let otherCredit = 0
   let invoiceDebit = 0
   let invoiceCredit = 0
+  let loanInvoiceCredit = 0
   let y1 = 0
   let y2 = 0
 
   for (const r of rows) {
     if (isInformationalBenefitRow(r)) continue
 
+    const id = Number(r.invoice_amount) || 0
+    const ic = Number(r.invoice_credit) || 0
+
     salaryDebit += Number(r.salary_debit) || 0
     salaryCredit += Number(r.salary_credit) || 0
     otherDebit += Number(r.other_debit) || 0
     otherCredit += Number(r.other_credit) || 0
-    invoiceDebit += Number(r.invoice_amount) || 0
-    invoiceCredit += Number(r.invoice_credit) || 0
+    invoiceDebit += id
+    invoiceCredit += ic
+
+    if (isLoanInstallmentRow(r)) {
+      loanInvoiceCredit += ic
+    }
 
     if (r.type === 'SETTLEMENT_1') {
       y1 += Number(r.salary_credit) || Number(r.invoice_credit) || 0
@@ -614,11 +827,14 @@ export function computeLedgerBalances(rows = []) {
   const balance1 = round2(salaryDebit - salaryCredit)
   const balance2 = round2(otherDebit - otherCredit)
   const invoice = round2(invoiceDebit - invoiceCredit)
+  // Οδηγός / μήτρα: χρεώσεις μείον κράτηση δόσης ΤΙΜ (όχι εξοφλήσεις)
+  const invoiceDueNet = round2(invoiceDebit - loanInvoiceCredit)
 
   return {
     balance1,
     balance2,
     invoice,
+    invoiceDebit: invoiceDueNet,
     balance: round2(balance1 + balance2 + invoice),
     y1: round2(y1),
     y2: round2(y2),

@@ -48,3 +48,35 @@ body {
 .dark-select-menu::-webkit-scrollbar-thumb:hover {
   background: #94a3b8;
 }
+
+/* Πυκνότητα γραμμών πινάκων: 0 = ανοιχτό (default CSS/Tailwind), 1 = μέτριο, 2 = σφιχτό */
+[data-row-density='1'] table td,
+[data-row-density='1'] table th {
+  padding-top: 0.35rem !important;
+  padding-bottom: 0.35rem !important;
+}
+
+[data-row-density='1'] table tbody tr.h-9,
+[data-row-density='1'] table tbody tr {
+  height: 2rem;
+}
+
+[data-row-density='2'] table td,
+[data-row-density='2'] table th {
+  padding-top: 0.12rem !important;
+  padding-bottom: 0.12rem !important;
+}
+
+[data-row-density='2'] table tbody tr.h-9,
+[data-row-density='2'] table tbody tr {
+  height: 1.55rem;
+}
+
+[data-row-density='1'] .space-y-3 > :not([hidden]) ~ :not([hidden]) {
+  margin-top: 0.5rem;
+}
+
+[data-row-density='2'] .space-y-3 > :not([hidden]) ~ :not([hidden]),
+[data-row-density='2'] .space-y-4 > :not([hidden]) ~ :not([hidden]) {
+  margin-top: 0.4rem;
+}

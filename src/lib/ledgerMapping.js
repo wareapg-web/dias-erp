@@ -25,8 +25,8 @@ export const EPT_COL = {
 /** Salary block: Μισθός (debit) */
 export const SALARY_DEBIT_IDS = new Set([3])
 
-/** Salary block: Εξόφληση Μισθού (credit) */
-export const SALARY_CREDIT_IDS = new Set([1, 91])
+/** Salary block: Εξόφληση / Πληρωμή Μισθού (credit) */
+export const SALARY_CREDIT_IDS = new Set([1, 91, 97])
 
 /**
  * Other block debit (Λοιπά Χρ.): ποσότητα × τιμή
@@ -34,8 +34,8 @@ export const SALARY_CREDIT_IDS = new Set([1, 91])
  */
 export const OTHER_DEBIT_IDS = new Set([7, 8, 9, 22, 25])
 
-/** Other block credit: προκαταβολές, δάνεια, ticket, εξόφληση λοιπών, κλπ. */
-export const OTHER_CREDIT_IDS = new Set([2, 10, 14, 24, 26, 92, 94, 95])
+/** Other block credit: προκαταβολές, δάνεια, ticket, εξόφληση/πληρωμή λοιπών, κλπ. */
+export const OTHER_CREDIT_IDS = new Set([2, 10, 14, 24, 26, 92, 94, 95, 98])
 
 export const LEDGER_COLUMNS = [
   'salary_debit',
