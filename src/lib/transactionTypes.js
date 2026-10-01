@@ -133,12 +133,78 @@ export function resolveTransactionType(lookup, { typeId, description, typeCode }
 
 /**
  * Resolve transaction_types row from a tech_ledger_view row (edit mode).
- * Prefers type_id · μετά πιστωτική στήλη · μετά payment_type code.
+ * Prefers type_id · μετά περιγραφή μερικής πληρωμής · μετά πιστωτική στήλη · μετά payment_type.
  */
 export function resolveTransactionTypeFromLedgerRow(lookup, row) {
   if (!lookup || !row) return null
 
   const storedTypeId = row.type_id ?? row.ept_id ?? null
+  const desc = String(row.description || '').trim()
+  const invoiceCredit = Number(row.invoice_credit) || 0
+  const salaryCredit = Number(row.salary_credit) || 0
+  const otherCredit = Number(row.other_credit) || 0
+  const isPartialDesc =
+    /^πληρωμ[ήη]\b/i.test(desc) && !/Αξία:\s*/i.test(desc)
+
+  // Μερική πληρωμή: περιγραφή «πληρωμή …» (ακόμα κι αν type_id έμεινε λάθος εξόφλησης)
+  if (isPartialDesc) {
+    if (invoiceCredit > 0) {
+      if (lookup.byId.has(96)) return lookup.byId.get(96)
+      return {
+        id: 96,
+        description: 'Πληρωμή Τιμολογίου',
+        ledger_group: 'OTHER',
+        is_for_sum: false,
+      }
+    }
+    if (salaryCredit > 0) {
+      if (lookup.byId.has(97)) return lookup.byId.get(97)
+      return {
+        id: 97,
+        description: 'Πληρωμή Μισθού',
+        ledger_group: 'SALARY',
+        is_for_sum: false,
+      }
+    }
+    if (otherCredit > 0) {
+      if (lookup.byId.has(98)) return lookup.byId.get(98)
+      return {
+        id: 98,
+        description: 'Πληρωμή Λοιπών',
+        ledger_group: 'OTHER',
+        is_for_sum: false,
+      }
+    }
+  }
+
+  if (Number(storedTypeId) === 96) {
+    if (lookup.byId.has(96)) return lookup.byId.get(96)
+    return {
+      id: 96,
+      description: 'Πληρωμή Τιμολογίου',
+      ledger_group: 'OTHER',
+      is_for_sum: false,
+    }
+  }
+  if (Number(storedTypeId) === 97) {
+    if (lookup.byId.has(97)) return lookup.byId.get(97)
+    return {
+      id: 97,
+      description: 'Πληρωμή Μισθού',
+      ledger_group: 'SALARY',
+      is_for_sum: false,
+    }
+  }
+  if (Number(storedTypeId) === 98) {
+    if (lookup.byId.has(98)) return lookup.byId.get(98)
+    return {
+      id: 98,
+      description: 'Πληρωμή Λοιπών',
+      ledger_group: 'OTHER',
+      is_for_sum: false,
+    }
+  }
+
   if (storedTypeId != null && lookup.byId.has(Number(storedTypeId))) {
     return lookup.byId.get(Number(storedTypeId))
   }
@@ -189,28 +255,34 @@ export function paymentTypeCodeFromDescription(description, ledgerGroup) {
   const lower = d.toLowerCase()
   const salary = isSalaryLedgerGroup(ledgerGroup)
 
-  // 93 / Εξόφληση Τιμολογίου → SETTLEMENT + invoice_credit
+  // 93 εξόφληση / 96 μερική πληρωμή τιμολογίου → SETTLEMENT + invoice_credit
   if (
     lower.includes('τιμολογ') ||
     lower.includes('τιμ') ||
-    /\(τιμ\)/i.test(d)
+    /\(τιμ\)/i.test(d) ||
+    lower.includes('πληρωμή τιμολογ') ||
+    lower.includes('πληρωμη τιμολογ')
   ) {
     return 'SETTLEMENT'
   }
-  // 92 / Εξόφληση Λοιπών (και legacy «(2)»)
+  // 92 / 98 / Εξόφληση ή Πληρωμή Λοιπών (και legacy «(2)»)
   if (
     lower.includes('λοιπ') ||
     lower.includes('εξόφληση (2)') ||
     lower.includes('εξοφληση (2)') ||
+    lower.includes('πληρωμή λοιπ') ||
+    lower.includes('πληρωμη λοιπ') ||
     /\(2\)/.test(d)
   ) {
     return 'SETTLEMENT_2'
   }
-  // 91 / Εξόφληση Μισθού (και legacy «(1)»)
+  // 91 / 97 / Εξόφληση ή Πληρωμή Μισθού (και legacy «(1)»)
   if (
     lower.includes('μισθ') ||
     lower.includes('εξόφληση (1)') ||
     lower.includes('εξοφληση (1)') ||
+    lower.includes('πληρωμή μισθ') ||
+    lower.includes('πληρωμη μισθ') ||
     /\(1\)/.test(d)
   ) {
     return 'SETTLEMENT_1'
@@ -250,7 +322,7 @@ export function paymentCreditColumns({
   const pt = String(paymentType || '').toUpperCase()
   const id = Number(typeId)
 
-  if (postToInvoice || id === 93 || pt.includes('TIM') || pt === 'SETTLEMENT') {
+  if (postToInvoice || id === 93 || id === 96 || pt.includes('TIM') || pt === 'SETTLEMENT') {
     return {
       salary_debit: 0,
       salary_credit: 0,
@@ -263,10 +335,11 @@ export function paymentCreditColumns({
 
   const toOther =
     id === 92 ||
+    id === 98 ||
     pt === 'SETTLEMENT_2' ||
     pt === 'EXPENSES' ||
     pt === 'BONUS_PAYOUT' ||
-    (ledgerGroup != null && !isSalaryLedgerGroup(ledgerGroup) && id !== 91)
+    (ledgerGroup != null && !isSalaryLedgerGroup(ledgerGroup) && id !== 91 && id !== 97)
 
   if (toOther) {
     return {
@@ -279,7 +352,7 @@ export function paymentCreditColumns({
     }
   }
 
-  // 91 / SETTLEMENT_1 / ADVANCE / SETTLEMENT → Μισθός Πιστ.
+  // 91 / 97 / SETTLEMENT_1 / ADVANCE → Μισθός Πιστ.
   return {
     salary_debit: 0,
     salary_credit: abs,
@@ -296,6 +369,12 @@ export function defaultSideForType(description) {
   if (
     lower.includes('εξόφληση') ||
     lower.includes('εξοφληση') ||
+    lower.includes('πληρωμή μισθ') ||
+    lower.includes('πληρωμη μισθ') ||
+    lower.includes('πληρωμή λοιπ') ||
+    lower.includes('πληρωμη λοιπ') ||
+    lower.includes('πληρωμή τιμολογ') ||
+    lower.includes('πληρωμη τιμολογ') ||
     lower.includes('προκαταβολή') ||
     lower.includes('προκαταβολη') ||
     lower.includes('έναντι') ||

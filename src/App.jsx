@@ -64,6 +64,8 @@ export default function App() {
     loadModalSize(PERSONNEL_CATALOG_MODAL_SIZE_KEY, () => null)
   )
   const catalogResizeRef = useRef(null)
+  const catalogSizeRef = useRef(null)
+  catalogSizeRef.current = catalogSize
   const catalogFrameRef = useRef(null)
   const [adminSession, setAdminSession] = useState(null)
   const [diasSession, setDiasSession] = useState(null)
@@ -82,6 +84,12 @@ export default function App() {
     useLedgerCompactHeaders()
 
   const period = formatPeriod(selectedYear, selectedMonth)
+
+  useEffect(() => {
+    if (!personnelModalOpen) return
+    const saved = loadModalSize(PERSONNEL_CATALOG_MODAL_SIZE_KEY, () => null)
+    if (saved) setCatalogSize(saved)
+  }, [personnelModalOpen])
 
   useEffect(() => {
     if (catalogSize) saveModalSize(PERSONNEL_CATALOG_MODAL_SIZE_KEY, catalogSize)
@@ -103,10 +111,16 @@ export default function App() {
       if (edge.includes('n')) height = d.orig.height - dy
       width = Math.min(Math.max(width, CATALOG_MODAL_MIN_W), vw - 24)
       height = Math.min(Math.max(height, CATALOG_MODAL_MIN_H), vh - 24)
-      setCatalogSize({ width, height })
+      const next = { width, height }
+      setCatalogSize(next)
+      saveModalSize(PERSONNEL_CATALOG_MODAL_SIZE_KEY, next)
     }
     const onUp = () => {
+      if (!catalogResizeRef.current) return
       catalogResizeRef.current = null
+      if (catalogSizeRef.current) {
+        saveModalSize(PERSONNEL_CATALOG_MODAL_SIZE_KEY, catalogSizeRef.current)
+      }
     }
     window.addEventListener('pointermove', onMove)
     window.addEventListener('pointerup', onUp)

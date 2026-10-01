@@ -40,7 +40,11 @@ function renderInvoiceMarkupAmount(row, { invoiceGrossUp, taxPercent, techIsTemp
   if (!(credit > 0)) return ''
   const b = computeInvoiceGrossBreakdown(credit, taxPercent)
   if (!b?.gross) return ''
-  return formatLedgerAmount(b.gross)
+  return (
+    <span className="text-[13px] font-bold tracking-wide text-yellow-200 drop-shadow-[0_0_6px_rgba(250,204,21,0.35)]">
+      {formatLedgerAmount(b.gross)}
+    </span>
+  )
 }
 
 const COLUMN_WIDTHS_STORAGE_KEY = 'dias_ledger_column_widths_v6'
@@ -152,8 +156,8 @@ const INVOICE_COLUMNS = [
   {
     id: 'invoice_markup',
     label: 'Προσ. 20%',
-    defaultWidth: 88,
-    minWidth: 52,
+    defaultWidth: 96,
+    minWidth: 60,
     align: 'right',
     group: 'invoice',
   },
@@ -489,6 +493,9 @@ export default function LedgerAnalysisGrid({
   const headerClass = (col) => {
     const base =
       'relative border-r border-white/10 select-none px-1.5 py-2 text-[10px] font-semibold uppercase tracking-wider text-slate-400 last:border-r-0'
+    if (col.id === 'invoice_markup') {
+      return `${base} bg-yellow-500/20 text-[13px] font-extrabold tracking-widest text-yellow-200`
+    }
     if (col.group === 'salary') return `${base} bg-cyan-500/10 text-cyan-300/90`
     if (col.group === 'other') return `${base} bg-violet-500/10 text-violet-300/90`
     if (col.group === 'invoice') return `${base} bg-amber-500/10 text-amber-200/90`
@@ -503,13 +510,15 @@ export default function LedgerAnalysisGrid({
       compactHeaders &&
       (colId === 'salary_debit' || colId === 'other_debit' || colId === 'invoice_amount')
     const parts = [
-      `box-border px-1.5 py-1.5 overflow-hidden text-right font-mono text-xs ${
-        hidePairSeam ? 'border-r-0' : 'border-r border-white/10'
-      }`,
+      `box-border px-1.5 py-1.5 overflow-hidden text-right font-mono ${
+        colId === 'invoice_markup' ? 'text-[13px]' : 'text-xs'
+      } ${hidePairSeam ? 'border-r-0' : 'border-r border-white/10'}`,
     ]
     if (colId.includes('salary')) parts.push('bg-cyan-500/[0.07]')
     if (colId.includes('other')) parts.push('bg-violet-500/[0.07]')
-    if (colId.includes('invoice') || colId === 'invoice_markup') {
+    if (colId === 'invoice_markup') {
+      parts.push('bg-yellow-500/15 font-bold leading-tight text-yellow-200')
+    } else if (colId.includes('invoice')) {
       parts.push('bg-amber-500/[0.08] text-amber-100')
     } else if (colId.includes('credit')) parts.push('text-emerald-100')
     else parts.push('text-slate-200')
@@ -773,29 +782,47 @@ export default function LedgerAnalysisGrid({
                       tone="amber"
                       taxMarkup={
                         invoiceGuideData &&
-                        Number(invoiceGuideData.netAmount) !== 0 &&
+                        Math.abs(Number(invoiceGuideData.remainingNet) || 0) >= 0.005 &&
                         !invoiceGuideData.simpleVatOnly &&
                         invoiceGuideData.invoiceGrossUp !== false
                           ? {
-                              netAmount: Number(invoiceGuideData.netAmount) || 0,
+                              netAmount: Number(invoiceGuideData.remainingNet) || 0,
                               taxPercent: Number(invoiceGuideData.taxPercent) || 20,
                             }
                           : null
                       }
                     />
-                    {invoiceGuideData && Number(invoiceGuideData.netAmount) !== 0 ? (
+                    {/* Ανοιχτό υπόλοιπο: οδηγός δίπλα στο Υ(ΤΙΜ) */}
+                    {invoiceGuideData &&
+                    Number(invoiceGuideData.netAmount) > 0.005 &&
+                    invoiceGuideData.settled !== true ? (
                       <InvoiceGuideCard
                         netAmount={Number(invoiceGuideData.netAmount) || 0}
                         taxPercent={Number(invoiceGuideData.taxPercent) || 20}
                         simpleVatOnly={invoiceGuideData.simpleVatOnly === true}
                         invoiceGrossUp={invoiceGuideData.invoiceGrossUp !== false}
+                        settled={false}
                       />
                     ) : null}
                   </div>
                 </td>
               ) : null}
-              {/* Σημειώσεις + Εισαγωγή — κενό (χωρίς chip παρακράτησης) */}
-              <td colSpan={2} className="box-border px-2 py-3 align-middle last:border-r-0" />
+              {/* Σημειώσεις + Εισαγωγή — αρχείο οδηγού όταν εξοφληθεί */}
+              <td colSpan={2} className="box-border px-2 py-3 align-middle last:border-r-0">
+                {invoiceGuideData &&
+                Number(invoiceGuideData.netAmount) > 0.005 &&
+                invoiceGuideData.settled === true ? (
+                  <div className="flex justify-end pr-1">
+                    <InvoiceGuideCard
+                      netAmount={Number(invoiceGuideData.netAmount) || 0}
+                      taxPercent={Number(invoiceGuideData.taxPercent) || 20}
+                      simpleVatOnly={invoiceGuideData.simpleVatOnly === true}
+                      invoiceGrossUp={invoiceGuideData.invoiceGrossUp !== false}
+                      settled
+                    />
+                  </div>
+                ) : null}
+              </td>
             </tr>
           </tfoot>
         ) : null}
@@ -826,10 +853,10 @@ function BalanceChip({ label, value, tone = 'slate', taxMarkup = null }) {
       <p className="mt-0.5 font-mono text-sm font-bold tabular-nums tracking-tight">{value}</p>
       {grossed != null ? (
         <div className="mt-1.5 border-t border-amber-500/20 pt-1.5">
-          <p className="whitespace-nowrap text-[9px] font-medium leading-tight text-amber-200/55">
+          <p className="whitespace-nowrap text-[9px] font-semibold leading-tight text-yellow-200/80">
             Προσαύξηση {pct}%
           </p>
-          <p className="mt-0.5 font-mono text-sm font-bold tabular-nums tracking-tight text-amber-50">
+          <p className="mt-0.5 font-mono text-lg font-extrabold tabular-nums tracking-tight text-yellow-200 drop-shadow-[0_0_6px_rgba(250,204,21,0.35)]">
             {formatEuro(grossed)}
           </p>
         </div>
@@ -844,28 +871,36 @@ function InvoiceGuideCard({
   taxPercent,
   simpleVatOnly = false,
   invoiceGrossUp = true,
+  settled = false,
 }) {
   const net = Number(netAmount) || 0
+  const rowClass = 'flex items-baseline justify-between gap-2 py-0.5 text-slate-300'
+  const settledBadge = settled ? (
+    <p className="mb-1 text-[9px] font-semibold uppercase tracking-wider text-emerald-400/90">
+      Εξοφλημένο
+    </p>
+  ) : null
 
   if (simpleVatOnly) {
     const vat = net * 0.24
     const payable = net + vat
     return (
-      <div className="w-full max-w-xs rounded-xl border border-slate-700/50 bg-slate-800/60 p-3 text-xs shadow-sm shadow-black/20">
-        <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+      <div className="w-max max-w-full rounded-xl border border-slate-700/50 bg-slate-800/60 px-2.5 py-2 text-xs shadow-sm shadow-black/20">
+        <p className="mb-0.5 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
           Οδηγός τιμολογίου
         </p>
-        <div className="flex justify-between gap-3 py-1 text-slate-300">
-          <span>Αξία Τιμολογίου</span>
+        {settledBadge}
+        <div className={rowClass}>
+          <span className="whitespace-nowrap">Αξία Τιμολογίου</span>
           <span className="font-mono tabular-nums">{formatEuro(net)}</span>
         </div>
-        <div className="flex justify-between gap-3 py-1 text-slate-300">
-          <span>ΦΠΑ 24%</span>
+        <div className={rowClass}>
+          <span className="whitespace-nowrap">ΦΠΑ 24%</span>
           <span className="font-mono tabular-nums">+ {formatEuro(vat)}</span>
         </div>
         <hr className="my-1 border-slate-600" />
-        <div className="flex justify-between gap-3 py-1 font-bold text-slate-100">
-          <span>Πληρωτέο</span>
+        <div className={`${rowClass} font-bold text-slate-100`}>
+          <span className="whitespace-nowrap">Πληρωτέο</span>
           <span className="font-mono tabular-nums">{formatEuro(payable)}</span>
         </div>
       </div>
@@ -881,25 +916,26 @@ function InvoiceGuideCard({
   const payable = gross + vat - tax
 
   return (
-    <div className="w-full max-w-xs rounded-xl border border-slate-700/50 bg-slate-800/60 p-3 text-xs shadow-sm shadow-black/20">
-      <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+    <div className="w-max max-w-full rounded-xl border border-slate-700/50 bg-slate-800/60 px-2.5 py-2 text-xs shadow-sm shadow-black/20">
+      <p className="mb-0.5 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
         Οδηγός τιμολογίου
       </p>
-      <div className="flex justify-between gap-3 py-1 text-slate-300">
-        <span>Αξία Τιμολογίου</span>
+      {settledBadge}
+      <div className={rowClass}>
+        <span className="whitespace-nowrap">Αξία Τιμολογίου</span>
         <span className="font-mono tabular-nums">{formatEuro(gross)}</span>
       </div>
-      <div className="flex justify-between gap-3 py-1 text-slate-300">
-        <span>ΦΠΑ 24%</span>
+      <div className={rowClass}>
+        <span className="whitespace-nowrap">ΦΠΑ 24%</span>
         <span className="font-mono tabular-nums">+ {formatEuro(vat)}</span>
       </div>
-      <div className="flex justify-between gap-3 py-1 text-slate-300">
-        <span>Παρακρ. Φόρου ({pct}%)</span>
+      <div className={rowClass}>
+        <span className="whitespace-nowrap">Παρακρ. Φόρου ({pct}%)</span>
         <span className="font-mono tabular-nums">− {formatEuro(tax)}</span>
       </div>
       <hr className="my-1 border-slate-600" />
-      <div className="flex justify-between gap-3 py-1 font-bold text-slate-100">
-        <span>Πληρωτέο</span>
+      <div className={`${rowClass} font-bold text-slate-100`}>
+        <span className="whitespace-nowrap">Πληρωτέο</span>
         <span className="font-mono tabular-nums">{formatEuro(payable)}</span>
       </div>
     </div>
