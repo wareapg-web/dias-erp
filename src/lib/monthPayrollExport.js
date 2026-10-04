@@ -71,40 +71,93 @@ function personnelNameByTechId(personnel = []) {
   return map
 }
 
-/**
- * Ticket Restaurant ανά tech_id από payrolls (μήνας/έτος).
- * Αν υπάρχουν πολλαπλά records, κρατάει το μεγαλύτερο ποσό.
- * @returns {Promise<Map<string, number>>}
- */
-export async function loadTicketByTechForMonth(month, year) {
+/** period YYYY-MM ή year/month στήλες — ίδια λογική με μήτρα. */
+function payrollMatchesMonth(payroll, month, year) {
   const m = Number(month)
   const y = Number(year)
-  const map = new Map()
+  const period = String(payroll?.period || '')
+  if (/^\d{4}-\d{2}/.test(period)) {
+    return Number(period.slice(0, 4)) === y && Number(period.slice(5, 7)) === m
+  }
+  return Number(payroll?.year) === y && Number(payroll?.month) === m
+}
+
+/**
+ * Ticket + Ασφάλιση ανά tech_id από payrolls (μήνας).
+ * Προτιμά period=YYYY-MM (όπως η αποθήκευση ERP) · συμπληρώνει με month/year.
+ * Αν υπάρχουν πολλαπλά records, κρατάει το μεγαλύτερο ποσό ανά πεδίο.
+ * @returns {Promise<{ ticketByTech: Map<string, number>, insuranceByTech: Map<string, number> }>}
+ */
+export async function loadPayrollBenefitsByTechForMonth(month, year) {
+  const m = Number(month)
+  const y = Number(year)
+  const period = `${y}-${String(m).padStart(2, '0')}`
+  const ticketByTech = new Map()
+  const insuranceByTech = new Map()
 
   let rows = []
   try {
-    rows = await fetchAllRows(diasClient, 'payrolls', (q) =>
-      q.eq('month', m).eq('year', y)
-    )
-  } catch (err) {
+    rows = await fetchAllRows(diasClient, 'payrolls', (q) => q.eq('period', period))
+  } catch {
+    rows = []
+  }
+
+  // Fallback / συμπλήρωμα όταν period κενό ή παλιές γραμμές μόνο με month/year
+  if (!(rows || []).length) {
     try {
-      const period = `${y}-${String(m).padStart(2, '0')}`
-      rows = await fetchAllRows(diasClient, 'payrolls', (q) => q.eq('period', period))
-    } catch (err2) {
-      console.warn('[month export] payrolls ticket', err2?.message || err?.message || err2)
-      return map
+      rows = await fetchAllRows(diasClient, 'payrolls', (q) =>
+        q.eq('month', m).eq('year', y)
+      )
+    } catch (err) {
+      console.warn('[month export] payrolls benefits', err?.message || err)
+      return { ticketByTech, insuranceByTech }
+    }
+  } else {
+    try {
+      const byYm = await fetchAllRows(diasClient, 'payrolls', (q) =>
+        q.eq('month', m).eq('year', y)
+      )
+      const seen = new Set((rows || []).map((r) => String(r.id || '')))
+      for (const r of byYm || []) {
+        const id = String(r.id || '')
+        if (id && seen.has(id)) continue
+        if (!payrollMatchesMonth(r, m, y)) continue
+        rows.push(r)
+        if (id) seen.add(id)
+      }
+    } catch {
+      /* ignore */
     }
   }
 
   for (const p of rows || []) {
+    if (!payrollMatchesMonth(p, m, y)) continue
     const techId = String(p.tech_id ?? '')
     if (!techId) continue
+
     const ticket = round2(Number(p.ticket_restaurant) || Number(p.ticket_amount) || 0)
-    if (ticket <= 0) continue
-    const prev = map.get(techId) || 0
-    if (ticket > prev) map.set(techId, ticket)
+    if (ticket > 0) {
+      const prev = ticketByTech.get(techId) || 0
+      if (ticket > prev) ticketByTech.set(techId, ticket)
+    }
+
+    const insurance = round2(Number(p.insurance) || Number(p.insurance_amount) || 0)
+    if (insurance > 0) {
+      const prev = insuranceByTech.get(techId) || 0
+      if (insurance > prev) insuranceByTech.set(techId, insurance)
+    }
   }
-  return map
+
+  return { ticketByTech, insuranceByTech }
+}
+
+/**
+ * Ticket Restaurant ανά tech_id από payrolls (μήνας/έτος).
+ * @returns {Promise<Map<string, number>>}
+ */
+export async function loadTicketByTechForMonth(month, year) {
+  const { ticketByTech } = await loadPayrollBenefitsByTechForMonth(month, year)
+  return ticketByTech
 }
 
 /**
@@ -112,34 +165,31 @@ export async function loadTicketByTechForMonth(month, year) {
  * @returns {Promise<Map<string, number>>}
  */
 export async function loadInsuranceByTechForMonth(month, year) {
-  const m = Number(month)
-  const y = Number(year)
-  const map = new Map()
+  const { insuranceByTech } = await loadPayrollBenefitsByTechForMonth(month, year)
+  return insuranceByTech
+}
 
-  let rows = []
+/**
+ * Fallback Ticket / Ασφάλιση από tech_earnings (όπως μήτρα όταν payrolls=0).
+ * @returns {Promise<{ ticketByTech: Map<string, number>, insuranceByTech: Map<string, number> }>}
+ */
+export async function loadEarningsBenefitsByTech() {
+  const ticketByTech = new Map()
+  const insuranceByTech = new Map()
   try {
-    rows = await fetchAllRows(diasClient, 'payrolls', (q) =>
-      q.eq('month', m).eq('year', y)
-    )
-  } catch (err) {
-    try {
-      const period = `${y}-${String(m).padStart(2, '0')}`
-      rows = await fetchAllRows(diasClient, 'payrolls', (q) => q.eq('period', period))
-    } catch (err2) {
-      console.warn('[month export] payrolls insurance', err2?.message || err?.message || err2)
-      return map
+    const rows = await fetchAllRows(diasClient, 'tech_earnings')
+    for (const row of rows || []) {
+      const id = String(row.tech_id ?? '')
+      if (!id) continue
+      const ticket = round2(Number(row.ticket_amount) || 0)
+      if (ticket > 0) ticketByTech.set(id, ticket)
+      const insurance = round2(Number(row.insurance_amount) || 0)
+      if (insurance > 0) insuranceByTech.set(id, insurance)
     }
+  } catch (err) {
+    console.warn('[month export] earnings benefits', err?.message || err)
   }
-
-  for (const p of rows || []) {
-    const techId = String(p.tech_id ?? '')
-    if (!techId) continue
-    const insurance = round2(Number(p.insurance) || Number(p.insurance_amount) || 0)
-    if (insurance <= 0) continue
-    const prev = map.get(techId) || 0
-    if (insurance > prev) map.set(techId, insurance)
-  }
-  return map
+  return { ticketByTech, insuranceByTech }
 }
 
 /**
@@ -179,23 +229,67 @@ function emptySlot(techId, name) {
   }
 }
 
+/** Lookup ποσού από map με tech_id ή aliases προσωπικού (id / tech_id). */
+function benefitAmountForTech(map, techId, aliasIds = []) {
+  const primary = round2(map.get(String(techId)) || 0)
+  if (primary > 0) return primary
+  for (const alt of aliasIds) {
+    const n = round2(map.get(String(alt)) || 0)
+    if (n > 0) return n
+  }
+  return 0
+}
+
 /**
  * Μόνιμοι: χρεώσεις μήνα χωρισμένες σε Σταθερά (Μισθός/Λοιπά/ΤΙΜ) και Μεταβλητά (Λοιπά/ΤΙΜ).
  * Bonus (id 5, πρώην Extra Bonus) + Bonus+ + εκταμίευση δανείου (95) → πάντα μεταβλητά.
  * Υπόλοιπο Μισθού (id 4) → σύμφωνα με ticks. Δόσεις (94) εκτός (μόνο πίστωση).
  * Ticket / Ασφάλιση ενημερωτικά — εκτός πληρωτέου.
+ * Βάση: payrolls · fallback tech_earnings (ίδια λογική με μήτρα).
  */
 export function aggregateMonthDebits(
   ledgerRows = [],
   personnel = [],
   fixedSettingsByTech = new Map(),
   ticketByTech = new Map(),
-  insuranceByTech = new Map()
+  insuranceByTech = new Map(),
+  earningsTicketByTech = new Map(),
+  earningsInsuranceByTech = new Map()
 ) {
   const permanents = permanentPersonnelList(personnel)
   const names = personnelNameByTechId(permanents)
   const permanentIds = techIdSetFromList(permanents)
+  /** tech_id ledger → [aliases] για lookup payrolls/earnings */
+  const aliasesByTech = new Map()
+  for (const p of permanents) {
+    const keys = []
+    if (p.tech_id != null && p.tech_id !== '') keys.push(String(p.tech_id))
+    if (p.id != null && p.id !== '') keys.push(String(p.id))
+    const primary = keys[0]
+    if (!primary) continue
+    aliasesByTech.set(primary, keys)
+    for (const k of keys) aliasesByTech.set(k, keys)
+  }
   const byTech = new Map()
+
+  const ensureSlot = (techId) => {
+    const id = String(techId || '')
+    if (!id) return null
+    if (permanentIds.size > 0 && !permanentIds.has(id)) return null
+    const aliases = aliasesByTech.get(id) || [id]
+    for (const k of aliases) {
+      const existing = byTech.get(k)
+      if (existing) {
+        for (const a of aliases) byTech.set(a, existing)
+        return existing
+      }
+    }
+    const primary = aliases[0] || id
+    const nameKey = aliases.find((k) => names.has(k)) || primary
+    const slot = emptySlot(primary, names.get(nameKey) || primary)
+    for (const a of aliases) byTech.set(a, slot)
+    return slot
+  }
 
   for (const row of ledgerRows || []) {
     if (isInformationalBenefitRow(row)) continue
@@ -205,13 +299,8 @@ export function aggregateMonthDebits(
 
     const techId = String(row.tech_id ?? '')
     if (!techId) continue
-    if (permanentIds.size > 0 && !permanentIds.has(techId)) continue
-
-    let slot = byTech.get(techId)
-    if (!slot) {
-      slot = emptySlot(techId, names.get(techId) || techId)
-      byTech.set(techId, slot)
-    }
+    const slot = ensureSlot(techId)
+    if (!slot) continue
 
     const salary = Number(row.salary_debit) || 0
     const other = Number(row.other_debit) || 0
@@ -247,12 +336,41 @@ export function aggregateMonthDebits(
     )
   }
 
-  for (const slot of byTech.values()) {
-    slot.ticket = round2(ticketByTech.get(String(slot.techId)) || 0)
-    slot.insurance = round2(insuranceByTech.get(String(slot.techId)) || 0)
+  // Slot και για όσους έχουν ticket/ασφάλιση στο payrolls μήνα (χωρίς άλλες χρεώσεις)
+  for (const techId of new Set([...ticketByTech.keys(), ...insuranceByTech.keys()])) {
+    ensureSlot(techId)
   }
 
-  return Array.from(byTech.values())
+  for (const slot of byTech.values()) {
+    const aliases = aliasesByTech.get(String(slot.techId)) || [String(slot.techId)]
+    const fromPayrollTicket = benefitAmountForTech(ticketByTech, slot.techId, aliases)
+    const fromPayrollInsurance = benefitAmountForTech(insuranceByTech, slot.techId, aliases)
+    // Fallback Αποδοχές μόνο αν υπάρχει δραστηριότητα μήνα (όπως μήτρα)
+    const allowEarningsFallback = slot.total > 0 || fromPayrollTicket > 0 || fromPayrollInsurance > 0
+    slot.ticket =
+      fromPayrollTicket > 0
+        ? fromPayrollTicket
+        : allowEarningsFallback
+          ? benefitAmountForTech(earningsTicketByTech, slot.techId, aliases)
+          : 0
+    slot.insurance =
+      fromPayrollInsurance > 0
+        ? fromPayrollInsurance
+        : allowEarningsFallback
+          ? benefitAmountForTech(earningsInsuranceByTech, slot.techId, aliases)
+          : 0
+  }
+
+  // Αποφυγή διπλών slot αν μπήκαν aliases
+  const seen = new Set()
+  const unique = []
+  for (const slot of byTech.values()) {
+    if (seen.has(slot)) continue
+    seen.add(slot)
+    unique.push(slot)
+  }
+
+  return unique
     .filter((r) => r.total > 0 || r.ticket > 0 || r.insurance > 0)
     .sort((a, b) => String(a.name).localeCompare(String(b.name), 'el'))
 }
@@ -312,28 +430,31 @@ export async function exportMonthPayrollToExcel({ month, year, personnel = [] })
     throw new Error('Μη έγκυρος μήνας/έτος για εξαγωγή')
   }
 
-  const [ledgerRows, fixedSettingsByTech, ticketByTech, insuranceByTech] = await Promise.all([
-    fetchAllRows(diasClient, 'tech_ledger_view', (q) => q.eq('month', m).eq('year', y)),
-    loadFixedExpenseSettingsByTech().catch((err) => {
-      console.warn('[month export] fixed_expense_settings', err?.message || err)
-      return new Map()
-    }),
-    loadTicketByTechForMonth(m, y).catch((err) => {
-      console.warn('[month export] ticket payrolls', err?.message || err)
-      return new Map()
-    }),
-    loadInsuranceByTechForMonth(m, y).catch((err) => {
-      console.warn('[month export] insurance payrolls', err?.message || err)
-      return new Map()
-    }),
-  ])
+  const [ledgerRows, fixedSettingsByTech, payrollBenefits, earningsBenefits] =
+    await Promise.all([
+      fetchAllRows(diasClient, 'tech_ledger_view', (q) => q.eq('month', m).eq('year', y)),
+      loadFixedExpenseSettingsByTech().catch((err) => {
+        console.warn('[month export] fixed_expense_settings', err?.message || err)
+        return new Map()
+      }),
+      loadPayrollBenefitsByTechForMonth(m, y).catch((err) => {
+        console.warn('[month export] payroll benefits', err?.message || err)
+        return { ticketByTech: new Map(), insuranceByTech: new Map() }
+      }),
+      loadEarningsBenefitsByTech().catch((err) => {
+        console.warn('[month export] earnings benefits', err?.message || err)
+        return { ticketByTech: new Map(), insuranceByTech: new Map() }
+      }),
+    ])
 
   const rows = aggregateMonthDebits(
     ledgerRows,
     personnel,
     fixedSettingsByTech,
-    ticketByTech,
-    insuranceByTech
+    payrollBenefits.ticketByTech,
+    payrollBenefits.insuranceByTech,
+    earningsBenefits.ticketByTech,
+    earningsBenefits.insuranceByTech
   )
   if (rows.length === 0) {
     throw new Error('Δεν βρέθηκαν χρεώσεις μόνιμων για αυτόν τον μήνα')
