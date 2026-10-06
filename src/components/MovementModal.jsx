@@ -16,7 +16,7 @@ import {
   settlementCategoryFromTypeId,
 } from '../lib/techLedger'
 import { fromElInputValue, parseElNumber, toElInputDisplay } from '../lib/numberFormat'
-import { formatEuro } from '../lib/payrollAnalysis'
+import { formatEuro, MONTH_LABELS } from '../lib/payrollAnalysis'
 import { parseToIsoDate, greekCapsLabel } from '../lib/greekDate'
 import {
   HIDDEN_LEDGER_TYPE_IDS,
@@ -51,6 +51,9 @@ import {
 const INVOICE_SETTLEMENT_TYPE_ID = 93
 const INVOICE_PARTIAL_PAYMENT_TYPE_ID = 96
 const MOVEMENT_MODAL_MIN_W = 560
+
+/** Cache τύπων μεταξύ ανοιγμάτων — αποφεύγει flash «Φόρτωση…». */
+let cachedMovementTypes = null
 
 function isInvoiceTimCreditType(typeOrId) {
   const id = Number(typeOrId)
@@ -244,21 +247,39 @@ function applyManualTypeExclusion(types, allowTypeId = null) {
   })
 }
 
-/** Bonus πρώτο · δώρα 11/12 στο κάτω μέρος · τα υπόλοιπα κατά sort_order. */
+/**
+ * Σειρά dropdown Τύπος:
+ * Bonus → Δώρο Πάσχα → Επίδομα Αδείας → Δώρο Χριστουγέννων → τα υπόλοιπα (sort_order).
+ */
+const MOVEMENT_TYPE_PIN_ORDER = [
+  MANUAL_BONUS_TYPE_ID, // 5 Bonus
+  11, // Δώρο Πάσχα
+  13, // Επίδομα Αδείας
+  12, // Δώρο Χριστουγέννων
+]
+
+function movementTypePinRank(type) {
+  const id = Number(type?.id)
+  const byId = MOVEMENT_TYPE_PIN_ORDER.indexOf(id)
+  if (byId >= 0) return byId
+  // Μετρητά / παραλλαγές επιδόματος αδείας — δίπλα στο 13
+  const label = String(type?.description || '')
+    .normalize('NFD')
+    .replace(/\p{M}/gu, '')
+    .toLocaleLowerCase('el-GR')
+  if (label.includes('επιδομα αδειας')) return 2
+  return 1000
+}
+
 function sortMovementTypeOptions(types) {
   return [...(types || [])].sort((a, b) => {
-    const aId = Number(a.id)
-    const bId = Number(b.id)
-    const aBonus = aId === MANUAL_BONUS_TYPE_ID ? 0 : 1
-    const bBonus = bId === MANUAL_BONUS_TYPE_ID ? 0 : 1
-    if (aBonus !== bBonus) return aBonus - bBonus
-    const aGift = CROSS_CATEGORY_DEBIT_GIFT_IDS.has(aId) ? 1 : 0
-    const bGift = CROSS_CATEGORY_DEBIT_GIFT_IDS.has(bId) ? 1 : 0
-    if (aGift !== bGift) return aGift - bGift
+    const rankA = movementTypePinRank(a)
+    const rankB = movementTypePinRank(b)
+    if (rankA !== rankB) return rankA - rankB
     const orderA = Number(a.sort_order ?? 0)
     const orderB = Number(b.sort_order ?? 0)
     if (orderA !== orderB) return orderA - orderB
-    return aId - bId
+    return Number(a.id) - Number(b.id)
   })
 }
 
@@ -308,8 +329,8 @@ export default function MovementModal({
   const [grossAmountDisplay, setGrossAmountDisplay] = useState('')
   const [netAmountFocused, setNetAmountFocused] = useState(false)
   const [grossAmountFocused, setGrossAmountFocused] = useState(false)
-  const [types, setTypes] = useState([])
-  const [typesLoading, setTypesLoading] = useState(false)
+  const [types, setTypes] = useState(() => cachedMovementTypes || [])
+  const [typesLoading, setTypesLoading] = useState(() => !cachedMovementTypes)
   const [typesError, setTypesError] = useState(null)
   const [selectedTypeId, setSelectedTypeId] = useState(null)
   const [saving, setSaving] = useState(false)
@@ -510,7 +531,9 @@ export default function MovementModal({
 
   useEffect(() => {
     if (!open) return
-    setForm(movementFormFromRow(selectedRowData))
+    const hadCache = Array.isArray(cachedMovementTypes) && cachedMovementTypes.length > 0
+    // Με cache: μην μηδενίζεις τη φόρμα πριν το sync apply (αποφεύγει flash)
+    if (!hadCache) setForm(movementFormFromRow(selectedRowData))
     setTypesError(null)
     setSaveError(null)
     setLoanDeleteOpen(false)
@@ -518,30 +541,10 @@ export default function MovementModal({
     setAllowInvoiceCategory(hasInvoice === true)
 
     let cancelled = false
-    async function loadTypes() {
-      setTypesLoading(true)
+
+    const applyLoadedTypes = (list) => {
+      if (cancelled || !list) return
       try {
-        const { data, error: err } = await diasClient
-          .from('transaction_types')
-          .select(
-            'id, description, ledger_group, is_for_sum, sort_order, is_active, ept_type_pay, col_index'
-          )
-          .eq('is_active', true)
-          .order('sort_order', { ascending: true })
-          .order('id', { ascending: true })
-
-        if (cancelled) return
-        if (err) throw err
-
-        const list = [...(data || [])]
-        // Stubs αν λείπουν εξόφληση/πληρωμή τύποι από DB
-        for (const id of [91, 92, 93, 96, 97, 98]) {
-          if (!list.some((t) => Number(t.id) === id)) {
-            const stub = settlementTypeStub(id)
-            if (stub) list.push(stub)
-          }
-        }
-        setTypes(list)
         const lookup = buildTypeLookup(list)
 
         let match = null
@@ -750,7 +753,6 @@ export default function MovementModal({
         }
       } catch (err) {
         if (!cancelled) {
-          setTypes([])
           setTypesError(
             formatSupabaseError(err, { table: 'transaction_types', clientLabel: 'DIAS ERP' }) ||
               err.message ||
@@ -759,6 +761,49 @@ export default function MovementModal({
         }
       } finally {
         if (!cancelled) setTypesLoading(false)
+      }
+    }
+
+    async function loadTypes() {
+      if (hadCache) {
+        setTypes(cachedMovementTypes)
+        applyLoadedTypes(cachedMovementTypes)
+        return
+      }
+      setTypesLoading(true)
+      try {
+        const { data, error: err } = await diasClient
+          .from('transaction_types')
+          .select(
+            'id, description, ledger_group, is_for_sum, sort_order, is_active, ept_type_pay, col_index'
+          )
+          .eq('is_active', true)
+          .order('sort_order', { ascending: true })
+          .order('id', { ascending: true })
+
+        if (cancelled) return
+        if (err) throw err
+
+        const list = [...(data || [])]
+        for (const id of [91, 92, 93, 96, 97, 98]) {
+          if (!list.some((t) => Number(t.id) === id)) {
+            const stub = settlementTypeStub(id)
+            if (stub) list.push(stub)
+          }
+        }
+        cachedMovementTypes = list
+        setTypes(list)
+        applyLoadedTypes(list)
+      } catch (err) {
+        if (!cancelled) {
+          setTypes([])
+          setTypesError(
+            formatSupabaseError(err, { table: 'transaction_types', clientLabel: 'DIAS ERP' }) ||
+              err.message ||
+              'Λείπει ledger_group — τρέξε supabase/07_transaction_types_ledger_group.sql'
+          )
+          setTypesLoading(false)
+        }
       }
     }
 
@@ -1299,9 +1344,29 @@ export default function MovementModal({
   }
 
   const displayError = saveError || externalError
-  const formDisabled = typesLoading || types.length === 0 || saving || deleting
+  const typesBusy = typesLoading && types.length === 0
+  const formDisabled = typesBusy || types.length === 0 || saving || deleting
   const saveDisabled =
     formDisabled || noAvailableTypes || !selectedType || selectedTypeId == null
+
+  const periodMonthNum =
+    Number(presetMonth) ||
+    Number(selectedRowData?.month) ||
+    (() => {
+      const iso = parseToIsoDate(form.entry_date) || normalizeEntryDate(form.entry_date)
+      return Number(String(iso || '').slice(5, 7)) || 0
+    })()
+  const periodYearNum =
+    Number(presetYear) ||
+    Number(selectedRowData?.year) ||
+    (() => {
+      const iso = parseToIsoDate(form.entry_date) || normalizeEntryDate(form.entry_date)
+      return Number(String(iso || '').slice(0, 4)) || 0
+    })()
+  const periodLabel =
+    periodMonthNum >= 1 && periodMonthNum <= 12 && periodYearNum > 0
+      ? `${greekCapsLabel(MONTH_LABELS[periodMonthNum - 1] || '')} ${periodYearNum}`
+      : ''
 
   const typeSelectOptions = (() => {
     if (noAvailableTypes) {
@@ -1349,31 +1414,36 @@ export default function MovementModal({
         {resizeHandle('sw', 'nesw-resize', 'bottom-0 left-0 h-3 w-3')}
         {resizeHandle('se', 'nwse-resize', 'bottom-0 right-0 h-4 w-4')}
         <div
-          className={`flex shrink-0 items-start justify-between gap-2 border-b border-white/10 px-4 pt-3 pb-2 ${dragHandleClassName}`}
+          className={`relative flex shrink-0 items-start justify-between gap-2 border-b border-white/10 px-4 pt-3 pb-2 ${dragHandleClassName}`}
           {...dragHandleProps}
         >
-          <div>
-            <p className="text-[9px] font-semibold uppercase tracking-[0.18em] text-cyan-400/80">
-              Καρτέλα
+          <div className="relative z-10 min-w-0 max-w-[42%] shrink">
+            <p className="text-[9px] font-semibold tracking-[0.18em] text-cyan-400/80">
+              {greekCapsLabel('Καρτέλα')}
             </p>
             <h3 className="text-base font-bold text-white">
               {isEdit ? 'Επεξεργασία Κίνησης' : 'Κίνηση'}
             </h3>
             <p className="text-[11px] text-slate-400">
-              {typesLoading
-                ? 'Φόρτωση τύπων από transaction_types...'
-                : isEdit
-                  ? `Επεξεργασία · ${rowSource === 'PAYMENT' ? 'Πίστωση' : 'Χρέωση'} · ${selectedRowData?.entry_date ? new Date(selectedRowData.entry_date).toLocaleDateString('el-GR') : ''}`
-                  : shouldPostAsPayment(form.side)
-                    ? 'Νέα πίστωση → payment_entries'
-                    : 'Νέα χρέωση → payroll_entries'}
+              {isEdit
+                ? `Επεξεργασία · ${rowSource === 'PAYMENT' ? 'Πίστωση' : 'Χρέωση'} · ${selectedRowData?.entry_date ? new Date(selectedRowData.entry_date).toLocaleDateString('el-GR') : ''}`
+                : shouldPostAsPayment(form.side)
+                  ? 'Νέα πίστωση → payment_entries'
+                  : 'Νέα χρέωση → payroll_entries'}
             </p>
           </div>
+          {periodLabel ? (
+            <div className="pointer-events-none absolute inset-0 z-0 flex items-center justify-center px-14">
+              <p className="truncate text-center text-lg font-extrabold tracking-wide text-amber-200 drop-shadow-[0_0_8px_rgba(251,191,36,0.25)] sm:text-xl">
+                {periodLabel}
+              </p>
+            </div>
+          ) : null}
           <button
             type="button"
             onClick={onClose}
             disabled={saving || deleting}
-            className="rounded-lg border border-white/10 bg-white/5 px-2 py-0.5 text-sm text-slate-300 hover:bg-white/10 disabled:opacity-50"
+            className="relative z-10 shrink-0 rounded-lg border border-white/10 bg-white/5 px-2 py-0.5 text-sm text-slate-300 hover:bg-white/10 disabled:opacity-50"
           >
             ✕
           </button>
@@ -1383,17 +1453,11 @@ export default function MovementModal({
         <div className="space-y-2 rounded-xl border border-white/10 bg-slate-950/40 p-3">
           <p className="text-[9px] font-semibold uppercase tracking-wider text-slate-500">Στοιχεία</p>
 
-          {(typesError || typesLoading) && (
-            <div
-              className={`rounded-lg border px-2.5 py-1.5 text-xs ${
-                typesError
-                  ? 'border-amber-500/40 bg-amber-500/10 text-amber-100'
-                  : 'border-white/10 bg-white/5 text-slate-400'
-              }`}
-            >
-              {typesError || 'Φόρτωση τύπων από Supabase...'}
+          {typesError ? (
+            <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-2.5 py-1.5 text-xs text-amber-100">
+              {typesError}
             </div>
-          )}
+          ) : null}
 
           <fieldset disabled={formDisabled} className="space-y-2 disabled:opacity-60">
             <div>
@@ -1509,42 +1573,6 @@ export default function MovementModal({
                     />
                   </div>
                 </div>
-                {(() => {
-                  const grossN =
-                    parseElNumber(grossAmountDisplay) ??
-                    (() => {
-                      const n = parseElNumber(form.amount)
-                      return n != null && grossUpFactor > 0 ? round2(n / grossUpFactor) : null
-                    })()
-                  if (grossN == null || !(grossN > 0)) return null
-                  const vat = round2(grossN * 0.24)
-                  const withhold = round2(grossN * (safeTaxPercent / 100))
-                  const payable = round2(grossN + vat - withhold)
-                  return (
-                    <div className="rounded-lg border border-slate-700/50 bg-slate-800/50 px-2.5 py-1.5 text-xs">
-                      <p className="mb-1 text-[9px] font-semibold uppercase tracking-wider text-slate-500">
-                        {greekCapsLabel('Οδηγός πληρωμής')}
-                      </p>
-                      <div className="flex justify-between gap-2 py-px text-slate-300">
-                        <span>Αξία Τιμολογίου</span>
-                        <span className="font-mono tabular-nums">{formatEuro(grossN)}</span>
-                      </div>
-                      <div className="flex justify-between gap-2 py-px text-slate-300">
-                        <span>ΦΠΑ 24%</span>
-                        <span className="font-mono tabular-nums">+ {formatEuro(vat)}</span>
-                      </div>
-                      <div className="flex justify-between gap-2 py-px text-slate-300">
-                        <span>Παρακρ. Φόρου ({safeTaxPercent}%)</span>
-                        <span className="font-mono tabular-nums">− {formatEuro(withhold)}</span>
-                      </div>
-                      <hr className="my-1 border-slate-600" />
-                      <div className="flex justify-between gap-2 py-px font-bold text-slate-100">
-                        <span>Πληρωτέο</span>
-                        <span className="font-mono tabular-nums">{formatEuro(payable)}</span>
-                      </div>
-                    </div>
-                  )
-                })()}
               </div>
             ) : (
               <div className="rounded-lg border border-cyan-400/30 bg-cyan-500/[0.07] px-2 py-1.5">
@@ -1614,7 +1642,7 @@ export default function MovementModal({
             disabled={saveDisabled}
             className="flex-1 rounded-lg border border-emerald-500/40 bg-emerald-500/20 px-3 py-1.5 text-sm font-bold text-emerald-100 disabled:opacity-50"
           >
-            {saving ? 'Αποθήκευση...' : typesLoading ? 'Φόρτωση...' : 'Αποθήκευση'}
+            {saving ? 'Αποθήκευση...' : typesBusy ? 'Φόρτωση...' : 'Αποθήκευση'}
           </button>
         </div>
       </form>

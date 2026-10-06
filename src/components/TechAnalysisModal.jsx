@@ -108,6 +108,7 @@ import {
 import DarkSelect from './DarkSelect'
 
 const MATRIX_BALANCES_STORAGE_KEY = 'dias_show_matrix_balances'
+const MATRIX_PAYMENTS_TREE_STORAGE_KEY = 'dias_show_matrix_payments_tree'
 const ANALYSIS_WORKSPACE_KEY = 'dias_analysis_workspace'
 const WORKSPACE_TABS = new Set([
   'analysis',
@@ -271,6 +272,13 @@ export default function TechAnalysisModal({
   const [showMatrixBalances, setShowMatrixBalances] = useState(() => {
     try {
       return localStorage.getItem(MATRIX_BALANCES_STORAGE_KEY) === '1'
+    } catch {
+      return false
+    }
+  })
+  const [showMatrixPaymentsTree, setShowMatrixPaymentsTree] = useState(() => {
+    try {
+      return localStorage.getItem(MATRIX_PAYMENTS_TREE_STORAGE_KEY) === '1'
     } catch {
       return false
     }
@@ -1546,6 +1554,18 @@ export default function TechAnalysisModal({
     })
   }
 
+  const toggleMatrixPaymentsTree = () => {
+    setShowMatrixPaymentsTree((prev) => {
+      const next = !prev
+      try {
+        localStorage.setItem(MATRIX_PAYMENTS_TREE_STORAGE_KEY, next ? '1' : '0')
+      } catch {
+        /* ignore quota / private mode */
+      }
+      return next
+    })
+  }
+
   useEffect(() => {
     if (!showTemporaryToolbar) {
       setTemporaryPayablesHint({ totalInvoice: 0, totalCash: 0 })
@@ -2466,6 +2486,28 @@ export default function TechAnalysisModal({
                         </svg>
                       )}
                     </button>
+                    <button
+                      type="button"
+                      onClick={toggleMatrixPaymentsTree}
+                      aria-pressed={showMatrixPaymentsTree}
+                      aria-label={
+                        showMatrixPaymentsTree
+                          ? 'Απόκρυψη πληρωμών'
+                          : 'Εμφάνιση πληρωμών'
+                      }
+                      title={
+                        showMatrixPaymentsTree
+                          ? 'Πληρωμές ορατές — κλικ για απόκρυψη'
+                          : 'Πληρωμές κρυφές — κλικ για εμφάνιση'
+                      }
+                      className={`group inline-flex h-8 w-8 items-center justify-center rounded-full border text-[11px] font-extrabold transition duration-200 ${
+                        showMatrixPaymentsTree
+                          ? 'border-cyan-400/35 bg-cyan-500/15 text-cyan-200 shadow-[0_0_12px_rgba(34,211,238,0.18)] hover:bg-cyan-500/25'
+                          : 'border-white/10 bg-white/5 text-slate-400 hover:border-white/20 hover:bg-white/10 hover:text-slate-200'
+                      }`}
+                    >
+                      Π
+                    </button>
                   </div>
                 </div>
                 <p className="text-xs text-slate-400">
@@ -2520,47 +2562,6 @@ export default function TechAnalysisModal({
                           total={formatMatrixCell(salaryMatrix.totals.sigma)}
                         />
                       ) : null}
-                      <MatrixRow
-                        label="Π"
-                        hint="Πληρωμές"
-                        selectedMonth={selectedMonth}
-                        onSelectMonth={requestSelectedMonth}
-                        values={salaryMatrix.months.map((m) => formatMatrixCell(m.pi))}
-                        total={formatMatrixCell(salaryMatrix.totals.pi)}
-                      />
-                      {!techIsTemporary || ledgerCategoryPolicy.allowSalary ? (
-                        <MatrixRow
-                          label="Μισθός"
-                          hint="Χρεώσεις"
-                          indent
-                          selectedMonth={selectedMonth}
-                          onSelectMonth={requestSelectedMonth}
-                          values={salaryMatrix.months.map((m) => formatMatrixCell(m.salaryDebit))}
-                          total={formatMatrixCell(salaryMatrix.totals.salaryDebit)}
-                        />
-                      ) : null}
-                      {!techIsTemporary || ledgerCategoryPolicy.allowOther ? (
-                        <MatrixRow
-                          label="Λοιπά"
-                          hint="Χρεώσεις"
-                          indent
-                          selectedMonth={selectedMonth}
-                          onSelectMonth={requestSelectedMonth}
-                          values={salaryMatrix.months.map((m) => formatMatrixCell(m.otherDebit))}
-                          total={formatMatrixCell(salaryMatrix.totals.otherDebit)}
-                        />
-                      ) : null}
-                      {!techIsTemporary || ledgerCategoryPolicy.allowInvoice ? (
-                        <MatrixRow
-                          label="Τιμολόγιο"
-                          hint="Χρεώσεις"
-                          indent
-                          selectedMonth={selectedMonth}
-                          onSelectMonth={requestSelectedMonth}
-                          values={salaryMatrix.months.map((m) => formatMatrixCell(m.invoiceDebit))}
-                          total={formatMatrixCell(salaryMatrix.totals.invoiceDebit)}
-                        />
-                      ) : null}
                       {showMatrixBalances && !techIsTemporary ? (
                         <MatrixRow
                           label="Υ (Μ)"
@@ -2613,6 +2614,52 @@ export default function TechAnalysisModal({
                           total={formatMatrixTicket(salaryMatrix.totals.insurance)}
                         />
                       ) : null}
+                      {showMatrixPaymentsTree ? (
+                        <MatrixRow
+                          label="Π"
+                          hint="Πληρωμές"
+                          selectedMonth={selectedMonth}
+                          onSelectMonth={requestSelectedMonth}
+                          values={salaryMatrix.months.map((m) => formatMatrixCell(m.pi))}
+                          total={formatMatrixCell(salaryMatrix.totals.pi)}
+                        />
+                      ) : null}
+                      {showMatrixPaymentsTree &&
+                      (!techIsTemporary || ledgerCategoryPolicy.allowSalary) ? (
+                        <MatrixRow
+                          label="Μισθός"
+                          hint="Χρεώσεις"
+                          indent
+                          selectedMonth={selectedMonth}
+                          onSelectMonth={requestSelectedMonth}
+                          values={salaryMatrix.months.map((m) => formatMatrixCell(m.salaryDebit))}
+                          total={formatMatrixCell(salaryMatrix.totals.salaryDebit)}
+                        />
+                      ) : null}
+                      {showMatrixPaymentsTree &&
+                      (!techIsTemporary || ledgerCategoryPolicy.allowOther) ? (
+                        <MatrixRow
+                          label="Λοιπά"
+                          hint="Χρεώσεις"
+                          indent
+                          selectedMonth={selectedMonth}
+                          onSelectMonth={requestSelectedMonth}
+                          values={salaryMatrix.months.map((m) => formatMatrixCell(m.otherDebit))}
+                          total={formatMatrixCell(salaryMatrix.totals.otherDebit)}
+                        />
+                      ) : null}
+                      {showMatrixPaymentsTree &&
+                      (!techIsTemporary || ledgerCategoryPolicy.allowInvoice) ? (
+                        <MatrixRow
+                          label="Τιμολόγιο"
+                          hint="Χρεώσεις"
+                          indent
+                          selectedMonth={selectedMonth}
+                          onSelectMonth={requestSelectedMonth}
+                          values={salaryMatrix.months.map((m) => formatMatrixCell(m.invoiceDebit))}
+                          total={formatMatrixCell(salaryMatrix.totals.invoiceDebit)}
+                        />
+                      ) : null}
                       {!techIsTemporary &&
                       (Number(salaryMatrix.totals.loan) > 0 ||
                         Number(salaryMatrix.totals.loanCount) > 0) ? (
@@ -2622,7 +2669,7 @@ export default function TechAnalysisModal({
                           selectedMonth={selectedMonth}
                           onSelectMonth={requestSelectedMonth}
                           values={salaryMatrix.months.map((m) =>
-                            formatMatrixLoan(m.loan, m.loanCount)
+                            formatMatrixLoan(m.loan, m.loanProgress || m.loanCount)
                           )}
                           total={formatMatrixLoan(salaryMatrix.totals.loan)}
                         />
@@ -2662,7 +2709,7 @@ export default function TechAnalysisModal({
               />
               <div className="ml-auto">
                 <span
-                  className={`rounded-lg px-3 py-1 text-xs font-bold uppercase tracking-wide ${
+                  className={`rounded-lg px-3 py-1 text-xs font-bold tracking-wide ${
                     monthSettled
                       ? 'bg-rose-500/20 text-rose-300'
                       : (selectedSalary?.sigma || 0) > 0
@@ -2671,10 +2718,10 @@ export default function TechAnalysisModal({
                   }`}
                 >
                   {monthSettled
-                    ? 'Εξοφληθεί'
+                    ? greekCapsLabel('Εξοφληθεί')
                     : (selectedSalary?.sigma || 0) > 0
-                      ? 'Ανοιχτό'
-                      : 'Χωρίς δεδομένα'}
+                      ? greekCapsLabel('Ανοιχτό')
+                      : greekCapsLabel('Χωρίς δεδομένα')}
                 </span>
               </div>
             </div>
@@ -2742,9 +2789,11 @@ export default function TechAnalysisModal({
                     onClick={handleMonthImport}
                     disabled={monthImportSaving || ledgerLoading || !tech}
                     title="ΔΗΜΙΟΥΡΓΙΑ: ρωτάει για ALL ή μόνο τον επιλεγμένο — Αποδοχές με τικ και ποσό > 0"
-                    className="shrink-0 rounded-xl border border-cyan-500/40 bg-cyan-500/15 px-3 py-2.5 text-left text-xs font-semibold uppercase tracking-wide text-cyan-100 transition hover:bg-cyan-500/25 disabled:cursor-not-allowed disabled:opacity-40 lg:w-full"
+                    className="shrink-0 rounded-xl border border-cyan-500/40 bg-cyan-500/15 px-3 py-2.5 text-left text-xs font-semibold tracking-wide text-cyan-100 transition hover:bg-cyan-500/25 disabled:cursor-not-allowed disabled:opacity-40 lg:w-full"
                   >
-                    {monthImportSaving ? 'ΔΗΜΙΟΥΡΓΙΑ...' : 'ΔΗΜΙΟΥΡΓΙΑ'}
+                    {monthImportSaving
+                      ? greekCapsLabel('Δημιουργία...')
+                      : greekCapsLabel('Δημιουργία')}
                   </button>
                 ) : null}
                 {!techIsTemporary && monthImportMessage ? (
@@ -2757,9 +2806,9 @@ export default function TechAnalysisModal({
                   onClick={() => openMovementCreate()}
                   disabled={!tech}
                   title="Νεα κινηση (χωρις προεπιλεγμενο τυπο)"
-                  className="shrink-0 rounded-xl border border-white/10 bg-slate-900/80 px-3 py-2.5 text-left text-xs font-semibold uppercase tracking-wide text-slate-200 transition hover:border-cyan-500/40 hover:bg-cyan-500/10 hover:text-cyan-100 disabled:cursor-not-allowed disabled:opacity-40 lg:w-full"
+                  className="shrink-0 rounded-xl border border-white/10 bg-slate-900/80 px-3 py-2.5 text-left text-xs font-semibold tracking-wide text-slate-200 transition hover:border-cyan-500/40 hover:bg-cyan-500/10 hover:text-cyan-100 disabled:cursor-not-allowed disabled:opacity-40 lg:w-full"
                 >
-                  ΕΙΣΑΓΩΓΗ
+                  {greekCapsLabel('Εισαγωγή')}
                 </button>
                 {ledgerActionButtons.map((item) => (
                   <button
@@ -2770,24 +2819,11 @@ export default function TechAnalysisModal({
                     onClick={() => {
                       if (typeof item.action === 'function') item.action()
                     }}
-                    className="shrink-0 rounded-xl border border-white/10 bg-slate-900/80 px-3 py-2.5 text-left text-xs font-semibold uppercase tracking-wide text-slate-200 transition hover:border-cyan-500/40 hover:bg-cyan-500/10 hover:text-cyan-100 disabled:cursor-not-allowed disabled:opacity-40 lg:w-full"
+                    className="shrink-0 rounded-xl border border-white/10 bg-slate-900/80 px-3 py-2.5 text-left text-xs font-semibold tracking-wide text-slate-200 transition hover:border-cyan-500/40 hover:bg-cyan-500/10 hover:text-cyan-100 disabled:cursor-not-allowed disabled:opacity-40 lg:w-full"
                   >
-                    {item.label}
+                    {greekCapsLabel(item.label)}
                   </button>
                 ))}
-                <button
-                  type="button"
-                  onClick={() => openSettlementChoice('full')}
-                  disabled={settlementButtonDisabled}
-                  title={
-                    settlementButtonDisabled
-                      ? 'Δεν υπάρχει υπόλοιπο για εξόφληση'
-                      : 'Πλήρης εξόφληση — προσυμπληρώνει το υπόλοιπο'
-                  }
-                  className="shrink-0 rounded-xl border border-white/10 bg-slate-900/80 px-3 py-2.5 text-left text-xs font-semibold uppercase tracking-wide text-slate-200 transition hover:border-cyan-500/40 hover:bg-cyan-500/10 hover:text-cyan-100 disabled:cursor-not-allowed disabled:opacity-40 lg:w-full"
-                >
-                  ΕΞΟΦΛΗΣΗ
-                </button>
                 <button
                   type="button"
                   onClick={() => openSettlementChoice('partial')}
@@ -2797,9 +2833,22 @@ export default function TechAnalysisModal({
                       ? 'Δεν υπάρχει υπόλοιπο για πληρωμή έναντι'
                       : 'Πληρωμή έναντι — ποσό 0,00 · συμπλήρωσε χειροκίνητα'
                   }
-                  className="shrink-0 rounded-xl border border-white/10 bg-slate-900/80 px-3 py-2.5 text-left text-xs font-semibold uppercase tracking-wide text-slate-200 transition hover:border-emerald-500/40 hover:bg-emerald-500/10 hover:text-emerald-100 disabled:cursor-not-allowed disabled:opacity-40 lg:w-full"
+                  className="shrink-0 rounded-xl border border-white/10 bg-slate-900/80 px-3 py-2.5 text-left text-xs font-semibold tracking-wide text-slate-200 transition hover:border-emerald-500/40 hover:bg-emerald-500/10 hover:text-emerald-100 disabled:cursor-not-allowed disabled:opacity-40 lg:w-full"
                 >
-                  ΠΛΗΡΩΜΗ
+                  {greekCapsLabel('Πληρωμή')}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => openSettlementChoice('full')}
+                  disabled={settlementButtonDisabled}
+                  title={
+                    settlementButtonDisabled
+                      ? 'Δεν υπάρχει υπόλοιπο για εξόφληση'
+                      : 'Πλήρης εξόφληση — προσυμπληρώνει το υπόλοιπο'
+                  }
+                  className="shrink-0 rounded-xl border border-white/10 bg-slate-900/80 px-3 py-2.5 text-left text-xs font-semibold tracking-wide text-slate-200 transition hover:border-cyan-500/40 hover:bg-cyan-500/10 hover:text-cyan-100 disabled:cursor-not-allowed disabled:opacity-40 lg:w-full"
+                >
+                  {greekCapsLabel('Εξόφληση')}
                 </button>
               </aside>
             </div>
@@ -3470,14 +3519,18 @@ export default function TechAnalysisModal({
               disabled={hoursTransferSaving || loading || !tech}
               onClick={handleTransferHours}
             >
-              {hoursTransferSaving ? 'Μεταφορά...' : 'Μεταφορά Ωρών'}
+              {hoursTransferSaving
+                ? greekCapsLabel('Μεταφορά...')
+                : greekCapsLabel('Μεταφορά Ωρών')}
             </ActionButton>
             <div className="mx-1 hidden h-6 w-px bg-white/10 sm:block" />
           </>
         ) : null}
         <div className="ml-auto">
           <ActionButton tone="emerald" disabled={saving || loading} onClick={handleSave}>
-            {saving ? 'Αποθήκευση...' : 'Οριστική Αποθήκευση ERP'}
+            {saving
+              ? greekCapsLabel('Αποθήκευση...')
+              : greekCapsLabel('Οριστική Αποθήκευση ERP')}
           </ActionButton>
         </div>
       </div>
@@ -3686,17 +3739,6 @@ export default function TechAnalysisModal({
                 <div className="mt-5 flex flex-col gap-2">
                   <button
                     type="button"
-                    onClick={confirmMonthImportAll}
-                    disabled={monthImportSaving}
-                    className="w-full rounded-xl border border-emerald-500/45 bg-emerald-500/20 px-4 py-3 text-left text-sm font-bold text-emerald-100 transition hover:bg-emerald-500/30 disabled:opacity-50"
-                  >
-                    ALL
-                    <span className="mt-0.5 block text-xs font-semibold text-emerald-100/70">
-                      {monthImportChoiceMeta.permanentCount} ενεργοί μόνιμοι
-                    </span>
-                  </button>
-                  <button
-                    type="button"
                     onClick={confirmMonthImportOne}
                     disabled={monthImportSaving}
                     className="w-full rounded-xl border border-cyan-500/40 bg-cyan-500/15 px-4 py-3 text-left text-sm font-bold text-cyan-100 transition hover:bg-cyan-500/25 disabled:opacity-50"
@@ -3704,6 +3746,17 @@ export default function TechAnalysisModal({
                     Μόνο επιλεγμένος
                     <span className="mt-0.5 block truncate text-xs font-semibold text-cyan-100/70">
                       {monthImportChoiceMeta.currentName}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={confirmMonthImportAll}
+                    disabled={monthImportSaving}
+                    className="w-full rounded-xl border border-emerald-500/45 bg-emerald-500/20 px-4 py-3 text-left text-sm font-bold text-emerald-100 transition hover:bg-emerald-500/30 disabled:opacity-50"
+                  >
+                    ALL
+                    <span className="mt-0.5 block text-xs font-semibold text-emerald-100/70">
+                      {monthImportChoiceMeta.permanentCount} ενεργοί μόνιμοι
                     </span>
                   </button>
                   <button
@@ -3804,16 +3857,21 @@ export default function TechAnalysisModal({
                 }`}
               >
                 <p
-                  className={`text-[10px] font-semibold uppercase tracking-[0.18em] ${
+                  className={`text-[10px] font-semibold tracking-[0.18em] ${
                     settlementChoiceMode === 'partial'
                       ? 'text-emerald-400/80'
                       : 'text-cyan-400/80'
                   }`}
                 >
-                  Καρτέλα
+                  {greekCapsLabel('Καρτέλα')}
+                  <span className="ml-2 tracking-wide text-amber-200/90">
+                    · {greekCapsLabel(MONTH_LABELS[selectedMonth - 1] || '')} {analysisYear}
+                  </span>
                 </p>
                 <h3 id="settlement-choice-title" className="mt-1 text-lg font-bold text-white">
-                  {settlementChoiceMode === 'partial' ? 'ΠΛΗΡΩΜΗ' : 'ΕΞΟΦΛΗΣΗ'}
+                  {settlementChoiceMode === 'partial'
+                    ? greekCapsLabel('Πληρωμή')
+                    : greekCapsLabel('Εξόφληση')}
                 </h3>
                 <p className="mt-2 text-sm leading-relaxed text-slate-300">
                   {settlementChoiceMode === 'partial'
@@ -3977,7 +4035,9 @@ function RowDensityToggle({ density, onCycle, className = '' }) {
 function SummaryStat({ label, value }) {
   return (
     <div>
-      <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">{label}</p>
+      <p className="text-[10px] font-semibold tracking-wider text-slate-500">
+        {greekCapsLabel(label)}
+      </p>
       <p className="text-lg font-bold text-white">{value}</p>
     </div>
   )

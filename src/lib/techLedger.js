@@ -1,7 +1,11 @@
 /** tech_ledger_view helpers — Μηνιαία Ανάλυση καρτέλας */
 
 import { formatElNumber, parseElNumber } from './numberFormat'
-import { isLoanDisbursementRow, isLoanInstallmentRow } from './loanUi'
+import {
+  extractLoanInstallmentProgress,
+  isLoanDisbursementRow,
+  isLoanInstallmentRow,
+} from './loanUi'
 import { resolveInvoiceTermsForMonth } from './techAgreementVersions'
 
 export function monthDateRange(year, month) {
@@ -514,7 +518,7 @@ function payrollRowMonthYear(payroll) {
 }
 
 /**
- * Ετήσια μήτρα: Σ/Π/Υ από tech_ledger_view · Ticket/Ασφάλιση από payrolls (hybrid).
+ * Ετήσια μήτρα: Σ/Π/Υ από tech_ledger_view · Ticket/Ασφάλιση οπτικά μόνο σε μήνες με PAYROLL (Δημιουργία).
  * Εκταμίευση 95: μετράει στο Μ/Λ/ΤΙΜ (ανά κατηγορία) · γραμμή «Εκταμίευση» μόνο οπτική.
  * Δόση 94: κράτηση στο συρτάρι · γραμμή «Δάνειο» · ΔΕΝ μετράει στο Π.
  * Μισθός / Λοιπά / Τιμολόγιο: χρέωση − κράτηση δόσης μόνο (όχι εξοφλήσεις) —
@@ -551,6 +555,7 @@ export function buildLedgerYearMatrix(ledgerRows = [], year, yearPayrolls = [], 
     insurance: 0,
     loan: 0,
     loanCount: 0,
+    loanProgress: '',
     disbursement: 0,
     disbursementCount: 0,
     salaryDebit: 0,
@@ -602,6 +607,22 @@ export function buildLedgerYearMatrix(ledgerRows = [], year, yearPayrolls = [], 
     if (isLoanInstallmentRow(row)) {
       slot.loanInstallmentsCredit += sc + oc + ic
       slot.loanCount += 1
+      const progressLabel =
+        extractLoanInstallmentProgress(row.notes) ||
+        extractLoanInstallmentProgress(row.description)
+      const frac = String(progressLabel).match(/(\d+)\s*\/\s*(\d+)/)
+      if (frac) {
+        const next = `${frac[1]}/${frac[2]}`
+        const prev = String(slot.loanProgress || '').match(/^(\d+)\/(\d+)$/)
+        // Κράτα τη μεγαλύτερη τρέχουσα δόση αν υπάρχουν πολλές στον μήνα
+        if (
+          !prev ||
+          Number(frac[1]) > Number(prev[1]) ||
+          (Number(frac[1]) === Number(prev[1]) && Number(frac[2]) >= Number(prev[2]))
+        ) {
+          slot.loanProgress = next
+        }
+      }
       slot.loanSalaryCredit += sc
       slot.loanOtherCredit += oc
       slot.loanInvoiceCredit += ic
@@ -637,20 +658,24 @@ export function buildLedgerYearMatrix(ledgerRows = [], year, yearPayrolls = [], 
       const { year: py, month: pm } = payrollRowMonthYear(p)
       return py === y && pm === slot.month
     })
-    const ticketVals = monthPayrolls.map(
-      (p) => Number(p.ticket_restaurant) || Number(p.ticket_amount) || 0
-    )
-    let ticket = round2(ticketVals.length ? Math.max(...ticketVals) : 0)
-    if (!(ticket > 0) && earningsTicket > 0 && monthsWithPayrollLedger.has(slot.month)) {
-      ticket = earningsTicket
+    // Ticket / Ασφάλιση: μόνο οπτικά σε μήνες με Δημιουργία (PAYROLL ledger).
+    // Χωρίς payroll_entries → 0 στη μήτρα (ακόμα κι αν υπάρχει ποσό στα payrolls) · χωρίς DB write.
+    let ticket = 0
+    let insurance = 0
+    if (monthsWithPayrollLedger.has(slot.month)) {
+      const ticketVals = monthPayrolls.map(
+        (p) => Number(p.ticket_restaurant) || Number(p.ticket_amount) || 0
+      )
+      ticket = round2(ticketVals.length ? Math.max(...ticketVals) : 0)
+      if (!(ticket > 0) && earningsTicket > 0) ticket = earningsTicket
+
+      const insuranceVals = monthPayrolls.map(
+        (p) => Number(p.insurance) || Number(p.insurance_amount) || 0
+      )
+      insurance = round2(insuranceVals.length ? Math.max(...insuranceVals) : 0)
+      if (!(insurance > 0) && earningsInsurance > 0) insurance = earningsInsurance
     }
     slot.ticket = ticket
-
-    const insuranceVals = monthPayrolls.map((p) => Number(p.insurance) || Number(p.insurance_amount) || 0)
-    let insurance = round2(insuranceVals.length ? Math.max(...insuranceVals) : 0)
-    if (!(insurance > 0) && earningsInsurance > 0 && monthsWithPayrollLedger.has(slot.month)) {
-      insurance = earningsInsurance
-    }
     slot.insurance = insurance
 
     slot.loan = round2(slot.loanInstallmentsCredit || 0)
