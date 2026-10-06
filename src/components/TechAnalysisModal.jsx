@@ -3426,6 +3426,27 @@ export default function TechAnalysisModal({
                       })
                     )}
                   </tbody>
+                  {!workHoursLoading ? (
+                    <tfoot>
+                      <tr className="border-t border-white/15 bg-slate-950/80 text-base font-bold">
+                        <td colSpan={4} className="px-3 py-3.5 text-slate-200">
+                          Σύνολο
+                        </td>
+                        <td className="whitespace-nowrap px-3 py-3.5 text-right font-mono text-lg text-amber-200">
+                          {formatHoursDash(selectedSummary?.overtimeHours)}
+                        </td>
+                        <td className="whitespace-nowrap px-3 py-3.5 text-right font-mono text-lg text-violet-200">
+                          {formatHoursDash(selectedSummary?.nightHours)}
+                        </td>
+                        <td className="whitespace-nowrap px-3 py-3.5 text-right font-mono text-lg text-emerald-200">
+                          {formatHoursDash(selectedSummary?.holidayHours)}
+                        </td>
+                        <td className="whitespace-nowrap px-3 py-3.5 text-right font-mono text-lg text-slate-100">
+                          {formatHoursDash(selectedSummary?.totalHours)}
+                        </td>
+                      </tr>
+                    </tfoot>
+                  ) : null}
                 </table>
               ) : (
                 <table className="w-full min-w-[1080px] border-collapse text-left text-sm">
@@ -3498,6 +3519,27 @@ export default function TechAnalysisModal({
                       })
                     )}
                   </tbody>
+                  {!loading && movements.length > 0 ? (
+                    <tfoot>
+                      <tr className="border-t border-white/15 bg-slate-950/80 text-base font-bold">
+                        <td colSpan={5} className="px-3 py-3.5 text-slate-200">
+                          Σύνολο
+                        </td>
+                        <td className="whitespace-nowrap px-3 py-3.5 text-right font-mono text-lg text-amber-200">
+                          {formatHoursDash(selectedSummary?.overtimeHours)}
+                        </td>
+                        <td className="whitespace-nowrap px-3 py-3.5 text-right font-mono text-lg text-violet-200">
+                          {formatHoursDash(selectedSummary?.nightHours)}
+                        </td>
+                        <td className="whitespace-nowrap px-3 py-3.5 text-right font-mono text-lg text-emerald-200">
+                          {formatHoursDash(selectedSummary?.holidayHours)}
+                        </td>
+                        <td className="whitespace-nowrap px-3 py-3.5 text-right font-mono text-lg text-slate-100">
+                          {formatHoursDash(selectedSummary?.totalHours)}
+                        </td>
+                      </tr>
+                    </tfoot>
+                  ) : null}
                 </table>
               )}
             </div>
