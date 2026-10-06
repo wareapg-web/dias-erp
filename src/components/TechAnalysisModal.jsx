@@ -88,6 +88,7 @@ import LoanManagementModal from './LoanManagementModal'
 import TemporaryPayablesModal, {
   fetchTemporaryPayablesSummary,
 } from './TemporaryPayablesModal'
+import EarningsBoardModal from './EarningsBoardModal'
 import EarningsPackageForm from './EarningsPackageForm'
 import GreekDateInput from './GreekDateInput'
 import { useDraggableModal, MODAL_POS_KEYS } from '../lib/useDraggableModal'
@@ -199,6 +200,7 @@ export default function TechAnalysisModal({
   const [temporaryOtherExporting, setTemporaryOtherExporting] = useState(false)
   const [personnelSidebarKind, setPersonnelSidebarKind] = useState(workspaceSeed.sidebarKind)
   const [temporaryPayablesOpen, setTemporaryPayablesOpen] = useState(false)
+  const [earningsBoardOpen, setEarningsBoardOpen] = useState(false)
   const [temporaryPayablesHint, setTemporaryPayablesHint] = useState({
     totalInvoice: 0,
     totalCash: 0,
@@ -2418,6 +2420,14 @@ export default function TechAnalysisModal({
           onSettlePerson={handleSettleFromPayables}
         />
 
+        <EarningsBoardModal
+          open={earningsBoardOpen}
+          personnel={personnel}
+          year={analysisYear}
+          month={selectedMonth}
+          onClose={() => setEarningsBoardOpen(false)}
+        />
+
         {loadError && (
           <div className="rounded-xl border border-rose-500/40 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
             Σφάλμα φόρτωσης: {loadError}
@@ -2434,6 +2444,14 @@ export default function TechAnalysisModal({
                   </h3>
                   <div className="flex shrink-0 items-center gap-1.5">
                     <RowDensityToggle density={rowDensity} onCycle={cycleRowDensity} />
+                    <button
+                      type="button"
+                      onClick={() => setEarningsBoardOpen(true)}
+                      title="Πίνακας Απολαβών — μόνιμοι · τρέχων μήνας"
+                      className="inline-flex h-8 items-center rounded-full border border-white/10 bg-white/5 px-2.5 text-[10px] font-bold uppercase tracking-wide text-slate-300 transition hover:border-cyan-400/40 hover:bg-cyan-500/10 hover:text-cyan-100"
+                    >
+                      Πίνακας Απολαβών
+                    </button>
                     <button
                       type="button"
                       onClick={toggleMatrixBalances}
