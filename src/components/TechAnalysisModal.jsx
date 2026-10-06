@@ -2562,6 +2562,36 @@ export default function TechAnalysisModal({
                           total={formatMatrixCell(salaryMatrix.totals.sigma)}
                         />
                       ) : null}
+                      {!techIsTemporary || ledgerCategoryPolicy.allowSalary ? (
+                        <MatrixRow
+                          label="Μισθός"
+                          hint="Χρεώσεις"
+                          selectedMonth={selectedMonth}
+                          onSelectMonth={requestSelectedMonth}
+                          values={salaryMatrix.months.map((m) => formatMatrixCell(m.salaryDebit))}
+                          total={formatMatrixCell(salaryMatrix.totals.salaryDebit)}
+                        />
+                      ) : null}
+                      {!techIsTemporary || ledgerCategoryPolicy.allowOther ? (
+                        <MatrixRow
+                          label="Λοιπά"
+                          hint="Χρεώσεις"
+                          selectedMonth={selectedMonth}
+                          onSelectMonth={requestSelectedMonth}
+                          values={salaryMatrix.months.map((m) => formatMatrixCell(m.otherDebit))}
+                          total={formatMatrixCell(salaryMatrix.totals.otherDebit)}
+                        />
+                      ) : null}
+                      {!techIsTemporary || ledgerCategoryPolicy.allowInvoice ? (
+                        <MatrixRow
+                          label="Τιμολόγιο"
+                          hint="Χρεώσεις"
+                          selectedMonth={selectedMonth}
+                          onSelectMonth={requestSelectedMonth}
+                          values={salaryMatrix.months.map((m) => formatMatrixCell(m.invoiceDebit))}
+                          total={formatMatrixCell(salaryMatrix.totals.invoiceDebit)}
+                        />
+                      ) : null}
                       {showMatrixBalances && !techIsTemporary ? (
                         <MatrixRow
                           label="Υ (Μ)"
@@ -2604,6 +2634,37 @@ export default function TechAnalysisModal({
                           total={formatMatrixTicket(salaryMatrix.totals.ticket)}
                         />
                       ) : null}
+                      {!techIsTemporary &&
+                      (Number(salaryMatrix.totals.disbursement) > 0 ||
+                        Number(salaryMatrix.totals.disbursementCount) > 0) ? (
+                        <MatrixRow
+                          label="Εκταμίευση"
+                          hint="Δάνειο"
+                          selectedMonth={selectedMonth}
+                          onSelectMonth={requestSelectedMonth}
+                          values={salaryMatrix.months.map((m) =>
+                            formatMatrixLoan(m.disbursement, m.disbursementCount)
+                          )}
+                          total={formatMatrixLoan(
+                            salaryMatrix.totals.disbursement,
+                            salaryMatrix.totals.disbursementCount
+                          )}
+                        />
+                      ) : null}
+                      {!techIsTemporary &&
+                      (Number(salaryMatrix.totals.loan) > 0 ||
+                        Number(salaryMatrix.totals.loanCount) > 0) ? (
+                        <MatrixRow
+                          label="Δάνειο"
+                          hint="Δόσεις"
+                          selectedMonth={selectedMonth}
+                          onSelectMonth={requestSelectedMonth}
+                          values={salaryMatrix.months.map((m) =>
+                            formatMatrixLoan(m.loan, m.loanProgress || m.loanCount)
+                          )}
+                          total={formatMatrixLoan(salaryMatrix.totals.loan)}
+                        />
+                      ) : null}
                       {!techIsTemporary ? (
                         <MatrixRow
                           label="Ασφάλιση"
@@ -2622,73 +2683,6 @@ export default function TechAnalysisModal({
                           onSelectMonth={requestSelectedMonth}
                           values={salaryMatrix.months.map((m) => formatMatrixCell(m.pi))}
                           total={formatMatrixCell(salaryMatrix.totals.pi)}
-                        />
-                      ) : null}
-                      {showMatrixPaymentsTree &&
-                      (!techIsTemporary || ledgerCategoryPolicy.allowSalary) ? (
-                        <MatrixRow
-                          label="Μισθός"
-                          hint="Χρεώσεις"
-                          indent
-                          selectedMonth={selectedMonth}
-                          onSelectMonth={requestSelectedMonth}
-                          values={salaryMatrix.months.map((m) => formatMatrixCell(m.salaryDebit))}
-                          total={formatMatrixCell(salaryMatrix.totals.salaryDebit)}
-                        />
-                      ) : null}
-                      {showMatrixPaymentsTree &&
-                      (!techIsTemporary || ledgerCategoryPolicy.allowOther) ? (
-                        <MatrixRow
-                          label="Λοιπά"
-                          hint="Χρεώσεις"
-                          indent
-                          selectedMonth={selectedMonth}
-                          onSelectMonth={requestSelectedMonth}
-                          values={salaryMatrix.months.map((m) => formatMatrixCell(m.otherDebit))}
-                          total={formatMatrixCell(salaryMatrix.totals.otherDebit)}
-                        />
-                      ) : null}
-                      {showMatrixPaymentsTree &&
-                      (!techIsTemporary || ledgerCategoryPolicy.allowInvoice) ? (
-                        <MatrixRow
-                          label="Τιμολόγιο"
-                          hint="Χρεώσεις"
-                          indent
-                          selectedMonth={selectedMonth}
-                          onSelectMonth={requestSelectedMonth}
-                          values={salaryMatrix.months.map((m) => formatMatrixCell(m.invoiceDebit))}
-                          total={formatMatrixCell(salaryMatrix.totals.invoiceDebit)}
-                        />
-                      ) : null}
-                      {!techIsTemporary &&
-                      (Number(salaryMatrix.totals.loan) > 0 ||
-                        Number(salaryMatrix.totals.loanCount) > 0) ? (
-                        <MatrixRow
-                          label="Δάνειο"
-                          hint="Δόσεις"
-                          selectedMonth={selectedMonth}
-                          onSelectMonth={requestSelectedMonth}
-                          values={salaryMatrix.months.map((m) =>
-                            formatMatrixLoan(m.loan, m.loanProgress || m.loanCount)
-                          )}
-                          total={formatMatrixLoan(salaryMatrix.totals.loan)}
-                        />
-                      ) : null}
-                      {!techIsTemporary &&
-                      (Number(salaryMatrix.totals.disbursement) > 0 ||
-                        Number(salaryMatrix.totals.disbursementCount) > 0) ? (
-                        <MatrixRow
-                          label="Εκταμίευση"
-                          hint="Δάνειο"
-                          selectedMonth={selectedMonth}
-                          onSelectMonth={requestSelectedMonth}
-                          values={salaryMatrix.months.map((m) =>
-                            formatMatrixLoan(m.disbursement, m.disbursementCount)
-                          )}
-                          total={formatMatrixLoan(
-                            salaryMatrix.totals.disbursement,
-                            salaryMatrix.totals.disbursementCount
-                          )}
                         />
                       ) : null}
                     </tbody>
