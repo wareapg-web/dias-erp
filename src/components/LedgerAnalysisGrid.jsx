@@ -494,7 +494,7 @@ export default function LedgerAnalysisGrid({
     const base =
       'relative border-r border-white/10 select-none px-1.5 py-2 text-[10px] font-semibold uppercase tracking-wider text-slate-400 last:border-r-0'
     if (col.id === 'invoice_markup') {
-      return `${base} bg-yellow-500/20 text-[13px] font-extrabold tracking-widest text-yellow-200`
+      return `${base} bg-yellow-500/20 text-yellow-200`
     }
     if (col.group === 'salary') return `${base} bg-cyan-500/10 text-cyan-300/90`
     if (col.group === 'other') return `${base} bg-violet-500/10 text-violet-300/90`
@@ -591,8 +591,8 @@ export default function LedgerAnalysisGrid({
         </td>
         <td
           style={cellStyle('description')}
-          className={`box-border border-r border-white/10 px-2 py-1.5 align-top text-sm ${
-            isTemplate ? 'text-slate-500 italic' : 'text-slate-300'
+          className={`box-border border-r border-white/10 px-2 py-1.5 align-top text-xs ${
+            isTemplate ? 'text-slate-500 italic' : 'text-slate-400'
           }`}
         >
           <span className="block truncate" title={descriptionLabel}>
@@ -807,12 +807,12 @@ export default function LedgerAnalysisGrid({
                   </div>
                 </td>
               ) : null}
-              {/* Σημειώσεις + Εισαγωγή — αρχείο οδηγού όταν εξοφληθεί */}
-              <td colSpan={2} className="box-border px-2 py-3 align-middle last:border-r-0">
+              {/* Σημειώσεις — αρχείο οδηγού όταν εξοφληθεί */}
+              <td className="box-border border-r border-white/10 px-2 py-3 align-middle">
                 {invoiceGuideData &&
                 Number(invoiceGuideData.netAmount) > 0.005 &&
                 invoiceGuideData.settled === true ? (
-                  <div className="flex justify-end pr-1">
+                  <div className="flex justify-start">
                     <InvoiceGuideCard
                       netAmount={Number(invoiceGuideData.netAmount) || 0}
                       taxPercent={Number(invoiceGuideData.taxPercent) || 20}
@@ -823,6 +823,8 @@ export default function LedgerAnalysisGrid({
                   </div>
                 ) : null}
               </td>
+              {/* Εισαγωγή — κενό όταν ο οδηγός είναι στις Σημειώσεις */}
+              <td className="box-border px-2 py-3 align-middle last:border-r-0" />
             </tr>
           </tfoot>
         ) : null}
@@ -849,12 +851,14 @@ function BalanceChip({ label, value, tone = 'slate', taxMarkup = null }) {
         taxMarkup ? 'text-center' : ''
       } ${tones[tone] || tones.slate}`}
     >
-      <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">{label}</p>
+      <p className="text-[10px] font-semibold tracking-wider text-slate-400">
+        {greekCapsLabel(label)}
+      </p>
       <p className="mt-0.5 font-mono text-sm font-bold tabular-nums tracking-tight">{value}</p>
       {grossed != null ? (
         <div className="mt-1.5 border-t border-amber-500/20 pt-1.5">
           <p className="whitespace-nowrap text-[9px] font-semibold leading-tight text-yellow-200/80">
-            Προσαύξηση {pct}%
+            {greekCapsLabel(`Προσαύξηση ${pct}%`)}
           </p>
           <p className="mt-0.5 font-mono text-lg font-extrabold tabular-nums tracking-tight text-yellow-200 drop-shadow-[0_0_6px_rgba(250,204,21,0.35)]">
             {formatEuro(grossed)}
@@ -876,8 +880,8 @@ function InvoiceGuideCard({
   const net = Number(netAmount) || 0
   const rowClass = 'flex items-baseline justify-between gap-2 py-0.5 text-slate-300'
   const settledBadge = settled ? (
-    <p className="mb-1 text-[9px] font-semibold uppercase tracking-wider text-emerald-400/90">
-      Εξοφλημένο
+    <p className="mb-1 text-[9px] font-semibold tracking-wider text-emerald-400/90">
+      {greekCapsLabel('Εξοφλημένο')}
     </p>
   ) : null
 
@@ -886,8 +890,8 @@ function InvoiceGuideCard({
     const payable = net + vat
     return (
       <div className="w-max max-w-full rounded-xl border border-slate-700/50 bg-slate-800/60 px-2.5 py-2 text-xs shadow-sm shadow-black/20">
-        <p className="mb-0.5 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
-          Οδηγός τιμολογίου
+        <p className="mb-0.5 text-[10px] font-semibold tracking-wider text-slate-500">
+          {greekCapsLabel('Οδηγός τιμολογίου')}
         </p>
         {settledBadge}
         <div className={rowClass}>
@@ -917,8 +921,8 @@ function InvoiceGuideCard({
 
   return (
     <div className="w-max max-w-full rounded-xl border border-slate-700/50 bg-slate-800/60 px-2.5 py-2 text-xs shadow-sm shadow-black/20">
-      <p className="mb-0.5 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
-        Οδηγός τιμολογίου
+      <p className="mb-0.5 text-[10px] font-semibold tracking-wider text-slate-500">
+        {greekCapsLabel('Οδηγός τιμολογίου')}
       </p>
       {settledBadge}
       <div className={rowClass}>

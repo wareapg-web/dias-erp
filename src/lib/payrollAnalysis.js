@@ -222,13 +222,17 @@ export function formatMatrixTicket(value) {
 
 /**
  * Γραμμή Δάνειο στη μήτρα: άθροισμα δόσεων 94.
- * count > 1 → παρένθεση με πλήθος δίπλα στο ποσό.
+ * progress «3/12» → «300,00 € (3/12)» · αλλιώς count > 1 → πλήθος δόσεων.
  */
-export function formatMatrixLoan(value, count = 0) {
+export function formatMatrixLoan(value, progressOrCount = 0) {
   const n = Number(value) || 0
   if (n <= 0) return '-'
   const base = formatEuro(n)
-  const c = Number(count) || 0
+  if (typeof progressOrCount === 'string') {
+    const m = progressOrCount.match(/(\d+)\s*\/\s*(\d+)/)
+    if (m) return `${base} (${m[1]}/${m[2]})`
+  }
+  const c = Number(progressOrCount) || 0
   return c > 1 ? `${base} (${c})` : base
 }
 
