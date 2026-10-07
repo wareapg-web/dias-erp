@@ -17,7 +17,6 @@ import { greekCapsLabel } from '../lib/greekDate'
 import {
   ROW_DENSITY_META,
   nextRowDensity,
-  rowDensityStyles,
 } from '../lib/rowDensity'
 
 const DENSITY_KEY = 'dias-erp:earnings-board:density'
@@ -28,6 +27,47 @@ const COL_ORDER_KEY = 'dias-erp:earnings-board:col-order'
 const NAME_COL = { id: 'name', defaultWidth: 220, minWidth: 120 }
 const METRIC_DEFAULT_WIDTH = 104
 const METRIC_MIN_WIDTH = 56
+
+/** Πυκνότητα Πίνακα Απολαβών — Α / Μ / Σ (το παλιό Α = νέο Σ). */
+function boardDensityStyles(level) {
+  const n = Number(level)
+  if (n === 2) {
+    // Στενό = πρώην άνετο
+    return {
+      cellPy: 'py-0.5',
+      cellPx: 'px-1',
+      headPy: 'py-0.5',
+      tableText: 'text-[10px] leading-tight',
+      monoText: 'text-[9px] leading-tight',
+      widthScale: 0.82,
+      nameMin: 100,
+      metricMin: 48,
+    }
+  }
+  if (n === 1) {
+    return {
+      cellPy: 'py-1.5',
+      cellPx: 'px-2',
+      headPy: 'py-1.5',
+      tableText: 'text-xs leading-snug',
+      monoText: 'text-[11px] leading-snug',
+      widthScale: 0.95,
+      nameMin: NAME_COL.minWidth,
+      metricMin: METRIC_MIN_WIDTH,
+    }
+  }
+  // 0 — άνετο
+  return {
+    cellPy: 'py-2.5',
+    cellPx: 'px-3',
+    headPy: 'py-2',
+    tableText: 'text-sm leading-normal',
+    monoText: 'text-[11px] leading-normal',
+    widthScale: 1,
+    nameMin: NAME_COL.minWidth,
+    metricMin: METRIC_MIN_WIDTH,
+  }
+}
 
 function round2(n) {
   return Math.round((Number(n) || 0) * 100) / 100
@@ -664,8 +704,18 @@ export default function EarningsBoardModal({
   )
 
   const monthLabel = MONTH_LABELS[Number(month) - 1] || String(month)
-  const dens = rowDensityStyles(density)
-  const nameW = widths.name || NAME_COL.defaultWidth
+  const dens = boardDensityStyles(density)
+  const colW = (id, fallback) => {
+    const raw = Number(widths[id]) || fallback
+    const scaled = Math.round(raw * (dens.widthScale || 1))
+    const min =
+      id === 'name'
+        ? dens.nameMin || NAME_COL.minWidth
+        : dens.metricMin || METRIC_MIN_WIDTH
+    return Math.max(min, scaled)
+  }
+  const nameW = colW('name', NAME_COL.defaultWidth)
+  const metricW = (key) => colW(key, METRIC_DEFAULT_WIDTH)
 
   const totals = useMemo(() => {
     const acc = {
@@ -851,7 +901,7 @@ export default function EarningsBoardModal({
               {metrics.map((metric) => (
                 <col
                   key={metric.key}
-                  style={{ width: widths[metric.key] || METRIC_DEFAULT_WIDTH }}
+                  style={{ width: metricW(metric.key) }}
                 />
               ))}
             </colgroup>
@@ -908,7 +958,7 @@ export default function EarningsBoardModal({
                       className={`sticky top-0 z-20 border-r border-white/5 bg-slate-900 ${dens.cellPx} ${dens.headPy} relative cursor-grab text-center active:cursor-grabbing ${
                         metric.indent ? 'text-slate-400' : 'text-cyan-200'
                       } ${isColOver ? 'bg-cyan-500/20 ring-1 ring-inset ring-cyan-400/40' : ''}`}
-                      style={{ width: widths[metric.key] || METRIC_DEFAULT_WIDTH }}
+                      style={{ width: metricW(metric.key) }}
                       title={`${metric.hint || metric.label} — σύρε για αλλαγή θέσης στήλης`}
                     >
                       <span className="block text-[11px] font-bold leading-tight">
@@ -985,7 +1035,7 @@ export default function EarningsBoardModal({
                         className={`border-r border-white/5 ${dens.cellPx} ${dens.cellPy} text-center font-mono tabular-nums ${dens.monoText} ${
                           metric.indent ? 'text-slate-300' : 'text-slate-100'
                         }`}
-                        style={{ width: widths[metric.key] || METRIC_DEFAULT_WIDTH }}
+                        style={{ width: metricW(metric.key) }}
                       >
                         {metric.format(row.month)}
                       </td>
@@ -1005,7 +1055,7 @@ export default function EarningsBoardModal({
                   <td
                     key={`total-${metric.key}`}
                     className={`border-r border-white/5 ${dens.cellPx} ${dens.cellPy} text-center font-mono font-semibold tabular-nums text-amber-100 ${dens.monoText}`}
-                    style={{ width: widths[metric.key] || METRIC_DEFAULT_WIDTH }}
+                    style={{ width: metricW(metric.key) }}
                   >
                     {metric.format(totals)}
                   </td>
