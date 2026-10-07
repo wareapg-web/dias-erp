@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import toast from 'react-hot-toast'
 import { adminClient, diasClient, safeQuery, isMissingTableError, formatSupabaseError } from '../lib/supabase'
@@ -57,7 +57,7 @@ import {
   paymentToDb,
   paymentTypeLabel,
 } from '../lib/techPayments'
-import { buildPaymentsDisplayList, isLoanDisbursementRow, isLoanInstallmentRow, loanRowAmount } from '../lib/loanUi'
+import { buildPaymentsDisplayList, isLoanInstallmentRow } from '../lib/loanUi'
 import { exportMonthPayrollToExcel } from '../lib/monthPayrollExport'
 import { exportMonthInvoicesToExcel, exportMonthTemporaryToExcel, exportMonthTemporaryOtherToExcel } from '../lib/monthInvoiceExport'
 import { exportJobsToExcel } from '../lib/monthJobsExport'
@@ -111,13 +111,51 @@ import DarkSelect from './DarkSelect'
 const MATRIX_BALANCES_STORAGE_KEY = 'dias_show_matrix_balances'
 const MATRIX_PAYMENTS_TREE_STORAGE_KEY = 'dias_show_matrix_payments_tree'
 const ANALYSIS_WORKSPACE_KEY = 'dias_analysis_workspace'
-const WORKSPACE_TABS = new Set([
+const ANALYSIS_TAB_ORDER_KEY = 'dias-erp:analysis-tab-order'
+const DEFAULT_TAB_ORDER = [
   'analysis',
   'earnings',
   'agreements',
   'payments',
+  'earningsBoard',
+  'loans',
   'movements',
-])
+]
+const WORKSPACE_TABS = new Set(DEFAULT_TAB_ORDER)
+
+function loadTabOrder() {
+  try {
+    const raw = localStorage.getItem(ANALYSIS_TAB_ORDER_KEY)
+    if (!raw) return [...DEFAULT_TAB_ORDER]
+    const parsed = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return [...DEFAULT_TAB_ORDER]
+    const ordered = []
+    const seen = new Set()
+    for (const id of parsed.map(String)) {
+      if (WORKSPACE_TABS.has(id) && !seen.has(id)) {
+        ordered.push(id)
+        seen.add(id)
+      }
+    }
+    for (const id of DEFAULT_TAB_ORDER) {
+      if (!seen.has(id)) {
+        ordered.push(id)
+        seen.add(id)
+      }
+    }
+    return ordered
+  } catch {
+    return [...DEFAULT_TAB_ORDER]
+  }
+}
+
+function saveTabOrder(ids) {
+  try {
+    localStorage.setItem(ANALYSIS_TAB_ORDER_KEY, JSON.stringify(ids || []))
+  } catch {
+    /* ignore */
+  }
+}
 
 function loadAnalysisWorkspace(fallbackMonth, fallbackYear) {
   try {
@@ -194,13 +232,18 @@ export default function TechAnalysisModal({
   const [invoiceExporting, setInvoiceExporting] = useState(false)
   const [jobsExporting, setJobsExporting] = useState(false)
   const [jobsExportChoiceOpen, setJobsExportChoiceOpen] = useState(false)
+  const [printsMenuOpen, setPrintsMenuOpen] = useState(false)
+  const printsMenuRef = useRef(null)
   const [settlementChoiceOpen, setSettlementChoiceOpen] = useState(false)
   const [settlementChoiceMode, setSettlementChoiceMode] = useState('full') // 'full' | 'partial'
   const [temporaryExporting, setTemporaryExporting] = useState(false)
   const [temporaryOtherExporting, setTemporaryOtherExporting] = useState(false)
   const [personnelSidebarKind, setPersonnelSidebarKind] = useState(workspaceSeed.sidebarKind)
   const [temporaryPayablesOpen, setTemporaryPayablesOpen] = useState(false)
-  const [earningsBoardOpen, setEarningsBoardOpen] = useState(false)
+  const [earningsBoardMounted, setEarningsBoardMounted] = useState(false)
+  const [tabOrder, setTabOrder] = useState(loadTabOrder)
+  const [dragOverTabId, setDragOverTabId] = useState(null)
+  const tabDragIdRef = useRef(null)
   const [temporaryPayablesHint, setTemporaryPayablesHint] = useState({
     totalInvoice: 0,
     totalCash: 0,
@@ -266,7 +309,6 @@ export default function TechAnalysisModal({
   const [workHoursMissing, setWorkHoursMissing] = useState(false)
   const [movementOpen, setMovementOpen] = useState(false)
   const [loanOpen, setLoanOpen] = useState(false)
-  const [loanManagementOpen, setLoanManagementOpen] = useState(false)
   const [selectedRowData, setSelectedRowData] = useState(null)
   const [selectedLedgerRowKey, setSelectedLedgerRowKey] = useState(null)
   const [ledgerDeleteOpen, setLedgerDeleteOpen] = useState(false)
@@ -376,6 +418,24 @@ export default function TechAnalysisModal({
   useEffect(() => {
     saveSidebarWidth(PERSONNEL_SIDEBAR_WIDTH_KEY, sidebarWidth)
   }, [sidebarWidth])
+
+  useEffect(() => {
+    if (!printsMenuOpen) return
+    const onDown = (e) => {
+      if (printsMenuRef.current && !printsMenuRef.current.contains(e.target)) {
+        setPrintsMenuOpen(false)
+      }
+    }
+    const onKey = (e) => {
+      if (e.key === 'Escape') setPrintsMenuOpen(false)
+    }
+    window.addEventListener('mousedown', onDown)
+    window.addEventListener('keydown', onKey)
+    return () => {
+      window.removeEventListener('mousedown', onDown)
+      window.removeEventListener('keydown', onKey)
+    }
+  }, [printsMenuOpen])
 
   useEffect(() => {
     const onMove = (e) => {
@@ -783,7 +843,13 @@ export default function TechAnalysisModal({
   // Έκτακτοι: χωρίς Αποδοχές / Συμφωνίες / Αναλυτικά — fallback στο analysis
   useEffect(() => {
     if (!isTemporaryPersonnel(tech)) return
-    if (activeTab === 'earnings' || activeTab === 'agreements' || activeTab === 'movements') {
+    if (
+      activeTab === 'earnings' ||
+      activeTab === 'agreements' ||
+      activeTab === 'movements' ||
+      activeTab === 'earningsBoard' ||
+      activeTab === 'loans'
+    ) {
       setActiveTab('analysis')
     }
   }, [tech?.id, tech?.employment_type, activeTab])
@@ -1170,16 +1236,6 @@ export default function TechAnalysisModal({
     earningsForm,
     agreementVersions,
   ])
-
-  /** Σύνολο εκταμιεύσεων δανείου (τύπος 95) για το επιλεγμένο έτος. */
-  const yearLoanDisbursementsTotal = useMemo(() => {
-    let sum = 0
-    for (const row of yearLedgerRows || []) {
-      if (!isLoanDisbursementRow(row)) continue
-      sum += loanRowAmount(row)
-    }
-    return Math.round(sum * 100) / 100
-  }, [yearLedgerRows])
 
   const formatMatrixCell = (value) => {
     const n = Number(value) || 0
@@ -1951,17 +2007,52 @@ export default function TechAnalysisModal({
 
   const showMatrix = activeTab === 'analysis'
   const showMovements = activeTab === 'movements'
+  const showEarningsBoard = activeTab === 'earningsBoard'
+  const showLoans = activeTab === 'loans'
+
+  useEffect(() => {
+    if (showEarningsBoard) setEarningsBoardMounted(true)
+  }, [showEarningsBoard])
   const showTechDropdown = !embedded && Array.isArray(techList) && techList.length > 0 && onTechChange
-  const innerTabs = [
-    { id: 'analysis', label: 'Οικονομική Ανάλυση' },
-    { id: 'earnings', label: 'Αποδοχές' },
-    { id: 'agreements', label: 'Συμφωνίες (Agreements)' },
-    { id: 'payments', label: 'Πληρωμές (Payments)' },
-    { id: 'movements', label: 'Αναλυτικά στοιχεία' },
-  ].filter((tab) => {
-    if (!techIsTemporary) return true
-    return tab.id !== 'earnings' && tab.id !== 'agreements' && tab.id !== 'movements'
-  })
+  const TAB_DEFS = {
+    analysis: { id: 'analysis', label: 'Οικονομική Ανάλυση' },
+    earnings: { id: 'earnings', label: 'Αποδοχές' },
+    agreements: { id: 'agreements', label: 'Συμφωνίες (Agreements)' },
+    payments: { id: 'payments', label: 'Πληρωμές (Payments)' },
+    earningsBoard: { id: 'earningsBoard', label: 'Πίνακας Απολαβών' },
+    loans: { id: 'loans', label: 'Δάνεια' },
+    movements: { id: 'movements', label: 'Αναλυτικά στοιχεία' },
+  }
+  const reorderWorkspaceTab = useCallback((fromId, toId) => {
+    if (!fromId || !toId || String(fromId) === String(toId)) return
+    setTabOrder((prev) => {
+      const base = prev?.length ? prev.slice() : [...DEFAULT_TAB_ORDER]
+      for (const id of DEFAULT_TAB_ORDER) {
+        if (!base.includes(id)) base.push(id)
+      }
+      const fromIdx = base.indexOf(String(fromId))
+      const toIdx = base.indexOf(String(toId))
+      if (fromIdx < 0 || toIdx < 0 || fromIdx === toIdx) return prev
+      const next = base.slice()
+      const [item] = next.splice(fromIdx, 1)
+      next.splice(toIdx, 0, item)
+      saveTabOrder(next)
+      return next
+    })
+  }, [])
+  const innerTabs = (tabOrder?.length ? tabOrder : DEFAULT_TAB_ORDER)
+    .map((id) => TAB_DEFS[id])
+    .filter(Boolean)
+    .filter((tab) => {
+      if (!techIsTemporary) return true
+      return (
+        tab.id !== 'earnings' &&
+        tab.id !== 'agreements' &&
+        tab.id !== 'movements' &&
+        tab.id !== 'earningsBoard' &&
+        tab.id !== 'loans'
+      )
+    })
 
   const usePersonnelSidebar = embedded && typeof onPersonSelect === 'function'
 
@@ -2273,45 +2364,136 @@ export default function TechAnalysisModal({
                 </div>
               ) : (
                 <div className="flex flex-wrap items-center justify-end gap-1.5">
-                  <button
-                    type="button"
-                    onClick={handleInvoiceExcelExport}
-                    disabled={invoiceExporting}
-                    title="Εξαγωγή Οδηγού Τιμολογίου: ΤΙΜ Χρ. (+ προσαύξηση όπου υπάρχει) · ΦΠΑ 24% · Παρακράτηση · Πληρωτέο"
-                    className="inline-flex items-center gap-1.5 rounded-xl border border-amber-500/40 bg-amber-500/15 px-3 py-1.5 text-xs font-bold text-amber-100 transition hover:bg-amber-500/25 disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    <svg viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4 shrink-0" aria-hidden>
-                      <path d="M10.75 2.75a.75.75 0 00-1.5 0v8.69L6.3 8.49a.75.75 0 00-1.1 1.02l4.25 4.5a.75.75 0 001.1 0l4.25-4.5a.75.75 0 10-1.1-1.02l-2.95 3.12V2.75z" />
-                      <path d="M3.5 12.75a.75.75 0 00-1.5 0v2.5A2.75 2.75 0 004.75 18h10.5A2.75 2.75 0 0018 15.25v-2.5a.75.75 0 00-1.5 0v2.5c0 .69-.56 1.25-1.25 1.25H4.75c-.69 0-1.25-.56-1.25-1.25v-2.5z" />
-                    </svg>
-                    {invoiceExporting ? '...' : 'ΤΙΜΟΛΟΓΙΑ'}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleMonthExcelExport}
-                    disabled={monthExporting}
-                    title="Εξαγωγή μόνιμων: Σταθερά (Μισθός/Λοιπά/ΤΙΜ) · Μεταβλητά (Λοιπά/ΤΙΜ) · Ticket / Ασφάλιση ενημερωτικά"
-                    className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-500/40 bg-emerald-500/15 px-3 py-1.5 text-xs font-bold text-emerald-100 transition hover:bg-emerald-500/25 disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    <svg viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4 shrink-0" aria-hidden>
-                      <path d="M10.75 2.75a.75.75 0 00-1.5 0v8.69L6.3 8.49a.75.75 0 00-1.1 1.02l4.25 4.5a.75.75 0 001.1 0l4.25-4.5a.75.75 0 10-1.1-1.02l-2.95 3.12V2.75z" />
-                      <path d="M3.5 12.75a.75.75 0 00-1.5 0v2.5A2.75 2.75 0 004.75 18h10.5A2.75 2.75 0 0018 15.25v-2.5a.75.75 0 00-1.5 0v2.5c0 .69-.56 1.25-1.25 1.25H4.75c-.69 0-1.25-.56-1.25-1.25v-2.5z" />
-                    </svg>
-                    {monthExporting ? '...' : 'ΚΟΣΤΟΣ'}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleJobsExcelExport}
-                    disabled={jobsExporting}
-                    title="Εξαγωγή έργων από Αναλυτικά: Ονοματεπώνυμο · Έργα (μόνο μέρες με ανάθεση)"
-                    className="inline-flex items-center gap-1.5 rounded-xl border border-sky-500/40 bg-sky-500/15 px-3 py-1.5 text-xs font-bold text-sky-100 transition hover:bg-sky-500/25 disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    <svg viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4 shrink-0" aria-hidden>
-                      <path d="M10.75 2.75a.75.75 0 00-1.5 0v8.69L6.3 8.49a.75.75 0 00-1.1 1.02l4.25 4.5a.75.75 0 001.1 0l4.25-4.5a.75.75 0 10-1.1-1.02l-2.95 3.12V2.75z" />
-                      <path d="M3.5 12.75a.75.75 0 00-1.5 0v2.5A2.75 2.75 0 004.75 18h10.5A2.75 2.75 0 0018 15.25v-2.5a.75.75 0 00-1.5 0v2.5c0 .69-.56 1.25-1.25 1.25H4.75c-.69 0-1.25-.56-1.25-1.25v-2.5z" />
-                    </svg>
-                    {jobsExporting ? '...' : 'JOBS'}
-                  </button>
+                  <div className="relative" ref={printsMenuRef}>
+                    <button
+                      type="button"
+                      onClick={() => setPrintsMenuOpen((v) => !v)}
+                      aria-expanded={printsMenuOpen}
+                      aria-haspopup="menu"
+                      disabled={invoiceExporting || monthExporting || jobsExporting}
+                      className={`group inline-flex h-[38px] items-center gap-2 rounded-xl border px-3.5 text-xs font-bold tracking-[0.12em] transition disabled:cursor-not-allowed disabled:opacity-50 ${
+                        printsMenuOpen
+                          ? 'border-violet-400/50 bg-gradient-to-b from-violet-500/30 to-indigo-600/25 text-violet-50 shadow-[0_0_20px_rgba(139,92,246,0.25)]'
+                          : 'border-white/15 bg-gradient-to-b from-slate-800/90 to-slate-950/90 text-slate-100 shadow-lg shadow-black/20 hover:border-violet-400/40 hover:from-violet-500/20 hover:to-indigo-600/15 hover:text-white'
+                      }`}
+                    >
+                      <span
+                        className="flex h-6 w-6 items-center justify-center rounded-lg border border-white/10 bg-white/5 text-violet-200/90"
+                        aria-hidden
+                      >
+                        <svg viewBox="0 0 20 20" fill="currentColor" className="h-3.5 w-3.5">
+                          <path
+                            fillRule="evenodd"
+                            d="M5 2.75A.75.75 0 015.75 2h8.5a.75.75 0 01.75.75v3.5a.75.75 0 01-.75.75h-8.5A.75.75 0 015 6.25v-3.5zm0 7A.75.75 0 015.75 9h8.5a.75.75 0 01.75.75v6.5a.75.75 0 01-.75.75h-8.5a.75.75 0 01-.75-.75v-6.5zM4 6.25V2.75C4 1.784 4.784 1 5.75 1h8.5C15.216 1 16 1.784 16 2.75v3.5c0 .414-.168.79-.44 1.06A2.75 2.75 0 0117 9.75v6.5A2.75 2.75 0 0114.25 19h-8.5A2.75 2.75 0 013 16.25v-6.5c0-.833.37-1.578.97-2.09A1.75 1.75 0 014 6.25z"
+                            clipRule="evenodd"
+                          />
+                        </svg>
+                      </span>
+                      <span>{greekCapsLabel('Εκτυπώσεις')}</span>
+                      <svg
+                        viewBox="0 0 20 20"
+                        fill="currentColor"
+                        className={`h-3.5 w-3.5 text-slate-400 transition duration-200 group-hover:text-violet-200 ${
+                          printsMenuOpen ? 'rotate-180 text-violet-200' : ''
+                        }`}
+                        aria-hidden
+                      >
+                        <path
+                          fillRule="evenodd"
+                          d="M5.23 7.21a.75.75 0 011.06.02L10 11.17l3.71-3.94a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z"
+                          clipRule="evenodd"
+                        />
+                      </svg>
+                    </button>
+                    {printsMenuOpen ? (
+                      <div
+                        role="menu"
+                        className="absolute right-0 z-40 mt-2 w-56 overflow-hidden rounded-2xl border border-white/10 bg-gradient-to-b from-slate-900/98 to-slate-950/98 p-1.5 shadow-2xl shadow-black/50 ring-1 ring-violet-500/20 backdrop-blur-xl"
+                      >
+                        <p className="px-2.5 pb-1.5 pt-1 text-[9px] font-semibold uppercase tracking-[0.18em] text-violet-300/70">
+                          Excel · μήνας
+                        </p>
+                        <button
+                          type="button"
+                          role="menuitem"
+                          disabled={invoiceExporting}
+                          title="Εξαγωγή Οδηγού Τιμολογίου: ΤΙΜ Χρ. · ΦΠΑ 24% · Παρακράτηση · Πληρωτέο"
+                          onClick={() => {
+                            setPrintsMenuOpen(false)
+                            handleInvoiceExcelExport()
+                          }}
+                          className="flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2.5 text-left transition hover:bg-amber-500/15 disabled:opacity-50"
+                        >
+                          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-amber-500/30 bg-amber-500/15 text-amber-200">
+                            <svg viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4" aria-hidden>
+                              <path d="M10.75 2.75a.75.75 0 00-1.5 0v8.69L6.3 8.49a.75.75 0 00-1.1 1.02l4.25 4.5a.75.75 0 001.1 0l4.25-4.5a.75.75 0 10-1.1-1.02l-2.95 3.12V2.75z" />
+                              <path d="M3.5 12.75a.75.75 0 00-1.5 0v2.5A2.75 2.75 0 004.75 18h10.5A2.75 2.75 0 0018 15.25v-2.5a.75.75 0 00-1.5 0v2.5c0 .69-.56 1.25-1.25 1.25H4.75c-.69 0-1.25-.56-1.25-1.25v-2.5z" />
+                            </svg>
+                          </span>
+                          <span className="min-w-0">
+                            <span className="block text-xs font-bold text-amber-100">
+                              {invoiceExporting ? '...' : greekCapsLabel('Τιμολόγια')}
+                            </span>
+                            <span className="block truncate text-[10px] text-slate-500">
+                              Οδηγός ΤΙΜ · ΦΠΑ
+                            </span>
+                          </span>
+                        </button>
+                        <button
+                          type="button"
+                          role="menuitem"
+                          disabled={monthExporting}
+                          title="Εξαγωγή μόνιμων: Σταθερά · Μεταβλητά · Ticket / Ασφάλιση"
+                          onClick={() => {
+                            setPrintsMenuOpen(false)
+                            handleMonthExcelExport()
+                          }}
+                          className="flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2.5 text-left transition hover:bg-emerald-500/15 disabled:opacity-50"
+                        >
+                          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-emerald-500/30 bg-emerald-500/15 text-emerald-200">
+                            <svg viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4" aria-hidden>
+                              <path d="M10.75 2.75a.75.75 0 00-1.5 0v8.69L6.3 8.49a.75.75 0 00-1.1 1.02l4.25 4.5a.75.75 0 001.1 0l4.25-4.5a.75.75 0 10-1.1-1.02l-2.95 3.12V2.75z" />
+                              <path d="M3.5 12.75a.75.75 0 00-1.5 0v2.5A2.75 2.75 0 004.75 18h10.5A2.75 2.75 0 0018 15.25v-2.5a.75.75 0 00-1.5 0v2.5c0 .69-.56 1.25-1.25 1.25H4.75c-.69 0-1.25-.56-1.25-1.25v-2.5z" />
+                            </svg>
+                          </span>
+                          <span className="min-w-0">
+                            <span className="block text-xs font-bold text-emerald-100">
+                              {monthExporting ? '...' : greekCapsLabel('Κόστος')}
+                            </span>
+                            <span className="block truncate text-[10px] text-slate-500">
+                              Σταθερά · Μεταβλητά
+                            </span>
+                          </span>
+                        </button>
+                        <button
+                          type="button"
+                          role="menuitem"
+                          disabled={jobsExporting}
+                          title="Εξαγωγή έργων από Αναλυτικά"
+                          onClick={() => {
+                            setPrintsMenuOpen(false)
+                            handleJobsExcelExport()
+                          }}
+                          className="flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2.5 text-left transition hover:bg-sky-500/15 disabled:opacity-50"
+                        >
+                          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-sky-500/30 bg-sky-500/15 text-sky-200">
+                            <svg viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4" aria-hidden>
+                              <path d="M10.75 2.75a.75.75 0 00-1.5 0v8.69L6.3 8.49a.75.75 0 00-1.1 1.02l4.25 4.5a.75.75 0 001.1 0l4.25-4.5a.75.75 0 10-1.1-1.02l-2.95 3.12V2.75z" />
+                              <path d="M3.5 12.75a.75.75 0 00-1.5 0v2.5A2.75 2.75 0 004.75 18h10.5A2.75 2.75 0 0018 15.25v-2.5a.75.75 0 00-1.5 0v2.5c0 .69-.56 1.25-1.25 1.25H4.75c-.69 0-1.25-.56-1.25-1.25v-2.5z" />
+                            </svg>
+                          </span>
+                          <span className="min-w-0">
+                            <span className="block text-xs font-bold text-sky-100">
+                              {jobsExporting ? '...' : 'JOBS'}
+                            </span>
+                            <span className="block truncate text-[10px] text-slate-500">
+                              Έργα · Αναλυτικά
+                            </span>
+                          </span>
+                        </button>
+                      </div>
+                    ) : null}
+                  </div>
                   {!hasAdminHours && (
                     <span className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[10px] font-semibold text-amber-100">
                       Χωρίς ώρες Admin
@@ -2340,48 +2522,56 @@ export default function TechAnalysisModal({
         </div>
         )}
 
-        {/* Tabs παλιού ERP — δεξιά από τη στήλη ονομάτων */}
+        {/* Tabs παλιού ERP — δεξιά από τη στήλη ονομάτων · σύρε για σειρά */}
         <div className="flex gap-1 overflow-x-auto border-b border-white/10 pb-px">
-          {innerTabs.map((tab) => (
-            <button
-              key={tab.id}
-              type="button"
-              onClick={() => requestActiveTab(tab.id)}
-              className={`shrink-0 rounded-t-xl px-4 py-2 text-sm font-semibold transition ${
-                activeTab === tab.id
-                  ? 'border border-b-0 border-white/10 bg-slate-900/90 text-cyan-200'
-                  : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              {tab.label}
-            </button>
-          ))}
-          {!techIsTemporary ? (
-            <div className="ml-auto flex shrink-0 items-center gap-2 self-center pr-1">
-              {activeTab !== 'analysis' ? (
-                <RowDensityToggle density={rowDensity} onCycle={cycleRowDensity} />
-              ) : null}
-              <div className="flex flex-col items-end gap-0.5">
-                <button
-                  type="button"
-                  onClick={() => setLoanManagementOpen(true)}
-                  disabled={!tech}
-                  title="Διαχείριση δανείων τεχνικού"
-                  className="rounded-xl border border-amber-500/40 bg-transparent px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-amber-100/90 transition hover:border-amber-400/60 hover:bg-amber-500/10 disabled:cursor-not-allowed disabled:opacity-40"
-                >
-                  {greekCapsLabel('Διαχείριση Δανείων')}
-                </button>
-                {tech ? (
-                  <p className="mr-2 max-w-[16rem] self-start text-left text-[11px] font-bold leading-tight text-slate-300">
-                    Εκταμιεύσεις {analysisYear}:{' '}
-                    <span className="font-mono tabular-nums text-amber-100/90">
-                      {formatEuro(yearLoanDisbursementsTotal)}
-                    </span>
-                  </p>
-                ) : null}
-              </div>
-            </div>
-          ) : activeTab !== 'analysis' ? (
+          {innerTabs.map((tab) => {
+            const isDragOver = String(dragOverTabId) === String(tab.id)
+            return (
+              <button
+                key={tab.id}
+                type="button"
+                draggable
+                title="Κλικ: άνοιγμα · Σύρε: αλλαγή σειράς"
+                onDragStart={(e) => {
+                  tabDragIdRef.current = String(tab.id)
+                  e.dataTransfer.effectAllowed = 'move'
+                  e.dataTransfer.setData('text/plain', String(tab.id))
+                }}
+                onDragEnd={() => {
+                  tabDragIdRef.current = null
+                  setDragOverTabId(null)
+                }}
+                onDragOver={(e) => {
+                  e.preventDefault()
+                  e.dataTransfer.dropEffect = 'move'
+                  if (String(dragOverTabId) !== String(tab.id)) {
+                    setDragOverTabId(tab.id)
+                  }
+                }}
+                onDragLeave={() => {
+                  if (String(dragOverTabId) === String(tab.id)) setDragOverTabId(null)
+                }}
+                onDrop={(e) => {
+                  e.preventDefault()
+                  const fromId =
+                    tabDragIdRef.current || e.dataTransfer.getData('text/plain')
+                  reorderWorkspaceTab(fromId, tab.id)
+                  setDragOverTabId(null)
+                }}
+                onClick={() => requestActiveTab(tab.id)}
+                className={`shrink-0 rounded-t-xl px-4 py-2 text-sm font-semibold transition ${
+                  activeTab === tab.id
+                    ? 'border border-b-0 border-white/10 bg-slate-900/90 text-cyan-200'
+                    : isDragOver
+                      ? 'border border-b-0 border-cyan-400/40 bg-cyan-500/10 text-cyan-100'
+                      : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                {tab.label}
+              </button>
+            )
+          })}
+          {activeTab !== 'analysis' ? (
             <div className="ml-auto flex shrink-0 items-center self-center pr-1">
               <RowDensityToggle density={rowDensity} onCycle={cycleRowDensity} />
             </div>
@@ -2389,27 +2579,14 @@ export default function TechAnalysisModal({
         </div>
 
         {!techIsTemporary ? (
-          <>
-            <LoanManagementModal
-              open={loanManagementOpen}
-              tech={tech}
-              selectedMonth={selectedMonth}
-              analysisYear={analysisYear}
-              onClose={() => setLoanManagementOpen(false)}
-              onSaved={handleMovementSaved}
-              onOpenNewLoan={() => setLoanOpen(true)}
-              loanCreateOpen={loanOpen}
-            />
-
-            <LoanModal
-              open={loanOpen}
-              tech={tech}
-              selectedMonth={selectedMonth}
-              analysisYear={analysisYear}
-              onClose={() => setLoanOpen(false)}
-              onSaved={handleMovementSaved}
-            />
-          </>
+          <LoanModal
+            open={loanOpen}
+            tech={tech}
+            selectedMonth={selectedMonth}
+            analysisYear={analysisYear}
+            onClose={() => setLoanOpen(false)}
+            onSaved={handleMovementSaved}
+          />
         ) : null}
 
         <TemporaryPayablesModal
@@ -2418,14 +2595,6 @@ export default function TechAnalysisModal({
           onClose={() => setTemporaryPayablesOpen(false)}
           onSelectPerson={requestPersonSelect}
           onSettlePerson={handleSettleFromPayables}
-        />
-
-        <EarningsBoardModal
-          open={earningsBoardOpen}
-          personnel={personnel}
-          year={analysisYear}
-          month={selectedMonth}
-          onClose={() => setEarningsBoardOpen(false)}
         />
 
         {loadError && (
@@ -2444,14 +2613,6 @@ export default function TechAnalysisModal({
                   </h3>
                   <div className="flex shrink-0 items-center gap-1.5">
                     <RowDensityToggle density={rowDensity} onCycle={cycleRowDensity} />
-                    <button
-                      type="button"
-                      onClick={() => setEarningsBoardOpen(true)}
-                      title="Πίνακας Απολαβών — μόνιμοι · τρέχων μήνας"
-                      className="inline-flex h-8 items-center rounded-full border border-white/10 bg-white/5 px-2.5 text-[10px] font-bold uppercase tracking-wide text-slate-300 transition hover:border-cyan-400/40 hover:bg-cyan-500/10 hover:text-cyan-100"
-                    >
-                      Πίνακας Απολαβών
-                    </button>
                     <button
                       type="button"
                       onClick={toggleMatrixBalances}
@@ -3301,6 +3462,34 @@ export default function TechAnalysisModal({
           </div>
         )}
 
+        {earningsBoardMounted ? (
+          <div
+            className={showEarningsBoard ? undefined : 'hidden'}
+            aria-hidden={!showEarningsBoard}
+          >
+            <EarningsBoardModal
+              open={showEarningsBoard}
+              embedded
+              personnel={personnel}
+              year={analysisYear}
+              month={selectedMonth}
+            />
+          </div>
+        ) : null}
+
+        {showLoans && !techIsTemporary ? (
+          <LoanManagementModal
+            open
+            embedded
+            tech={tech}
+            selectedMonth={selectedMonth}
+            analysisYear={analysisYear}
+            onSaved={handleMovementSaved}
+            onOpenNewLoan={() => setLoanOpen(true)}
+            loanCreateOpen={loanOpen}
+          />
+        ) : null}
+
         {showMovements && (
           <div className="overflow-hidden rounded-2xl border border-white/10 bg-slate-900/75 shadow-2xl backdrop-blur-md">
             <div className="flex flex-wrap items-start justify-between gap-3 border-b border-white/10 px-4 py-3">
@@ -4092,7 +4281,7 @@ function SummaryStat({ label, value }) {
       <p className="text-[10px] font-semibold tracking-wider text-slate-500">
         {greekCapsLabel(label)}
       </p>
-      <p className="text-lg font-bold text-white">{value}</p>
+      <p className="text-sm font-bold tabular-nums text-white">{value}</p>
     </div>
   )
 }

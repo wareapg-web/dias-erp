@@ -93,6 +93,7 @@ function buildLoanTimeline(group, asOfMonth, asOfYear) {
  */
 export default function LoanManagementModal({
   open,
+  embedded = false,
   tech,
   selectedMonth,
   analysisYear,
@@ -593,59 +594,58 @@ export default function LoanManagementModal({
 
   const asOfLabel = `${MONTH_LABELS[asOfMonth - 1] || asOfMonth} ${asOfYear}`
 
-  return (
-    <div className="fixed inset-0 z-50">
-      <div
-        className="absolute inset-0 bg-slate-950/20 backdrop-blur-none"
-        aria-hidden
-      />
-      <ErpWindow
-        className="!bg-slate-900"
-        storageKey={MODAL_POS_KEYS.loanMgmtWindow}
-        titleBar={
-          <div className="flex w-full min-w-0 items-start justify-between gap-3 pr-1">
-            <div className="min-w-0">
-              <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-amber-400/80">
-                Δάνεια
-              </p>
-              <h3 id="loan-mgmt-title" className="truncate text-lg font-bold text-white">
-                Διαχείριση Δανείων
-              </h3>
-              <p className="mt-0.5 truncate text-xs text-slate-400">
-                {techName} · as-of {asOfLabel}
-              </p>
-            </div>
-            <div className="flex shrink-0 items-center gap-2">
-              <button
-                type="button"
-                onClick={() => onOpenNewLoan?.()}
-                disabled={!techId || saving || !onOpenNewLoan}
-                className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-400/50 bg-emerald-500/25 px-3.5 py-2 text-xs font-bold uppercase tracking-wide text-emerald-50 shadow-lg shadow-emerald-950/30 transition hover:border-emerald-300/60 hover:bg-emerald-500/35 disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                <svg viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4" aria-hidden>
-                  <path d="M10.75 4.75a.75.75 0 00-1.5 0v4.5h-4.5a.75.75 0 000 1.5h4.5v4.5a.75.75 0 001.5 0v-4.5h4.5a.75.75 0 000-1.5h-4.5v-4.5z" />
-                </svg>
-                Νέο Δάνειο
-              </button>
-              <button
-                type="button"
-                onClick={onClose}
-                disabled={saving}
-                className="rounded-lg border border-white/10 bg-white/5 px-2 py-1 text-sm text-slate-300 hover:bg-white/10 disabled:opacity-50"
-              >
-                ✕
-              </button>
-            </div>
-          </div>
-        }
+  const headerActions = (
+    <div className="flex shrink-0 items-center gap-2">
+      <button
+        type="button"
+        onClick={() => onOpenNewLoan?.()}
+        disabled={!techId || saving || !onOpenNewLoan}
+        className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-400/50 bg-emerald-500/25 px-3.5 py-2 text-xs font-bold uppercase tracking-wide text-emerald-50 shadow-lg shadow-emerald-950/30 transition hover:border-emerald-300/60 hover:bg-emerald-500/35 disabled:cursor-not-allowed disabled:opacity-40"
       >
-        <div
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="loan-mgmt-title"
-          className="flex min-h-0 flex-1 flex-col overflow-hidden"
+        <svg viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4" aria-hidden>
+          <path d="M10.75 4.75a.75.75 0 00-1.5 0v4.5h-4.5a.75.75 0 000 1.5h4.5v4.5a.75.75 0 001.5 0v-4.5h4.5a.75.75 0 000-1.5h-4.5v-4.5z" />
+        </svg>
+        Νέο Δάνειο
+      </button>
+      {!embedded && onClose ? (
+        <button
+          type="button"
+          onClick={onClose}
+          disabled={saving}
+          className="rounded-lg border border-white/10 bg-white/5 px-2 py-1 text-sm text-slate-300 hover:bg-white/10 disabled:opacity-50"
         >
-          <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+          ✕
+        </button>
+      ) : null}
+    </div>
+  )
+
+  const headerBlock = (
+    <div className="flex w-full min-w-0 items-start justify-between gap-3">
+      <div className="min-w-0">
+        {!embedded ? (
+          <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-amber-400/80">
+            Δάνεια
+          </p>
+        ) : null}
+        <h3
+          id="loan-mgmt-title"
+          className={
+            embedded ? 'text-sm font-semibold text-white' : 'truncate text-lg font-bold text-white'
+          }
+        >
+          {embedded ? `Δάνεια · ${techName}` : 'Διαχείριση Δανείων'}
+        </h3>
+        <p className="mt-0.5 truncate text-xs text-slate-400">
+          {embedded ? `as-of ${asOfLabel}` : `${techName} · as-of ${asOfLabel}`}
+        </p>
+      </div>
+      {headerActions}
+    </div>
+  )
+
+  const bodyInner = (
+          <div className={embedded ? 'overflow-x-auto px-4 py-4' : 'min-h-0 flex-1 overflow-y-auto px-5 py-4'}>
           {loading && (
             <p className="py-10 text-center text-sm text-slate-400">Φόρτωση δανείων...</p>
           )}
@@ -1184,16 +1184,24 @@ export default function LoanManagementModal({
             </ul>
           )}
           </div>
+  )
 
-          <div className="flex shrink-0 justify-end gap-2 border-t border-white/10 px-5 py-3">
-            <button
-              type="button"
-              onClick={onClose}
-              disabled={saving}
-              className="rounded-xl border border-rose-500/40 bg-rose-500/15 px-4 py-2 text-sm font-bold text-rose-100 disabled:opacity-50"
-            >
-              Έξοδος
-            </button>
+  const footerBar = (
+          <div
+            className={`flex shrink-0 justify-end gap-2 border-t border-white/10 ${
+              embedded ? 'px-4 py-3' : 'px-5 py-3'
+            }`}
+          >
+            {!embedded && onClose ? (
+              <button
+                type="button"
+                onClick={onClose}
+                disabled={saving}
+                className="rounded-xl border border-rose-500/40 bg-rose-500/15 px-4 py-2 text-sm font-bold text-rose-100 disabled:opacity-50"
+              >
+                Έξοδος
+              </button>
+            ) : null}
             <button
               type="button"
               onClick={loadLoans}
@@ -1203,54 +1211,83 @@ export default function LoanManagementModal({
               Ανανέωση
             </button>
           </div>
+  )
+
+  const deleteConfirmOverlay = deleteConfirmGroup ? (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-slate-950/40 backdrop-blur-none" aria-hidden />
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="loan-delete-title"
+        className="relative w-full max-w-md rounded-2xl border border-rose-500/40 bg-slate-900 p-5 shadow-2xl"
+        style={deletePanelStyle}
+      >
+        <div className={deleteDragHandleClassName} {...deleteDragHandleProps}>
+          <h3 id="loan-delete-title" className="text-lg font-bold text-rose-100">
+            Διαγραφή δανείου
+          </h3>
+          <p className="mt-2 text-sm leading-relaxed text-slate-300">
+            <span className="font-semibold text-rose-200">ΠΡΟΣΟΧΗ:</span> Θα διαγραφεί πλήρως η
+            εκταμίευση και <span className="font-semibold">ΟΛΕΣ</span> οι δόσεις (παρελθοντικές και
+            μελλοντικές) του «{deleteConfirmGroup.label}». Η ενέργεια δεν αναιρείται. Είστε
+            σίγουροι;
+          </p>
+        </div>
+        <div className="mt-4 flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={() => setDeleteConfirmGroup(null)}
+            disabled={saving}
+            className="rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm font-semibold text-slate-200 hover:bg-white/10 disabled:opacity-50"
+          >
+            Ακύρωση
+          </button>
+          <button
+            type="button"
+            onClick={handleConfirmDelete}
+            disabled={saving}
+            className="rounded-xl border border-rose-500/50 bg-rose-600/30 px-4 py-2.5 text-sm font-bold text-rose-100 hover:bg-rose-600/45 disabled:opacity-50"
+          >
+            {saving ? 'Διαγραφή...' : 'Ναι, διαγραφή όλων'}
+          </button>
+        </div>
+      </div>
+    </div>
+  ) : null
+
+  if (embedded) {
+    return (
+      <>
+        <div className="overflow-hidden rounded-2xl border border-white/10 bg-slate-900/75 shadow-2xl backdrop-blur-md">
+          <div className="border-b border-white/10 px-4 py-3">{headerBlock}</div>
+          {bodyInner}
+          {footerBar}
+        </div>
+        {deleteConfirmOverlay}
+      </>
+    )
+  }
+
+  return (
+    <div className="fixed inset-0 z-50">
+      <div className="absolute inset-0 bg-slate-950/20 backdrop-blur-none" aria-hidden />
+      <ErpWindow
+        className="!bg-slate-900"
+        storageKey={MODAL_POS_KEYS.loanMgmtWindow}
+        titleBar={<div className="w-full min-w-0 pr-1">{headerBlock}</div>}
+      >
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="loan-mgmt-title"
+          className="flex min-h-0 flex-1 flex-col overflow-hidden"
+        >
+          {bodyInner}
+          {footerBar}
         </div>
       </ErpWindow>
-
-      {deleteConfirmGroup && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
-          <div
-            className="absolute inset-0 bg-slate-950/40 backdrop-blur-none"
-            aria-hidden
-          />
-          <div
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="loan-delete-title"
-            className="relative w-full max-w-md rounded-2xl border border-rose-500/40 bg-slate-900 p-5 shadow-2xl"
-            style={deletePanelStyle}
-          >
-            <div className={deleteDragHandleClassName} {...deleteDragHandleProps}>
-              <h3 id="loan-delete-title" className="text-lg font-bold text-rose-100">
-                Διαγραφή δανείου
-              </h3>
-              <p className="mt-2 text-sm leading-relaxed text-slate-300">
-                <span className="font-semibold text-rose-200">ΠΡΟΣΟΧΗ:</span> Θα διαγραφεί πλήρως η
-                εκταμίευση και <span className="font-semibold">ΟΛΕΣ</span> οι δόσεις (παρελθοντικές και
-                μελλοντικές) του «{deleteConfirmGroup.label}». Η ενέργεια δεν αναιρείται. Είστε
-                σίγουροι;
-              </p>
-            </div>
-            <div className="mt-4 flex flex-wrap gap-2">
-              <button
-                type="button"
-                onClick={() => setDeleteConfirmGroup(null)}
-                disabled={saving}
-                className="rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm font-semibold text-slate-200 hover:bg-white/10 disabled:opacity-50"
-              >
-                Ακύρωση
-              </button>
-              <button
-                type="button"
-                onClick={handleConfirmDelete}
-                disabled={saving}
-                className="rounded-xl border border-rose-500/50 bg-rose-600/30 px-4 py-2.5 text-sm font-bold text-rose-100 hover:bg-rose-600/45 disabled:opacity-50"
-              >
-                {saving ? 'Διαγραφή...' : 'Ναι, διαγραφή όλων'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      {deleteConfirmOverlay}
     </div>
   )
 }
