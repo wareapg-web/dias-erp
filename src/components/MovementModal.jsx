@@ -164,10 +164,17 @@ function effectiveLedgerGroup(type, uiCategory) {
   return type.ledger_group || (typeIsSalary(type) ? 'SALARY' : 'OTHER')
 }
 
-/** Κατηγορία UI από bucket / form / τύπο. */
+/**
+ * Κατηγορία UI από bucket / form / τύπο.
+ * Σε edit: το ledgerGroup από στήλες της γραμμής (Λοιπά/Μισθός/ΤΙΜ) κερδίζει —
+ * αλλιώς δώρα/Bonus (cross-category) με native SALARY τύπο «ξαναγυρνούν» σε Μισθό.
+ */
 function resolveUiCategory({ postToInvoice, ledgerGroup, type }) {
-  if (postToInvoice || normalizeCategory(ledgerGroup) === 'INVOICE') return 'INVOICE'
-  if (typeIsSalary(type) || normalizeCategory(ledgerGroup) === 'SALARY') return 'SALARY'
+  if (postToInvoice) return 'INVOICE'
+  if (ledgerGroup != null && String(ledgerGroup).trim() !== '') {
+    return normalizeCategory(ledgerGroup)
+  }
+  if (typeIsSalary(type)) return 'SALARY'
   return 'OTHER'
 }
 

@@ -54,6 +54,8 @@ export function isMissingTableError(error) {
   if (!error) return false
   const code = String(error.code || '')
   const msg = `${error.message || ''} ${error.details || ''} ${error.hint || ''}`.toLowerCase()
+  // Λείπει στήλη (42703 / "column … does not exist") ≠ λείπει πίνακας
+  if (code === '42703' || msg.includes('column')) return false
   return (
     code === '42P01' ||
     code === 'PGRST205' ||

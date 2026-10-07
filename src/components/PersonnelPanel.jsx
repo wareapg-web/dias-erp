@@ -44,6 +44,52 @@ import {
 } from '../lib/personnelPeriods'
 
 const SIDEBAR_DENSITY_KEY = 'dias-erp:personnel-sidebar-density'
+const SIDEBAR_ORDER_KEY_PREFIX = 'dias-erp:personnel-sidebar-order:'
+
+function loadSidebarPersonOrder(kind) {
+  try {
+    const raw = localStorage.getItem(`${SIDEBAR_ORDER_KEY_PREFIX}${kind}`)
+    if (!raw) return []
+    const parsed = JSON.parse(raw)
+    return Array.isArray(parsed) ? parsed.map(String) : []
+  } catch {
+    return []
+  }
+}
+
+function saveSidebarPersonOrder(kind, ids) {
+  try {
+    localStorage.setItem(
+      `${SIDEBAR_ORDER_KEY_PREFIX}${kind}`,
+      JSON.stringify((ids || []).map(String))
+    )
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Εφαρμογή αποθηκευμένης σειράς · νέοι στο τέλος. */
+function applyPersonOrder(list, savedIds) {
+  if (!list?.length) return []
+  const byId = new Map(list.map((p) => [String(p.id), p]))
+  const ordered = []
+  const seen = new Set()
+  for (const id of savedIds || []) {
+    const row = byId.get(String(id))
+    if (row && !seen.has(String(id))) {
+      ordered.push(row)
+      seen.add(String(id))
+    }
+  }
+  for (const p of list) {
+    const id = String(p.id)
+    if (!seen.has(id)) {
+      ordered.push(p)
+      seen.add(id)
+    }
+  }
+  return ordered
+}
 const SIDEBAR_DENSITY_OPTIONS = [
   {
     id: 'comfortable',
@@ -108,6 +154,11 @@ export default function PersonnelPanel({
     initialSidebarKind === 'temporary' ? 'temporary' : 'permanent'
   )
   const [sidebarDensity, setSidebarDensity] = useState(loadSidebarDensity)
+  const [personOrder, setPersonOrder] = useState(() =>
+    loadSidebarPersonOrder(initialSidebarKind === 'temporary' ? 'temporary' : 'permanent')
+  )
+  const [dragOverPersonId, setDragOverPersonId] = useState(null)
+  const personDragIdRef = useRef(null)
   const [densityMenuOpen, setDensityMenuOpen] = useState(false)
   const densityMenuRef = useRef(null)
   const [formOpen, setFormOpen] = useState(false)
@@ -135,6 +186,18 @@ export default function PersonnelPanel({
     if (!isSidebar || typeof onSidebarKindChange !== 'function') return
     onSidebarKindChange(sidebarKind)
   }, [isSidebar, sidebarKind, onSidebarKindChange])
+
+  useEffect(() => {
+    if (!isSidebar) return
+    setPersonOrder(loadSidebarPersonOrder(sidebarKind))
+    setDragOverPersonId(null)
+    personDragIdRef.current = null
+  }, [isSidebar, sidebarKind])
+
+  useEffect(() => {
+    if (!isSidebar) return
+    setPersonOrder(loadSidebarPersonOrder(sidebarKind))
+  }, [isSidebar, sidebarKind])
 
   useEffect(() => {
     try {
@@ -271,8 +334,31 @@ export default function PersonnelPanel({
       if (byPos !== 0) return byPos
       return String(a.tech_name || '').localeCompare(String(b.tech_name || ''), 'el')
     })
+    if (isSidebar) return applyPersonOrder(list, personOrder)
     return list
-  }, [personnel, listFilter, typeFilter, search, isSidebar, sidebarKind])
+  }, [personnel, listFilter, typeFilter, search, isSidebar, sidebarKind, personOrder])
+
+  const reorderSidebarPerson = useCallback(
+    (fromId, toId) => {
+      if (!isSidebar || !fromId || !toId || String(fromId) === String(toId)) return
+      setPersonOrder((prev) => {
+        const ids = (filtered || []).map((p) => String(p.id))
+        const base = prev?.length ? [...prev] : ids
+        for (const id of ids) {
+          if (!base.includes(id)) base.push(id)
+        }
+        const fromIdx = base.indexOf(String(fromId))
+        const toIdx = base.indexOf(String(toId))
+        if (fromIdx < 0 || toIdx < 0 || fromIdx === toIdx) return prev
+        const next = base.slice()
+        const [item] = next.splice(fromIdx, 1)
+        next.splice(toIdx, 0, item)
+        saveSidebarPersonOrder(sidebarKind, next)
+        return next
+      })
+    },
+    [isSidebar, filtered, sidebarKind]
+  )
 
   // Sidebar: αν ο επιλεγμένος δεν ανήκει στην κατηγορία, διάλεξε τον πρώτο της λίστας
   useEffect(() => {
@@ -777,21 +863,51 @@ export default function PersonnelPanel({
               ? 'bg-cyan-500/25 text-cyan-100'
               : 'bg-slate-800 text-slate-300'
             const showInvoiceMark = personnelIssuesInvoice(p)
+            const isDragOver = isSidebar && String(dragOverPersonId) === String(p.id)
             return isSidebar ? (
               <button
                 key={p.id}
                 type="button"
+                draggable
+                onDragStart={(e) => {
+                  personDragIdRef.current = String(p.id)
+                  e.dataTransfer.effectAllowed = 'move'
+                  e.dataTransfer.setData('text/plain', String(p.id))
+                }}
+                onDragEnd={() => {
+                  personDragIdRef.current = null
+                  setDragOverPersonId(null)
+                }}
+                onDragOver={(e) => {
+                  e.preventDefault()
+                  e.dataTransfer.dropEffect = 'move'
+                  if (String(dragOverPersonId) !== String(p.id)) {
+                    setDragOverPersonId(p.id)
+                  }
+                }}
+                onDragLeave={() => {
+                  if (String(dragOverPersonId) === String(p.id)) setDragOverPersonId(null)
+                }}
+                onDrop={(e) => {
+                  e.preventDefault()
+                  const fromId =
+                    personDragIdRef.current || e.dataTransfer.getData('text/plain')
+                  reorderSidebarPerson(fromId, p.id)
+                  setDragOverPersonId(null)
+                }}
                 onClick={() => onSelect?.(p)}
                 onDoubleClick={(e) => {
                   e.preventDefault()
                   e.stopPropagation()
                   openEdit(p)
                 }}
-                title="Κλικ: επιλογή · Διπλό κλικ: καρτέλα υπαλλήλου"
+                title="Κλικ: επιλογή · Σύρε: σειρά · Διπλό κλικ: καρτέλα"
                 className={`flex w-full items-center rounded-xl border text-left transition ${densityStyle.row} ${
                   selected
                     ? 'border-cyan-500/40 bg-cyan-500/15 text-cyan-100'
-                    : 'border-transparent text-slate-300 hover:bg-white/5 hover:text-white'
+                    : isDragOver
+                      ? 'border-cyan-400/50 bg-cyan-500/10 text-cyan-50'
+                      : 'border-transparent text-slate-300 hover:bg-white/5 hover:text-white'
                 }`}
               >
                 <span

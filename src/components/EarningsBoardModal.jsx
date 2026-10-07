@@ -1,4 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
+import toast from 'react-hot-toast'
 import { diasClient, fetchAllRows, formatSupabaseError } from '../lib/supabase'
 import { isTemporaryPersonnel } from '../lib/personnel'
 import { buildLedgerYearMatrix } from '../lib/techLedger'
@@ -10,6 +12,7 @@ import {
   MONTH_LABELS,
 } from '../lib/payrollAnalysis'
 import { loadPayrollBenefitsByTechForMonth } from '../lib/monthPayrollExport'
+import { exportEarningsBoardToExcel } from '../lib/earningsBoardExport'
 import { greekCapsLabel } from '../lib/greekDate'
 import {
   ROW_DENSITY_META,
@@ -293,8 +296,23 @@ function minWidthFor(colId) {
   return colId === NAME_COL.id ? NAME_COL.minWidth : METRIC_MIN_WIDTH
 }
 
+/** Session cache — instant reopen του ίδιου μήνα. */
+const boardCache = new Map()
+
+function boardCacheKey(year, month, idList) {
+  return `${Number(year)}-${Number(month)}|${idList.slice().sort().join(',')}`
+}
+
+function personnelIdFingerprint(personnel) {
+  return permanentTargets(personnel)
+    .map((p) => String(p.tech_id))
+    .sort()
+    .join(',')
+}
+
 /**
  * Μήνας απολαβών για όλους τους ενεργούς μόνιμους — ίδια λογική με την ετήσια μήτρα.
+ * Φορτώνει ΜΟΝΟ τον επιλεγμένο μήνα (όχι όλο το έτος) + earnings · χωρίς agreement versions.
  */
 export async function fetchEarningsBoardRows({ personnel, year, month }) {
   const targets = permanentTargets(personnel)
@@ -307,16 +325,19 @@ export async function fetchEarningsBoardRows({ personnel, year, month }) {
   const idList = [...idSet]
   const y = Number(year)
   const m = Number(month)
+  const cacheKey = boardCacheKey(y, m, idList)
+  const cached = boardCache.get(cacheKey)
+  if (cached?.rows) return cached.rows
 
-  const [ledgerRows, payrollBenefits, earningsRows, agreementRows] = await Promise.all([
+  const [ledgerRows, payrollBenefits, earningsRows] = await Promise.all([
+    // select('*') — μην ζητάς στήλες που μπορεί να λείπουν από παλιότερα views
     fetchAllRows(diasClient, 'tech_ledger_view', (q) =>
-      q.eq('year', y).in('tech_id', idList)
+      q.eq('year', y).eq('month', m).in('tech_id', idList)
     ),
     loadPayrollBenefitsByTechForMonth(m, y),
-    fetchAllRows(diasClient, 'tech_earnings', (q) => q.in('tech_id', idList)).catch(() => []),
-    fetchAllRows(diasClient, 'tech_agreement_versions', (q) =>
-      q.in('tech_id', idList)
-    ).catch(() => []),
+    fetchAllRows(diasClient, 'tech_earnings', (q) => q.in('tech_id', idList)).catch(
+      () => []
+    ),
   ])
 
   const ledgerByTech = new Map()
@@ -338,19 +359,7 @@ export async function fetchEarningsBoardRows({ personnel, year, month }) {
     earningsByTech.set(techId, row)
   }
 
-  const agreementsByTech = new Map()
-  for (const row of agreementRows || []) {
-    const techId = String(row.tech_id ?? '')
-    if (!techId) continue
-    let list = agreementsByTech.get(techId)
-    if (!list) {
-      list = []
-      agreementsByTech.set(techId, list)
-    }
-    list.push(row)
-  }
-
-  return targets.map((person) => {
+  const rows = targets.map((person) => {
     const keys = personTechKeys(person)
     const primaryId = String(person.tech_id)
     const personLedger = []
@@ -367,12 +376,6 @@ export async function fetchEarningsBoardRows({ personnel, year, month }) {
       }
     }
     const earningsForm = earningsRow ? earningsFromDb(earningsRow) : null
-
-    let agreementVersions = []
-    for (const k of keys) {
-      const list = agreementsByTech.get(k)
-      if (list?.length) agreementVersions = agreementVersions.concat(list)
-    }
 
     let ticket = 0
     let insurance = 0
@@ -401,7 +404,7 @@ export async function fetchEarningsBoardRows({ personnel, year, month }) {
       earningsTicketAmount: round2(parseElNumber(earningsForm?.ticket_amount) || 0),
       earningsInsuranceAmount: round2(parseElNumber(earningsForm?.insurance_amount) || 0),
       techIsTemporary: false,
-      agreementVersions,
+      agreementVersions: [],
       earningsForm,
     })
     const slot = matrix.months[m - 1] || null
@@ -413,6 +416,21 @@ export async function fetchEarningsBoardRows({ personnel, year, month }) {
       month: slot,
     }
   })
+
+  boardCache.set(cacheKey, { rows, at: Date.now() })
+  return rows
+}
+
+/** Καθαρίζει cache (π.χ. μετά οριστική αποθήκευση) · αν omitted → όλα. */
+export function invalidateEarningsBoardCache(year, month) {
+  if (year == null || month == null) {
+    boardCache.clear()
+    return
+  }
+  const prefix = `${Number(year)}-${Number(month)}|`
+  for (const key of [...boardCache.keys()]) {
+    if (key.startsWith(prefix)) boardCache.delete(key)
+  }
 }
 
 function BoardDensityToggle({ density, onCycle }) {
@@ -449,11 +467,13 @@ function BoardDensityToggle({ density, onCycle }) {
 }
 
 /**
- * Πίνακας Απολαβών — fullscreen · γραμμές υπάλληλοι · στήλες ποσά.
- * Πυκνότητα / πλάτη στηλών / σειρά υπαλλήλων → localStorage.
+ * Πίνακας Απολαβών — γραμμές υπάλληλοι · στήλες ποσά.
+ * embedded: ίδιο view με τα tabs (κάτω από τη μπάρα) · αλλιώς fullscreen overlay.
+ * Πυκνότητα / πλάτη / σειρά γραμμών & στηλών → localStorage.
  */
 export default function EarningsBoardModal({
   open,
+  embedded = false,
   personnel = [],
   year,
   month,
@@ -467,17 +487,45 @@ export default function EarningsBoardModal({
   const [colOrder, setColOrder] = useState(() => loadColOrder())
   const [dragOverId, setDragOverId] = useState(null)
   const [colDragOverKey, setColDragOverKey] = useState(null)
+  const [exportChoiceOpen, setExportChoiceOpen] = useState(false)
+  const [exporting, setExporting] = useState(false)
   const resizeRef = useRef(null)
   const dragIdRef = useRef(null)
   const colDragKeyRef = useRef(null)
 
   const metrics = useMemo(() => metricsInOrder(colOrder), [colOrder])
+  const personnelKey = useMemo(() => personnelIdFingerprint(personnel), [personnel])
 
   useEffect(() => {
     if (!open) return
     let cancelled = false
 
     async function load() {
+      const idList = personnelKey ? personnelKey.split(',').filter(Boolean) : []
+      const cacheKey = boardCacheKey(year, month, idList)
+      const hit = boardCache.get(cacheKey)
+      const applyRows = (list) => {
+        const ordered = applySavedOrder(list, loadOrder())
+        setRows(ordered)
+        saveOrder(ordered.map((r) => r.techId))
+      }
+
+      // Instant paint από cache · soft refresh στο background
+      if (hit?.rows?.length) {
+        applyRows(hit.rows)
+        setLoading(false)
+        setError(null)
+        boardCache.delete(cacheKey)
+        fetchEarningsBoardRows({ personnel, year, month })
+          .then((next) => {
+            if (!cancelled) applyRows(next)
+          })
+          .catch(() => {
+            /* κράτα cache UI */
+          })
+        return
+      }
+
       setLoading(true)
       setError(null)
       try {
@@ -487,9 +535,7 @@ export default function EarningsBoardModal({
           month,
         })
         if (cancelled) return
-        const ordered = applySavedOrder(next, loadOrder())
-        setRows(ordered)
-        saveOrder(ordered.map((r) => r.techId))
+        applyRows(next)
       } catch (err) {
         if (!cancelled) {
           setRows([])
@@ -511,7 +557,7 @@ export default function EarningsBoardModal({
     return () => {
       cancelled = true
     }
-  }, [open, personnel, year, month])
+  }, [open, personnel, personnelKey, year, month])
 
   useEffect(() => {
     const onMove = (e) => {
@@ -590,6 +636,33 @@ export default function EarningsBoardModal({
     })
   }, [])
 
+  const confirmBoardExport = useCallback(
+    async (scope) => {
+      if (exporting) return
+      setExportChoiceOpen(false)
+      setExporting(true)
+      try {
+        const { rowCount, filename } = await exportEarningsBoardToExcel({
+          month,
+          year,
+          personnel,
+          scope,
+          rows: scope === 'month' ? rows : null,
+        })
+        toast.success(
+          `Εξαγωγή Πίνακα Απολαβών · ${
+            scope === 'year' ? year : `${MONTH_LABELS[Number(month) - 1] || month} ${year}`
+          } · ${rowCount} μόνιμοι · ${filename}`
+        )
+      } catch (err) {
+        toast.error(err?.message || 'Αποτυχία εξαγωγής Πίνακα Απολαβών')
+      } finally {
+        setExporting(false)
+      }
+    },
+    [exporting, month, year, personnel, rows]
+  )
+
   const monthLabel = MONTH_LABELS[Number(month) - 1] || String(month)
   const dens = rowDensityStyles(density)
   const nameW = widths.name || NAME_COL.defaultWidth
@@ -626,14 +699,98 @@ export default function EarningsBoardModal({
 
   if (!open) return null
 
+  const exportChoiceDialog = exportChoiceOpen
+    ? createPortal(
+        <div className="fixed inset-0 z-[200] flex items-center justify-center p-4">
+          <button
+            type="button"
+            className="absolute inset-0 bg-slate-950/50 backdrop-blur-none"
+            aria-label="Κλείσιμο"
+            disabled={exporting}
+            onClick={() => setExportChoiceOpen(false)}
+          />
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="earnings-board-export-title"
+            className="relative w-full max-w-md rounded-2xl border border-emerald-500/35 bg-slate-900 p-5 shadow-2xl shadow-emerald-950/30"
+          >
+            <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-emerald-400/80">
+              Excel
+            </p>
+            <h3
+              id="earnings-board-export-title"
+              className="mt-1 text-lg font-bold text-white"
+            >
+              Πίνακας Απολαβών
+            </h3>
+            <p className="mt-2 text-sm leading-relaxed text-slate-300">
+              Εξαγωγή υπαλλήλων × ποσά (ίδια σειρά στηλών με τον πίνακα).
+            </p>
+            <div className="mt-5 flex flex-col gap-2">
+              <button
+                type="button"
+                onClick={() => confirmBoardExport('month')}
+                disabled={exporting}
+                className="w-full rounded-xl border border-emerald-500/45 bg-emerald-500/20 px-4 py-3 text-left text-sm font-bold text-emerald-100 transition hover:bg-emerald-500/30 disabled:opacity-50"
+              >
+                Τρέχων μήνας
+                <span className="mt-0.5 block text-xs font-semibold text-emerald-100/70">
+                  {monthLabel} {year}
+                </span>
+              </button>
+              <button
+                type="button"
+                onClick={() => confirmBoardExport('year')}
+                disabled={exporting}
+                className="w-full rounded-xl border border-cyan-500/40 bg-cyan-500/15 px-4 py-3 text-left text-sm font-bold text-cyan-100 transition hover:bg-cyan-500/25 disabled:opacity-50"
+              >
+                Έτος
+                <span className="mt-0.5 block text-xs font-semibold text-cyan-100/70">
+                  12 φύλλα · όλο το {year}
+                </span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setExportChoiceOpen(false)}
+                disabled={exporting}
+                className="mt-1 w-full rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm font-semibold text-slate-200 transition hover:bg-white/10 disabled:opacity-50"
+              >
+                Ακύρωση
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )
+    : null
+
+  const shellClass = embedded
+    ? 'overflow-hidden rounded-2xl border border-white/10 bg-slate-900/75 shadow-2xl backdrop-blur-md'
+    : 'fixed inset-0 z-[80] flex flex-col bg-slate-950'
+
+  const headerClass = embedded
+    ? 'flex items-center justify-between gap-3 border-b border-white/10 px-4 py-3'
+    : 'flex shrink-0 items-center justify-between gap-3 border-b border-white/10 bg-slate-900/95 px-4 py-3 sm:px-6'
+
   return (
-    <div className="fixed inset-0 z-[80] flex flex-col bg-slate-950">
-      <div className="flex shrink-0 items-center justify-between gap-3 border-b border-white/10 bg-slate-900/95 px-4 py-3 sm:px-6">
+    <>
+    {exportChoiceDialog}
+    <div className={shellClass}>
+      <div className={headerClass}>
         <div className="min-w-0">
-          <p className="text-[10px] font-semibold tracking-[0.18em] text-cyan-400/80">
-            {greekCapsLabel('Μόνιμοι')}
-          </p>
-          <h3 className="truncate text-lg font-bold text-white sm:text-xl">
+          {!embedded ? (
+            <p className="text-[10px] font-semibold tracking-[0.18em] text-cyan-400/80">
+              {greekCapsLabel('Μόνιμοι')}
+            </p>
+          ) : null}
+          <h3
+            className={
+              embedded
+                ? 'text-sm font-semibold text-white'
+                : 'truncate text-lg font-bold text-white sm:text-xl'
+            }
+          >
             Πίνακας Απολαβών · {monthLabel} {year}
           </h3>
           <p className="mt-0.5 text-xs text-slate-400">
@@ -642,18 +799,38 @@ export default function EarningsBoardModal({
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-2">
-          <BoardDensityToggle density={density} onCycle={cycleDensity} />
           <button
             type="button"
-            onClick={onClose}
-            className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm font-semibold text-slate-200 transition hover:bg-white/10"
+            onClick={() => setExportChoiceOpen(true)}
+            disabled={exporting || loading || rows.length === 0}
+            title="Εξαγωγή σε Excel"
+            className="inline-flex h-8 items-center gap-1.5 rounded-full border border-emerald-500/40 bg-emerald-500/15 px-3 text-[10px] font-bold uppercase tracking-wide text-emerald-100 transition hover:bg-emerald-500/25 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            Κλείσιμο
+            <svg
+              viewBox="0 0 20 20"
+              fill="currentColor"
+              className="h-3.5 w-3.5"
+              aria-hidden
+            >
+              <path d="M10.75 2.75a.75.75 0 0 0-1.5 0v8.19L6.72 8.41a.75.75 0 0 0-1.06 1.06l3.5 3.5a.75.75 0 0 0 1.06 0l3.5-3.5a.75.75 0 1 0-1.06-1.06l-2.41 2.41V2.75Z" />
+              <path d="M3.5 12.75a.75.75 0 0 0-1.5 0v2.5A2.75 2.75 0 0 0 4.75 18h10.5A2.75 2.75 0 0 0 18 15.25v-2.5a.75.75 0 0 0-1.5 0v2.5c0 .69-.56 1.25-1.25 1.25H4.75c-.69 0-1.25-.56-1.25-1.25v-2.5Z" />
+            </svg>
+            {exporting ? '...' : 'Excel'}
           </button>
+          <BoardDensityToggle density={density} onCycle={cycleDensity} />
+          {!embedded && onClose ? (
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm font-semibold text-slate-200 transition hover:bg-white/10"
+            >
+              Κλείσιμο
+            </button>
+          ) : null}
         </div>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-auto">
+      <div className={embedded ? 'overflow-x-auto' : 'min-h-0 flex-1 overflow-auto'}>
         {loading ? (
           <p className="py-24 text-center text-sm text-slate-400">Υπολογισμός απολαβών...</p>
         ) : error ? (
@@ -800,16 +977,7 @@ export default function EarningsBoardModal({
                       title={`${row.name} — σύρε για αλλαγή σειράς`}
                       style={{ width: nameW }}
                     >
-                      <span className="flex items-center gap-2">
-                        <span
-                          className="shrink-0 text-slate-500"
-                          aria-hidden
-                          title="Σύρε για σειρά"
-                        >
-                          ⋮⋮
-                        </span>
-                        <span className="truncate">{row.name}</span>
-                      </span>
+                      <span className="truncate">{row.name}</span>
                     </th>
                     {metrics.map((metric) => (
                       <td
@@ -848,5 +1016,6 @@ export default function EarningsBoardModal({
         )}
       </div>
     </div>
+    </>
   )
 }
