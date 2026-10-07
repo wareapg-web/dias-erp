@@ -17,6 +17,7 @@ import { greekCapsLabel } from '../lib/greekDate'
 import {
   ROW_DENSITY_META,
   nextRowDensity,
+  rowDensityStyles,
 } from '../lib/rowDensity'
 
 const DENSITY_KEY = 'dias-erp:earnings-board:density'
@@ -28,41 +29,18 @@ const NAME_COL = { id: 'name', defaultWidth: 220, minWidth: 120 }
 const METRIC_DEFAULT_WIDTH = 104
 const METRIC_MIN_WIDTH = 56
 
-/** Πυκνότητα Πίνακα Απολαβών — Α / Μ / Σ (το παλιό Α = νέο Σ). */
+/**
+ * Πυκνότητα Πίνακα Απολαβών = ίδια με Vercel (κοινό rowDensity),
+ * χωρίς συρρίκνωση πλατών στηλών.
+ */
 function boardDensityStyles(level) {
-  const n = Number(level)
-  if (n === 2) {
-    // Στενό = πρώην άνετο
-    return {
-      cellPy: 'py-0.5',
-      cellPx: 'px-1',
-      headPy: 'py-0.5',
-      tableText: 'text-[10px] leading-tight',
-      monoText: 'text-[9px] leading-tight',
-      widthScale: 0.82,
-      nameMin: 100,
-      metricMin: 48,
-    }
-  }
-  if (n === 1) {
-    return {
-      cellPy: 'py-1.5',
-      cellPx: 'px-2',
-      headPy: 'py-1.5',
-      tableText: 'text-xs leading-snug',
-      monoText: 'text-[11px] leading-snug',
-      widthScale: 0.95,
-      nameMin: NAME_COL.minWidth,
-      metricMin: METRIC_MIN_WIDTH,
-    }
-  }
-  // 0 — άνετο
+  const base = rowDensityStyles(level)
   return {
-    cellPy: 'py-2.5',
-    cellPx: 'px-3',
-    headPy: 'py-2',
-    tableText: 'text-sm leading-normal',
-    monoText: 'text-[11px] leading-normal',
+    cellPy: base.cellPy,
+    cellPx: base.cellPx,
+    headPy: base.headPy,
+    tableText: base.tableText,
+    monoText: base.monoText,
     widthScale: 1,
     nameMin: NAME_COL.minWidth,
     metricMin: METRIC_MIN_WIDTH,
