@@ -12,6 +12,7 @@ import { resolveTransactionTypeFromLedgerRow } from '../lib/transactionTypes'
 import { formatEuro } from '../lib/payrollAnalysis'
 import { isLoanDisbursementRow, isLoanInstallmentRow } from '../lib/loanUi'
 import { greekCapsLabel } from '../lib/greekDate'
+import { useDraggableModal, MODAL_POS_KEYS } from '../lib/useDraggableModal'
 
 function renderCreditAmount(row, value) {
   const n = Number(value)
@@ -782,12 +783,12 @@ export default function LedgerAnalysisGrid({
                       tone="amber"
                       taxMarkup={
                         invoiceGuideData &&
-                        Math.abs(Number(invoiceGuideData.remainingNet) || 0) >= 0.005 &&
-                        !invoiceGuideData.simpleVatOnly &&
-                        invoiceGuideData.invoiceGrossUp !== false
+                        Math.abs(Number(invoiceGuideData.remainingNet) || 0) >= 0.005
                           ? {
                               netAmount: Number(invoiceGuideData.remainingNet) || 0,
                               taxPercent: Number(invoiceGuideData.taxPercent) || 20,
+                              simpleVatOnly: invoiceGuideData.simpleVatOnly === true,
+                              invoiceGrossUp: invoiceGuideData.invoiceGrossUp !== false,
                             }
                           : null
                       }
@@ -840,36 +841,110 @@ function BalanceChip({ label, value, tone = 'slate', taxMarkup = null }) {
     amber: 'border-amber-500/40 bg-amber-500/10 text-amber-50',
   }
 
-  const pct = Number(taxMarkup?.taxPercent) || 20
   const net = Number(taxMarkup?.netAmount) || 0
-  const factor = 1 - pct / 100
-  const grossed = taxMarkup && factor > 0 ? net / factor : null
+  const pct = Number(taxMarkup?.taxPercent) || 20
+  const simpleVatOnly = taxMarkup?.simpleVatOnly === true
+  const applyGrossUp = taxMarkup?.invoiceGrossUp !== false
+
+  let paymentBreakdown = null
+  if (taxMarkup && Math.abs(net) >= 0.005) {
+    if (simpleVatOnly || !applyGrossUp) {
+      const base = Math.abs(net)
+      const vat = Math.round(base * 0.24 * 100) / 100
+      const payable = Math.round((base + vat) * 100) / 100
+      paymentBreakdown = {
+        mode: 'simple',
+        base,
+        vat,
+        payable,
+      }
+    } else {
+      const b = computeInvoiceGrossBreakdown(Math.abs(net), pct)
+      if (b) {
+        paymentBreakdown = {
+          mode: 'gross',
+          ...b,
+        }
+      }
+    }
+  }
+
+  const rowClass =
+    'flex items-baseline justify-between gap-2 text-[9px] leading-tight text-amber-100/85'
 
   return (
     <div
       className={`min-w-[7.5rem] rounded-xl border px-3 py-2 shadow-sm shadow-black/20 ${
-        taxMarkup ? 'text-center' : ''
+        paymentBreakdown ? 'min-w-[11.5rem] text-left' : ''
       } ${tones[tone] || tones.slate}`}
     >
-      <p className="text-[10px] font-semibold tracking-wider text-slate-400">
+      <p
+        className={`text-[10px] font-semibold tracking-wider text-slate-400 ${
+          paymentBreakdown ? 'text-center' : ''
+        }`}
+      >
         {greekCapsLabel(label)}
       </p>
-      <p className="mt-0.5 font-mono text-sm font-bold tabular-nums tracking-tight">{value}</p>
-      {grossed != null ? (
-        <div className="mt-1.5 border-t border-amber-500/20 pt-1.5">
-          <p className="whitespace-nowrap text-[9px] font-semibold leading-tight text-yellow-200/80">
-            {greekCapsLabel(`Προσαύξηση ${pct}%`)}
-          </p>
-          <p className="mt-0.5 font-mono text-lg font-extrabold tabular-nums tracking-tight text-yellow-200 drop-shadow-[0_0_6px_rgba(250,204,21,0.35)]">
-            {formatEuro(grossed)}
-          </p>
+      <p
+        className={`mt-0.5 font-mono text-sm font-bold tabular-nums tracking-tight ${
+          paymentBreakdown ? 'text-center' : ''
+        }`}
+      >
+        {value}
+      </p>
+      {paymentBreakdown?.mode === 'gross' ? (
+        <div className="mt-1.5 space-y-0.5 border-t border-amber-500/25 pt-1.5">
+          <div className={rowClass}>
+            <span className="whitespace-nowrap text-yellow-200/80">
+              {greekCapsLabel(`Προσαύξηση ${paymentBreakdown.taxPercent}%`)}
+            </span>
+            <span className="font-mono font-bold tabular-nums text-yellow-200">
+              {formatEuro(paymentBreakdown.gross)}
+            </span>
+          </div>
+          <div className={rowClass}>
+            <span className="whitespace-nowrap">ΦΠΑ 24%</span>
+            <span className="font-mono tabular-nums">
+              + {formatEuro(paymentBreakdown.vat)}
+            </span>
+          </div>
+          <div className={rowClass}>
+            <span className="whitespace-nowrap">
+              Παρ. φόρου({paymentBreakdown.taxPercent}%)
+            </span>
+            <span className="font-mono tabular-nums">
+              − {formatEuro(paymentBreakdown.tax)}
+            </span>
+          </div>
+          <div className="mt-1 flex items-baseline justify-between gap-2 border-t border-amber-500/20 pt-1 text-[10px] font-bold text-amber-50">
+            <span className="whitespace-nowrap">Πληρωτέο</span>
+            <span className="font-mono text-base font-extrabold tabular-nums text-yellow-200 drop-shadow-[0_0_6px_rgba(250,204,21,0.35)]">
+              {formatEuro(paymentBreakdown.payable)}
+            </span>
+          </div>
+        </div>
+      ) : null}
+      {paymentBreakdown?.mode === 'simple' ? (
+        <div className="mt-1.5 space-y-0.5 border-t border-amber-500/25 pt-1.5">
+          <div className={rowClass}>
+            <span className="whitespace-nowrap">ΦΠΑ 24%</span>
+            <span className="font-mono tabular-nums">
+              + {formatEuro(paymentBreakdown.vat)}
+            </span>
+          </div>
+          <div className="mt-1 flex items-baseline justify-between gap-2 border-t border-amber-500/20 pt-1 text-[10px] font-bold text-amber-50">
+            <span className="whitespace-nowrap">Πληρωτέο</span>
+            <span className="font-mono text-base font-extrabold tabular-nums text-yellow-200 drop-shadow-[0_0_6px_rgba(250,204,21,0.35)]">
+              {formatEuro(paymentBreakdown.payable)}
+            </span>
+          </div>
         </div>
       ) : null}
     </div>
   )
 }
 
-/** Τοπικό σκονάκι έκδοσης τιμολογίου — δεν αγγίζει computeLedgerBalances. */
+/** Τοπικό σκονάκι έκδοσης τιμολογίων — σύρε από τον τίτλο · θέση σε μνήμη. */
 function InvoiceGuideCard({
   netAmount,
   taxPercent,
@@ -878,6 +953,10 @@ function InvoiceGuideCard({
   settled = false,
 }) {
   const net = Number(netAmount) || 0
+  const { panelStyle, dragHandleProps, dragHandleClassName } = useDraggableModal(
+    true,
+    MODAL_POS_KEYS.invoiceGuide
+  )
   const rowClass = 'flex items-baseline justify-between gap-2 py-0.5 text-slate-300'
   const settledBadge = settled ? (
     <p className="mb-1 text-[9px] font-semibold tracking-wider text-emerald-400/90">
@@ -885,17 +964,19 @@ function InvoiceGuideCard({
     </p>
   ) : null
 
+  const shellClass =
+    'relative z-20 w-max max-w-full rounded-xl border border-slate-700/50 bg-slate-800/90 px-2.5 py-2 text-xs shadow-lg shadow-black/30 backdrop-blur-sm'
+  const titleClass = `mb-0.5 text-[10px] font-semibold tracking-wider text-slate-500 ${dragHandleClassName}`
+
+  let body
   if (simpleVatOnly) {
     const vat = net * 0.24
     const payable = net + vat
-    return (
-      <div className="w-max max-w-full rounded-xl border border-slate-700/50 bg-slate-800/60 px-2.5 py-2 text-xs shadow-sm shadow-black/20">
-        <p className="mb-0.5 text-[10px] font-semibold tracking-wider text-slate-500">
-          {greekCapsLabel('Οδηγός τιμολογίου')}
-        </p>
+    body = (
+      <>
         {settledBadge}
         <div className={rowClass}>
-          <span className="whitespace-nowrap">Αξία Τιμολογίου</span>
+          <span className="whitespace-nowrap">Αξία τιμολογιών</span>
           <span className="font-mono tabular-nums">{formatEuro(net)}</span>
         </div>
         <div className={rowClass}>
@@ -907,41 +988,50 @@ function InvoiceGuideCard({
           <span className="whitespace-nowrap">Πληρωτέο</span>
           <span className="font-mono tabular-nums">{formatEuro(payable)}</span>
         </div>
-      </div>
+      </>
+    )
+  } else {
+    const pct = Number(taxPercent) || 20
+    const factor = 1 - pct / 100
+    const applyGrossUp = invoiceGrossUp !== false
+    const gross = applyGrossUp && factor > 0 ? net / factor : net
+    const vat = gross * 0.24
+    const tax = gross * (pct / 100)
+    const payable = gross + vat - tax
+    body = (
+      <>
+        {settledBadge}
+        <div className={rowClass}>
+          <span className="whitespace-nowrap">Αξία τιμολογιών</span>
+          <span className="font-mono tabular-nums">{formatEuro(gross)}</span>
+        </div>
+        <div className={rowClass}>
+          <span className="whitespace-nowrap">ΦΠΑ 24%</span>
+          <span className="font-mono tabular-nums">+ {formatEuro(vat)}</span>
+        </div>
+        <div className={rowClass}>
+          <span className="whitespace-nowrap">Παρ. φόρου({pct}%)</span>
+          <span className="font-mono tabular-nums">− {formatEuro(tax)}</span>
+        </div>
+        <hr className="my-1 border-slate-600" />
+        <div className={`${rowClass} font-bold text-slate-100`}>
+          <span className="whitespace-nowrap">Πληρωτέο</span>
+          <span className="font-mono tabular-nums">{formatEuro(payable)}</span>
+        </div>
+      </>
     )
   }
 
-  const pct = Number(taxPercent) || 20
-  const factor = 1 - pct / 100
-  const applyGrossUp = invoiceGrossUp !== false
-  const gross = applyGrossUp && factor > 0 ? net / factor : net
-  const vat = gross * 0.24
-  const tax = gross * (pct / 100)
-  const payable = gross + vat - tax
-
   return (
-    <div className="w-max max-w-full rounded-xl border border-slate-700/50 bg-slate-800/60 px-2.5 py-2 text-xs shadow-sm shadow-black/20">
-      <p className="mb-0.5 text-[10px] font-semibold tracking-wider text-slate-500">
-        {greekCapsLabel('Οδηγός τιμολογίου')}
+    <div className={shellClass} style={panelStyle}>
+      <p
+        className={titleClass}
+        title="Σύρε για μετακίνηση"
+        {...dragHandleProps}
+      >
+        {greekCapsLabel('Οδηγός τιμολογιών')}
       </p>
-      {settledBadge}
-      <div className={rowClass}>
-        <span className="whitespace-nowrap">Αξία Τιμολογίου</span>
-        <span className="font-mono tabular-nums">{formatEuro(gross)}</span>
-      </div>
-      <div className={rowClass}>
-        <span className="whitespace-nowrap">ΦΠΑ 24%</span>
-        <span className="font-mono tabular-nums">+ {formatEuro(vat)}</span>
-      </div>
-      <div className={rowClass}>
-        <span className="whitespace-nowrap">Παρακρ. Φόρου ({pct}%)</span>
-        <span className="font-mono tabular-nums">− {formatEuro(tax)}</span>
-      </div>
-      <hr className="my-1 border-slate-600" />
-      <div className={`${rowClass} font-bold text-slate-100`}>
-        <span className="whitespace-nowrap">Πληρωτέο</span>
-        <span className="font-mono tabular-nums">{formatEuro(payable)}</span>
-      </div>
+      {body}
     </div>
   )
 }

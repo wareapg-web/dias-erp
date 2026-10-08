@@ -344,8 +344,6 @@ export default function TechAnalysisModal({
   const [transactionTypes, setTransactionTypes] = useState([])
   const [transactionTypesError, setTransactionTypesError] = useState(null)
 
-  const pendingSettleRef = useRef(null)
-
   const confirmLeaveDirty = () => {
     if (!earningsDirty && !workHoursDirty) return true
     return window.confirm(
@@ -896,47 +894,6 @@ export default function TechAnalysisModal({
     setMovementPresetAmount(presetAmount)
     setMovementOpen(true)
   }
-
-  const openSettlementForPayables = (settle) => {
-    const amount = Number(settle?.amount) || 0
-    if (!(amount > 0.005)) {
-      toast.error('Δεν υπάρχει υπόλοιπο για εξόφληση')
-      return
-    }
-    const invoice = settle?.invoice === true
-    openMovementCreate({
-      typeId: invoice ? 93 : 92,
-      side: 'CREDIT',
-      postToInvoice: invoice,
-      amount,
-      settlementBalance: amount,
-    })
-  }
-
-  const handleSettleFromPayables = (person, settle) => {
-    if (!person) return
-    if (!confirmLeaveDirty()) return
-    setTemporaryPayablesOpen(false)
-    setPersonnelSidebarKind('temporary')
-    setActiveTab('analysis')
-    const same =
-      String(person.id ?? '') === String(selectedPersonId ?? '') ||
-      (person.tech_id != null && String(person.tech_id) === String(tech?.id ?? ''))
-    if (same) {
-      openSettlementForPayables(settle)
-      return
-    }
-    pendingSettleRef.current = settle || null
-    onPersonSelect?.(person)
-  }
-
-  useEffect(() => {
-    const settle = pendingSettleRef.current
-    if (!settle || !tech) return
-    pendingSettleRef.current = null
-    openSettlementForPayables(settle)
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- μόνο μετά αλλαγή υπαλλήλου από οφειλές
-  }, [tech?.id])
 
   const selectLedgerRow = (row) => {
     const key = ledgerRowKey(row)
@@ -1599,6 +1556,10 @@ export default function TechAnalysisModal({
     embedded && typeof onPersonSelect === 'function'
       ? personnelSidebarKind === 'temporary'
       : techIsTemporary
+
+  useEffect(() => {
+    setPrintsMenuOpen(false)
+  }, [showTemporaryToolbar])
 
   const toggleMatrixBalances = () => {
     setShowMatrixBalances((prev) => {
@@ -2303,32 +2264,114 @@ export default function TechAnalysisModal({
               {showTemporaryToolbar ? (
                 <div className="flex flex-col items-center gap-1">
                   <div className="flex items-center gap-1.5">
-                    <button
-                      type="button"
-                      onClick={handleTemporaryOtherExcelExport}
-                      disabled={temporaryOtherExporting}
-                      title="Εξαγωγή έκτακτων χωρίς τιμολόγιο: άθροισμα Λοιπά Χρ. ανά μήνα (χωρίς εξόφληση)"
-                      className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-500/40 bg-emerald-500/15 px-3 py-1.5 text-xs font-bold text-emerald-100 transition hover:bg-emerald-500/25 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      <svg viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4 shrink-0" aria-hidden>
-                        <path d="M10.75 2.75a.75.75 0 00-1.5 0v8.69L6.3 8.49a.75.75 0 00-1.1 1.02l4.25 4.5a.75.75 0 001.1 0l4.25-4.5a.75.75 0 10-1.1-1.02l-2.95 3.12V2.75z" />
-                        <path d="M3.5 12.75a.75.75 0 00-1.5 0v2.5A2.75 2.75 0 004.75 18h10.5A2.75 2.75 0 0018 15.25v-2.5a.75.75 0 00-1.5 0v2.5c0 .69-.56 1.25-1.25 1.25H4.75c-.69 0-1.25-.56-1.25-1.25v-2.5z" />
-                      </svg>
-                      {temporaryOtherExporting ? '...' : 'ΛΟΙΠΑ'}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={handleTemporaryExcelExport}
-                      disabled={temporaryExporting}
-                      title="Εξαγωγή έκτακτων με τιμολόγιο: άθροισμα ΤΙΜ Χρ. ανά μήνα (χωρίς εξόφληση) + ΦΠΑ 24% + Τελικό Πληρωτέο"
-                      className="inline-flex items-center gap-1.5 rounded-xl border border-amber-500/40 bg-amber-500/15 px-3 py-1.5 text-xs font-bold text-amber-100 transition hover:bg-amber-500/25 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      <svg viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4 shrink-0" aria-hidden>
-                        <path d="M10.75 2.75a.75.75 0 00-1.5 0v8.69L6.3 8.49a.75.75 0 00-1.1 1.02l4.25 4.5a.75.75 0 001.1 0l4.25-4.5a.75.75 0 10-1.1-1.02l-2.95 3.12V2.75z" />
-                        <path d="M3.5 12.75a.75.75 0 00-1.5 0v2.5A2.75 2.75 0 004.75 18h10.5A2.75 2.75 0 0018 15.25v-2.5a.75.75 0 00-1.5 0v2.5c0 .69-.56 1.25-1.25 1.25H4.75c-.69 0-1.25-.56-1.25-1.25v-2.5z" />
-                      </svg>
-                      {temporaryExporting ? '...' : 'ΤΙΜΟΛΟΓΙΑ'}
-                    </button>
+                    <div className="relative" ref={printsMenuRef}>
+                      <button
+                        type="button"
+                        onClick={() => setPrintsMenuOpen((v) => !v)}
+                        aria-expanded={printsMenuOpen}
+                        aria-haspopup="menu"
+                        disabled={temporaryExporting || temporaryOtherExporting}
+                        className={`group inline-flex h-[38px] items-center gap-2 rounded-xl border px-3.5 text-xs font-bold tracking-[0.12em] transition disabled:cursor-not-allowed disabled:opacity-50 ${
+                          printsMenuOpen
+                            ? 'border-violet-400/50 bg-gradient-to-b from-violet-500/30 to-indigo-600/25 text-violet-50 shadow-[0_0_20px_rgba(139,92,246,0.25)]'
+                            : 'border-white/15 bg-gradient-to-b from-slate-800/90 to-slate-950/90 text-slate-100 shadow-lg shadow-black/20 hover:border-violet-400/40 hover:from-violet-500/20 hover:to-indigo-600/15 hover:text-white'
+                        }`}
+                      >
+                        <span
+                          className="flex h-6 w-6 items-center justify-center rounded-lg border border-white/10 bg-white/5 text-violet-200/90"
+                          aria-hidden
+                        >
+                          <svg viewBox="0 0 20 20" fill="currentColor" className="h-3.5 w-3.5">
+                            <path
+                              fillRule="evenodd"
+                              d="M5 2.75A.75.75 0 015.75 2h8.5a.75.75 0 01.75.75v3.5a.75.75 0 01-.75.75h-8.5A.75.75 0 015 6.25v-3.5zm0 7A.75.75 0 015.75 9h8.5a.75.75 0 01.75.75v6.5a.75.75 0 01-.75.75h-8.5a.75.75 0 01-.75-.75v-6.5zM4 6.25V2.75C4 1.784 4.784 1 5.75 1h8.5C15.216 1 16 1.784 16 2.75v3.5c0 .414-.168.79-.44 1.06A2.75 2.75 0 0117 9.75v6.5A2.75 2.75 0 0114.25 19h-8.5A2.75 2.75 0 013 16.25v-6.5c0-.833.37-1.578.97-2.09A1.75 1.75 0 014 6.25z"
+                              clipRule="evenodd"
+                            />
+                          </svg>
+                        </span>
+                        <span>{greekCapsLabel('Εκτυπώσεις')}</span>
+                        <svg
+                          viewBox="0 0 20 20"
+                          fill="currentColor"
+                          className={`h-3.5 w-3.5 text-slate-400 transition duration-200 group-hover:text-violet-200 ${
+                            printsMenuOpen ? 'rotate-180 text-violet-200' : ''
+                          }`}
+                          aria-hidden
+                        >
+                          <path
+                            fillRule="evenodd"
+                            d="M5.23 7.21a.75.75 0 011.06.02L10 11.17l3.71-3.94a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z"
+                            clipRule="evenodd"
+                          />
+                        </svg>
+                      </button>
+                      {printsMenuOpen ? (
+                        <div
+                          role="menu"
+                          className="absolute right-0 z-40 mt-2 w-56 overflow-hidden rounded-2xl border border-white/10 bg-gradient-to-b from-slate-900/98 to-slate-950/98 p-1.5 shadow-2xl shadow-black/50 ring-1 ring-violet-500/20 backdrop-blur-xl"
+                        >
+                          <p className="px-2.5 pb-1.5 pt-1 text-[9px] font-semibold tracking-[0.18em] text-violet-300/70">
+                            {greekCapsLabel('Excel · μήνας')}
+                          </p>
+                          <button
+                            type="button"
+                            role="menuitem"
+                            disabled={temporaryOtherExporting}
+                            title="Εξαγωγή έκτακτων χωρίς τιμολόγιο: άθροισμα Λοιπά Χρ. ανά μήνα (χωρίς εξόφληση)"
+                            onClick={() => {
+                              setPrintsMenuOpen(false)
+                              handleTemporaryOtherExcelExport()
+                            }}
+                            className="flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2.5 text-left transition hover:bg-emerald-500/15 disabled:opacity-50"
+                          >
+                            <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-emerald-500/30 bg-emerald-500/15 text-emerald-200">
+                              <svg viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4" aria-hidden>
+                                <path d="M10.75 2.75a.75.75 0 00-1.5 0v8.69L6.3 8.49a.75.75 0 00-1.1 1.02l4.25 4.5a.75.75 0 001.1 0l4.25-4.5a.75.75 0 10-1.1-1.02l-2.95 3.12V2.75z" />
+                                <path d="M3.5 12.75a.75.75 0 00-1.5 0v2.5A2.75 2.75 0 004.75 18h10.5A2.75 2.75 0 0018 15.25v-2.5a.75.75 0 00-1.5 0v2.5c0 .69-.56 1.25-1.25 1.25H4.75c-.69 0-1.25-.56-1.25-1.25v-2.5z" />
+                              </svg>
+                            </span>
+                            <span className="min-w-0">
+                              <span className="block text-xs font-bold text-emerald-100">
+                                {temporaryOtherExporting
+                                  ? '...'
+                                  : greekCapsLabel('Λοιπά')}
+                              </span>
+                              <span className="block truncate text-[10px] text-slate-500">
+                                Χωρίς τιμολόγιο
+                              </span>
+                            </span>
+                          </button>
+                          <button
+                            type="button"
+                            role="menuitem"
+                            disabled={temporaryExporting}
+                            title="Εξαγωγή έκτακτων με τιμολόγιο: άθροισμα ΤΙΜ Χρ. ανά μήνα (χωρίς εξόφληση) + ΦΠΑ 24% + Τελικό Πληρωτέο"
+                            onClick={() => {
+                              setPrintsMenuOpen(false)
+                              handleTemporaryExcelExport()
+                            }}
+                            className="flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2.5 text-left transition hover:bg-amber-500/15 disabled:opacity-50"
+                          >
+                            <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-amber-500/30 bg-amber-500/15 text-amber-200">
+                              <svg viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4" aria-hidden>
+                                <path d="M10.75 2.75a.75.75 0 00-1.5 0v8.69L6.3 8.49a.75.75 0 00-1.1 1.02l4.25 4.5a.75.75 0 001.1 0l4.25-4.5a.75.75 0 10-1.1-1.02l-2.95 3.12V2.75z" />
+                                <path d="M3.5 12.75a.75.75 0 00-1.5 0v2.5A2.75 2.75 0 004.75 18h10.5A2.75 2.75 0 0018 15.25v-2.5a.75.75 0 00-1.5 0v2.5c0 .69-.56 1.25-1.25 1.25H4.75c-.69 0-1.25-.56-1.25-1.25v-2.5z" />
+                              </svg>
+                            </span>
+                            <span className="min-w-0">
+                              <span className="block text-xs font-bold text-amber-100">
+                                {temporaryExporting
+                                  ? '...'
+                                  : greekCapsLabel('Τιμολόγια')}
+                              </span>
+                              <span className="block truncate text-[10px] text-slate-500">
+                                ΤΙΜ · ΦΠΑ 24%
+                              </span>
+                            </span>
+                          </button>
+                        </div>
+                      ) : null}
+                    </div>
                     <button
                       type="button"
                       onClick={() => setTemporaryPayablesOpen(true)}
@@ -2594,7 +2637,6 @@ export default function TechAnalysisModal({
           personnel={personnel}
           onClose={() => setTemporaryPayablesOpen(false)}
           onSelectPerson={requestPersonSelect}
-          onSettlePerson={handleSettleFromPayables}
         />
 
         {loadError && (
