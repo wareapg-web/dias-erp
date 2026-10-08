@@ -33,6 +33,20 @@ function overlap(s, e, ws, we) {
   return Math.max(0, Math.min(e, we) - Math.max(s, ws))
 }
 
+/**
+ * Saturdays = regular OT (all hours, from hour 1) from this date inclusive.
+ * Rollback: SATURDAY_AS_OT_ENABLED = false, or push FROM to a future date.
+ */
+export const SATURDAY_AS_OT_FROM = '2026-11-01'
+export const SATURDAY_AS_OT_ENABLED = true
+
+export function isSaturdayAsOvertime(dateIso) {
+  if (!SATURDAY_AS_OT_ENABLED) return false
+  const iso = String(dateIso || '').trim()
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(iso) || iso < SATURDAY_AS_OT_FROM) return false
+  return new Date(`${iso}T12:00:00`).getDay() === 6
+}
+
 /** global_calc_hours from main45.py
  * @param {object} [options]
  * @param {number} [options.otThreshold=8] κατώφλι υπερωρίας (π.χ. από Αποδοχές overtime_from)
@@ -76,6 +90,11 @@ export function globalCalcHours(dateIso, tStart, tEnd, options = {}) {
 
   const thrRaw = Number(options?.otThreshold)
   const otThreshold = Number.isFinite(thrRaw) && thrRaw > 0 ? thrRaw : 8
+
+  // Saturday (from cutover): all hours = OT; wins over official holiday on Saturday.
+  if (isSaturdayAsOvertime(dateIso)) {
+    return { total: totHrs, night: nightHrs, holiday: 0, overtime: totHrs }
+  }
 
   const holHrs = isWeekend || isHoliday ? totHrs : 0
   const otHrs = !isWeekend && !isHoliday ? Math.max(0, totHrs - otThreshold) : 0
@@ -331,7 +350,10 @@ export function buildMonthlyPayroll(tech, year, month, assignments, jobs, dailyR
     const nextRunning = prevRunning + h.total
 
     let lineOt = 0
-    if (!state.otExemptDay) {
+    if (isSaturdayAsOvertime(dIso)) {
+      // All Saturday hours count as OT from the first hour (no 8h threshold).
+      lineOt = h.total
+    } else if (!state.otExemptDay) {
       lineOt = Math.max(0, nextRunning - Math.max(8, prevRunning))
     }
 
@@ -585,9 +607,11 @@ export function buildMonthlyPayroll(tech, year, month, assignments, jobs, dailyR
       if (isWeekend && dayTH > 0 && dayTH < 4) {
         const diff = 4 - dayTH
         dayTH += diff
-        dayHH += diff
         sumBonus += diff
         const bonusHrs = Math.round(diff * 100) / 100
+        const saturdayOt = isSaturdayAsOvertime(dIso)
+        if (saturdayOt) dayOTH += diff
+        else dayHH += diff
         rows.push({
           tech: tech.name,
           dateIso: dIso,
@@ -601,8 +625,8 @@ export function buildMonthlyPayroll(tech, year, month, assignments, jobs, dailyR
           receiptUrl: '',
           workedHours: bonusHrs,
           nightHours: 0,
-          overtime: 0,
-          weekendHolidayHours: bonusHrs,
+          overtime: saturdayOt ? bonusHrs : 0,
+          weekendHolidayHours: saturdayOt ? 0 : bonusHrs,
           weekendBonus: bonusHrs,
         })
       }
