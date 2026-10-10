@@ -67,7 +67,8 @@
    ```
 3. Στο UI καρτέλας: «Ανέβασμα φωτο (R2)» → συμπίεση → Edge Function → URL στο `photo_url` → **Αποθήκευση** για DB.
 4. R2 key: `personnel/profile/{techId}/{timestamp}-{uuid}.jpg`
-5. `verify_jwt = false` στο `supabase/config.toml` (το DIAS login είναι Admin project).
+5. `verify_jwt = true` στο `supabase/config.toml` — απαιτεί DIAS session (dual login). Μετά από αλλαγή: ξανα-`deploy` την function.
+6. Έλεγχος RLS (read-only): τρέξε `supabase/41_verify_rls_status.sql` στο SQL Editor.
 
 ## Βήμα 2 — Env
 

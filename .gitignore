@@ -10,7 +10,15 @@ lerna-debug.log*
 node_modules
 dist
 dist-ssr
+
+# Env / secrets — ποτέ στο git (VITE_anon keys μόνο μέσω Vercel / τοπικό .env.local)
+.env
+.env.*
+!.env.example
 *.local
+
+# Supabase CLI local cache
+supabase/.temp/
 
 # Editor directories and files
 .vscode/*

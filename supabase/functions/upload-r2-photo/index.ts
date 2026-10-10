@@ -1,9 +1,11 @@
 /**
  * DIAS ERP — Upload personnel profile photo to Cloudflare R2.
- * Secrets (set in Supabase Dashboard → Edge Functions → Secrets):
+ * Requires DIAS authenticated JWT (verify_jwt = true + in-function check).
+ * Secrets (Dashboard → Edge Functions → Secrets):
  *   R2_ENDPOINT_URL, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET_NAME
  * Optional: R2_PUBLIC_BASE_URL
  */
+import { createClient } from 'npm:@supabase/supabase-js@2.49.1'
 import { S3Client, PutObjectCommand } from 'npm:@aws-sdk/client-s3@3.758.0'
 
 const corsHeaders: Record<string, string> = {
@@ -66,6 +68,27 @@ function getR2Client() {
   })
 }
 
+/** Απαιτεί έγκυρο DIAS user JWT (Bearer). */
+async function requireDiasUser(req: Request) {
+  const authHeader = req.headers.get('Authorization') || ''
+  if (!authHeader.toLowerCase().startsWith('bearer ')) {
+    return { user: null as null, error: 'Missing Authorization bearer token' }
+  }
+  const supabaseUrl = Deno.env.get('SUPABASE_URL')
+  const supabaseAnon = Deno.env.get('SUPABASE_ANON_KEY')
+  if (!supabaseUrl || !supabaseAnon) {
+    return { user: null as null, error: 'Supabase env missing in Edge Function' }
+  }
+  const supabase = createClient(supabaseUrl, supabaseAnon, {
+    global: { headers: { Authorization: authHeader } },
+  })
+  const { data, error } = await supabase.auth.getUser()
+  if (error || !data?.user) {
+    return { user: null as null, error: 'Unauthorized' }
+  }
+  return { user: data.user, error: null as null }
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders })
@@ -76,6 +99,11 @@ Deno.serve(async (req) => {
   }
 
   try {
+    const auth = await requireDiasUser(req)
+    if (!auth.user) {
+      return jsonResponse({ success: false, error: auth.error || 'Unauthorized' }, 401)
+    }
+
     const bucket = Deno.env.get('R2_BUCKET_NAME')
     if (!bucket) throw new Error('R2_BUCKET_NAME is not configured')
 
