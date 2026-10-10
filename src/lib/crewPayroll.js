@@ -135,6 +135,15 @@ export function dailyStatusSlotKey(tech, dateIso, status) {
   return `${tech}\0${dateIso}\0${String(status || '').trim()}`
 }
 
+/**
+ * Unique key per daily_status interval for payroll.
+ * Keeps multiple same-day / same-status rows (e.g. 08:00–18:00 + 22:30–00:00).
+ */
+export function dailyStatusOccurrenceKey(row) {
+  if (row.id) return `${row.tech}\0${row.dateIso}\0id:${row.id}`
+  return `${row.tech}\0${row.dateIso}\0${String(row.status || '').trim()}\0${row.tStart || ''}\0${row.tEnd || ''}`
+}
+
 function mergeDailyStatusRows(rows) {
   if (rows.length === 1) return rows[0]
   const receiptUrls = []
@@ -159,6 +168,7 @@ function mergeDailyStatusRows(rows) {
   }
 }
 
+/** One merged row per tech + date + status (legacy duplicates / photos). */
 export function dailyStatusByTechDate(dailyStatus) {
   const groups = new Map()
   for (const row of dailyStatus) {
@@ -174,13 +184,37 @@ export function dailyStatusByTechDate(dailyStatus) {
   return merged
 }
 
+/** Payroll index: keep every distinct interval (no collapse by status name). */
+export function dailyStatusByTechDateForPayroll(dailyStatus) {
+  const map = new Map()
+  for (const row of dailyStatus) {
+    const key = dailyStatusOccurrenceKey(row)
+    const existing = map.get(key)
+    if (!existing) map.set(key, row)
+    else map.set(key, mergeDailyStatusRows([existing, row]))
+  }
+  return map
+}
+
+function dailyStartMinutes(row) {
+  const raw = row.tStart || ''
+  if (!raw || raw === '-') return 24 * 60
+  const parsed = parseTime(raw)
+  if (!parsed) return 24 * 60
+  return parsed.h * 60 + parsed.m
+}
+
 function dailyStatusesOnDate(statusByKey, tech, dateIso) {
   const prefix = `${tech}\0${dateIso}\0`
   const rows = []
   for (const [key, row] of statusByKey) {
     if (key.startsWith(prefix)) rows.push(row)
   }
-  return rows.sort((a, b) => a.status.localeCompare(b.status, 'el'))
+  return rows.sort(
+    (a, b) =>
+      dailyStartMinutes(a) - dailyStartMinutes(b) ||
+      a.status.localeCompare(b.status, 'el'),
+  )
 }
 
 /** Chronological order for OT accumulation (missing/invalid time → end of day). */
@@ -291,7 +325,7 @@ export function buildMonthlyPayroll(tech, year, month, assignments, jobs, dailyR
     assignByDate.set(a.dateIso, list)
   }
 
-  const statusByDate = dailyStatusByTechDate(
+  const statusByDate = dailyStatusByTechDateForPayroll(
     dailyRows.filter((d) => d.tech === tech.name && d.dateIso.startsWith(targetPrefix))
   )
 
@@ -519,7 +553,7 @@ export function buildMonthlyPayroll(tech, year, month, assignments, jobs, dailyR
       const takeMatchingDaily = (jobName) => {
         const jobKey = normalizePayrollJobKey(jobName)
         for (const d of dailyToday) {
-          const key = dailyStatusSlotKey(tech.name, dIso, d.status)
+          const key = dailyStatusOccurrenceKey(d)
           if (usedDailyKeys.has(key)) continue
           if (normalizePayrollJobKey(d.status) !== jobKey) continue
           usedDailyKeys.add(key)
@@ -567,7 +601,7 @@ export function buildMonthlyPayroll(tech, year, month, assignments, jobs, dailyR
 
       const extraDailies = dailyToday
         .filter((sData) => {
-          const key = dailyStatusSlotKey(tech.name, dIso, sData.status)
+          const key = dailyStatusOccurrenceKey(sData)
           if (usedDailyKeys.has(key)) return false
           const status = sData.status || 'ΕΤΑΙΡΙΑ'
           const ts = sData.tStart ?? ''
@@ -577,6 +611,8 @@ export function buildMonthlyPayroll(tech, year, month, assignments, jobs, dailyR
         .sort(compareByTimeStart)
 
       for (const sData of extraDailies) {
+        const key = dailyStatusOccurrenceKey(sData)
+        usedDailyKeys.add(key)
         const status = sData.status || 'ΕΤΑΙΡΙΑ'
         const ts = sData.tStart ?? ''
         const te = sData.tEnd ?? ''
