@@ -57,7 +57,11 @@ import {
   paymentToDb,
   paymentTypeLabel,
 } from '../lib/techPayments'
-import { buildPaymentsDisplayList, isLoanInstallmentRow } from '../lib/loanUi'
+import {
+  buildPaymentsDisplayList,
+  isLoanDisbursementRow,
+  isLoanInstallmentRow,
+} from '../lib/loanUi'
 import { exportMonthPayrollToExcel } from '../lib/monthPayrollExport'
 import { exportMonthInvoicesToExcel, exportMonthTemporaryToExcel, exportMonthTemporaryOtherToExcel } from '../lib/monthInvoiceExport'
 import { exportJobsToExcel } from '../lib/monthJobsExport'
@@ -942,6 +946,13 @@ export default function TechAnalysisModal({
       return
     }
 
+    if (isLoanInstallmentRow(row) || isLoanDisbursementRow(row)) {
+      toast.error(
+        "Απαγορεύεται η διαγραφή κινήσεων δανείου από το Καθολικό. Παρακαλώ μεταβείτε στην καρτέλα 'Δάνεια'."
+      )
+      return
+    }
+
     setLedgerDeleteOpen(true)
   }
 
@@ -949,6 +960,14 @@ export default function TechAnalysisModal({
     const row = ledgerDisplayRows.find((r) => ledgerRowKey(r) === selectedLedgerRowKey)
     if (!row?.id) {
       setLedgerDeleteOpen(false)
+      return
+    }
+
+    if (isLoanInstallmentRow(row) || isLoanDisbursementRow(row)) {
+      setLedgerDeleteOpen(false)
+      toast.error(
+        "Απαγορεύεται η διαγραφή κινήσεων δανείου από το Καθολικό. Παρακαλώ μεταβείτε στην καρτέλα 'Δάνεια'."
+      )
       return
     }
 
@@ -1430,15 +1449,27 @@ export default function TechAnalysisModal({
   }
 
   /** Δεξιά στήλη — ΔΙΑΓΡΑΦΗ · εξοφλήσεις μέσω ενιαίου κουμπιού + choice modal. */
+  const selectedLedgerRow = useMemo(
+    () =>
+      ledgerDisplayRows.find((r) => ledgerRowKey(r) === selectedLedgerRowKey) || null,
+    [ledgerDisplayRows, selectedLedgerRowKey]
+  )
+  const selectedLedgerIsLoan =
+    Boolean(selectedLedgerRow) &&
+    (isLoanInstallmentRow(selectedLedgerRow) || isLoanDisbursementRow(selectedLedgerRow))
+
   const ledgerActionButtons = useMemo(
     () => [
       {
         label: 'ΔΙΑΓΡΑΦΗ',
         action: handleDeleteLedgerEntry,
-        disabled: !selectedLedgerRowKey,
+        disabled: !selectedLedgerRowKey || selectedLedgerIsLoan,
+        title: selectedLedgerIsLoan
+          ? "Η διαγραφή κινήσεων δανείου (εκταμίευση/δόση) πρέπει να γίνεται από την καρτέλα 'Δάνεια'."
+          : undefined,
       },
     ],
-    [selectedLedgerRowKey]
+    [selectedLedgerRowKey, selectedLedgerIsLoan]
   )
 
   /** Επιλογές εξόφλησης Μ/Λ/ΤΙΜ — ίδια presets με τα παλιά 3 κουμπιά. */
