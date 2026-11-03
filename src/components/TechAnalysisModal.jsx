@@ -785,9 +785,11 @@ export default function TechAnalysisModal({
     }
   }, [tech?.id, analysisYear, ledgerTick, payments.length])
 
-  // Ώρες γραφείου (work_hours) — μόνο όταν in_office
+  // Ώρες γραφείου (work_hours) — μόνο in_office χωρίς σύνδεση Admin/mobile
   useEffect(() => {
-    if (!tech?.id || tech.in_office !== true) {
+    const useManual =
+      tech?.in_office === true && !(tech?._adminTech || tech?.admin_tech_id)
+    if (!tech?.id || !useManual) {
       setManualHours({})
       setWorkHoursDirty(false)
       setWorkHoursError(null)
@@ -823,7 +825,7 @@ export default function TechAnalysisModal({
     return () => {
       cancelled = true
     }
-  }, [tech?.id, tech?.in_office, analysisYear, selectedMonth])
+  }, [tech?.id, tech?.in_office, tech?.admin_tech_id, tech?._adminTech, analysisYear, selectedMonth])
 
   useEffect(() => {
     setSelectedLedgerRowKey(null)
@@ -1228,9 +1230,12 @@ export default function TechAnalysisModal({
   const selectedPayroll = monthlyPayrolls[selectedMonth - 1]
   const movements = selectedPayroll?.rows || []
   const isOfficeEmployee = tech?.in_office === true
+  const hasAdminHours = Boolean(tech?._adminTech || tech?.admin_tech_id)
+  /** Γραφείο χωρίς Admin link → χειροκίνητα ρολόγια DIAS. Με Admin → ίδια διαδρομή πεδίου. */
+  const usesManualOfficeHours = isOfficeEmployee && !hasAdminHours
   const officeDayList = useMemo(
-    () => (isOfficeEmployee ? monthDateList(analysisYear, selectedMonth) : []),
-    [isOfficeEmployee, analysisYear, selectedMonth]
+    () => (usesManualOfficeHours ? monthDateList(analysisYear, selectedMonth) : []),
+    [usesManualOfficeHours, analysisYear, selectedMonth]
   )
 
   const officeOtThreshold = useMemo(() => {
@@ -1239,14 +1244,14 @@ export default function TechAnalysisModal({
   }, [earningsForm?.overtime_from])
 
   const officeSummary = useMemo(() => {
-    if (!isOfficeEmployee) return null
+    if (!usesManualOfficeHours) return null
     return buildOfficeMonthSummary(manualHoursToEntries(manualHours), {
       otThreshold: officeOtThreshold,
       techName: tech?.displayName || tech?.name || '',
     })
-  }, [isOfficeEmployee, manualHours, officeOtThreshold, tech?.displayName, tech?.name])
+  }, [usesManualOfficeHours, manualHours, officeOtThreshold, tech?.displayName, tech?.name])
 
-  const selectedSummary = isOfficeEmployee
+  const selectedSummary = usesManualOfficeHours
     ? officeSummary
     : selectedPayroll?.summary
   const selectedSalary = salaryMatrix.months[selectedMonth - 1]
@@ -1358,10 +1363,10 @@ export default function TechAnalysisModal({
     setHoursTransferSaving(true)
     setLedgerError(null)
     try {
-      if (!isOfficeEmployee && !tech._adminTech && !tech.admin_tech_id) {
+      if (!usesManualOfficeHours && !tech._adminTech && !tech.admin_tech_id) {
         throw new Error('Ο υπάλληλος δεν έχει σύνδεση με Admin για ώρες βάρδιας.')
       }
-      if (isOfficeEmployee && !(selectedSummary?.totalHours > 0)) {
+      if (usesManualOfficeHours && !(selectedSummary?.totalHours > 0)) {
         throw new Error(
           'Δεν υπάρχουν συμπληρωμένες ώρες γραφείου για τον μήνα. Συμπλήρωσε ρολόγια στα Αναλυτικά στοιχεία.'
         )
@@ -1668,7 +1673,6 @@ export default function TechAnalysisModal({
   const firstName = tech?.first_name || split.firstName
   const displayName = tech?.displayName || tech?.name || ''
   const photoUrl = tech ? techPhotoUrl(tech) : null
-  const hasAdminHours = Boolean(tech?._adminTech || tech?.admin_tech_id)
   const issuesInvoice = personnelIssuesInvoice(tech)
 
   const patchManualTime = (dateIso, field, value) => {
@@ -1689,7 +1693,7 @@ export default function TechAnalysisModal({
   }
 
   const handleSaveWorkHours = async () => {
-    if (!tech?.id || !isOfficeEmployee || workHoursSaving) return
+    if (!tech?.id || !usesManualOfficeHours || workHoursSaving) return
     setWorkHoursSaving(true)
     setWorkHoursError(null)
     try {
@@ -3571,12 +3575,12 @@ export default function TechAnalysisModal({
                   Αναλυτικές Κινήσεις · {MONTH_LABELS[selectedMonth - 1]} {analysisYear}
                 </h3>
                 <p className="mt-0.5 text-xs text-slate-400">
-                  {isOfficeEmployee
+                  {usesManualOfficeHours
                     ? `Ώρες γραφείου · ΕΤΑΙΡΙΑ · ${displayName || tech.name}`
                     : `Ημερήσια λίστα για ${tech.name}`}
                 </p>
               </div>
-              {isOfficeEmployee ? (
+              {usesManualOfficeHours ? (
                 <button
                   type="button"
                   onClick={handleSaveWorkHours}
@@ -3592,20 +3596,20 @@ export default function TechAnalysisModal({
               ) : null}
             </div>
 
-            {isOfficeEmployee && workHoursMissing ? (
+            {usesManualOfficeHours && workHoursMissing ? (
               <div className="border-b border-amber-500/30 bg-amber-500/10 px-4 py-2 text-xs text-amber-100">
                 Λείπει ο πίνακας <code className="rounded bg-black/30 px-1">work_hours</code>. Τρέξε{' '}
                 <code className="rounded bg-black/30 px-1">supabase/19_work_hours.sql</code> στο DIAS.
               </div>
             ) : null}
-            {isOfficeEmployee && workHoursError && !workHoursMissing ? (
+            {usesManualOfficeHours && workHoursError && !workHoursMissing ? (
               <div className="border-b border-rose-500/30 bg-rose-500/10 px-4 py-2 text-xs text-rose-200">
                 {workHoursError}
               </div>
             ) : null}
 
             <div className="overflow-x-auto">
-              {isOfficeEmployee ? (
+              {usesManualOfficeHours ? (
                 <table className="w-full min-w-[980px] border-collapse text-left text-sm">
                   <thead>
                     <tr className="border-b border-white/10 bg-slate-950/60 text-xs uppercase tracking-wider text-slate-400">

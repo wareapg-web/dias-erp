@@ -1263,14 +1263,7 @@ export default function PersonnelPanel({
                   <input
                     type="checkbox"
                     checked={form.in_office === true}
-                    onChange={(e) => {
-                      const checked = e.target.checked
-                      setForm((prev) => ({
-                        ...prev,
-                        in_office: checked,
-                        ...(checked ? { admin_tech_id: '' } : {}),
-                      }))
-                    }}
+                    onChange={(e) => patch('in_office', e.target.checked)}
                     className="h-4 w-4 rounded border-white/20"
                   />
                   Ναι
@@ -1300,24 +1293,31 @@ export default function PersonnelPanel({
                 />
               </Field>
 
-              {!form.in_office ? (
-                <Field label="Admin tech id (ώρες βάρδιας)" className="col-span-2 sm:col-span-2">
-                  <input
-                    value={form.admin_tech_id}
-                    onChange={(e) => patch('admin_tech_id', e.target.value)}
-                    className={inputClass}
-                    placeholder="κενό = χωρίς ώρες από Admin"
-                    list="admin-tech-ids"
-                  />
-                  <datalist id="admin-tech-ids">
-                    {(adminTechs || []).map((t) => (
-                      <option key={t.id} value={String(t.id)}>
-                        {t.name}
-                      </option>
-                    ))}
-                  </datalist>
-                </Field>
-              ) : null}
+              <Field label="Admin tech id (ώρες βάρδιας)" className="col-span-2 sm:col-span-2">
+                <input
+                  value={form.admin_tech_id}
+                  onChange={(e) => patch('admin_tech_id', e.target.value)}
+                  className={inputClass}
+                  placeholder={
+                    form.in_office
+                      ? 'κενό = χειροκίνητα ρολόγια γραφείου'
+                      : 'κενό = χωρίς ώρες από Admin'
+                  }
+                  list="admin-tech-ids"
+                />
+                <datalist id="admin-tech-ids">
+                  {(adminTechs || []).map((t) => (
+                    <option key={t.id} value={String(t.id)}>
+                      {t.name}
+                    </option>
+                  ))}
+                </datalist>
+                {form.in_office ? (
+                  <p className="mt-1 text-[10px] text-slate-500">
+                    Με Admin id: ώρες από mobile. Κενό: χειροκίνητα ρολόγια γραφείου.
+                  </p>
+                ) : null}
+              </Field>
               <Field label="Φωτογραφία προφίλ" className="col-span-2 sm:col-span-4">
                 <div className="flex flex-col gap-2">
                   <div className="flex items-start gap-2">
