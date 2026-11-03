@@ -206,9 +206,10 @@ export function personnelToDb(form) {
 export function personnelAsTech(person, adminTechs = []) {
   if (!person) return null
   const isOffice = person.in_office === true
-  const adminId = isOffice ? null : person.admin_tech_id || person.tech_id
+  // Γραφείο: σύνδεση Admin μόνο με ρητό admin_tech_id· κενό = χειροκίνητα ρολόγια.
+  const adminId = isOffice ? person.admin_tech_id : person.admin_tech_id || person.tech_id
   const adminTech = isOffice
-    ? null
+    ? (adminId && (adminTechs || []).find((t) => String(t.id) === String(adminId))) || null
     : (adminTechs || []).find((t) => String(t.id) === String(adminId)) ||
       (adminTechs || []).find(
         (t) => String(t.name).toLowerCase() === String(person.tech_name).toLowerCase()
@@ -231,7 +232,9 @@ export function personnelAsTech(person, adminTechs = []) {
     end_date: person.end_date,
     employment_type: person.employment_type,
     payment_method: person.payment_method,
-    admin_tech_id: isOffice ? null : person.admin_tech_id || (adminTech ? String(adminTech.id) : null),
+    admin_tech_id: isOffice
+      ? adminTech ? String(adminTech.id) : null
+      : person.admin_tech_id || (adminTech ? String(adminTech.id) : null),
     in_office: isOffice,
     photo_url: person.photo_url || adminTech?.photo_url,
     is_active: person.is_active,

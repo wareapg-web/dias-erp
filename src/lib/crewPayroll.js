@@ -240,6 +240,15 @@ export function isSchedulableTech(role) {
   )
 }
 
+/** Office staff log ΕΤΑΙΡΙΑ hours from mobile; not shown on the scheduler board. */
+export function isOfficeRole(role) {
+  return String(role || '').toUpperCase().includes('ΓΡΑΦΕΙ')
+}
+
+export function isPayrollTech(role) {
+  return isSchedulableTech(role) || isOfficeRole(role)
+}
+
 function shiftTimeKey(timeStart, timeEnd) {
   return `${timeStart}|${timeEnd}`
 }
@@ -724,5 +733,5 @@ export function buildMonthlyPayroll(tech, year, month, assignments, jobs, dailyR
 }
 
 export function payrollTechs(techs) {
-  return techs.filter((t) => t.is_active !== false && isSchedulableTech(t.role || ''))
+  return techs.filter((t) => t.is_active !== false && isPayrollTech(t.role || ''))
 }
