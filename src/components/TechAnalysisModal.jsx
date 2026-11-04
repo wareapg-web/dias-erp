@@ -2073,6 +2073,7 @@ export default function TechAnalysisModal({
   const innerTabs = (tabOrder?.length ? tabOrder : DEFAULT_TAB_ORDER)
     .map((id) => TAB_DEFS[id])
     .filter(Boolean)
+    .filter((tab) => tab.id !== 'earningsBoard')
     .filter((tab) => {
       if (!techIsTemporary) return true
       return (
@@ -2298,6 +2299,27 @@ export default function TechAnalysisModal({
                   </button>
                 </div>
               </div>
+              {!techIsTemporary ? (
+                <button
+                  type="button"
+                  aria-pressed={showEarningsBoard}
+                  title={
+                    showEarningsBoard
+                      ? 'Επιστροφή στην Οικονομική Ανάλυση υπαλλήλου'
+                      : 'Συγκεντρωτικός Πίνακας Απολαβών μήνα'
+                  }
+                  onClick={() =>
+                    requestActiveTab(showEarningsBoard ? 'analysis' : 'earningsBoard')
+                  }
+                  className={`inline-flex h-[38px] shrink-0 items-center rounded-xl border px-3 text-xs font-bold uppercase tracking-wide transition ${
+                    showEarningsBoard
+                      ? 'border-amber-400/60 bg-amber-400/20 text-amber-100 shadow-[0_0_12px_rgba(251,191,36,0.2)]'
+                      : 'border-cyan-500/25 bg-gradient-to-b from-slate-900/90 to-slate-950/90 text-cyan-100 hover:border-cyan-400/50 hover:bg-cyan-500/15'
+                  }`}
+                >
+                  {greekCapsLabel('Πίνακας Απολαβών')}
+                </button>
+              ) : null}
               {showTechDropdown && (
                 <div className="flex flex-col gap-1">
                   <label htmlFor="analysis-tech" className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
