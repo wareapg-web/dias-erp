@@ -267,7 +267,7 @@ export default function TechAnalysisModal({
   const [dailyStatus, setDailyStatus] = useState([])
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState(null)
-  const [activeTab, setActiveTab] = useState(workspaceSeed.tab)
+  const [activeTab, setActiveTab] = useState('earningsBoard')
   const [techSearch, setTechSearch] = useState('')
   const [earningsForm, setEarningsForm] = useState(emptyEarningsForm)
   const [earningsRecordId, setEarningsRecordId] = useState(null)
@@ -1660,14 +1660,6 @@ export default function TechAnalysisModal({
     )
   }, [techList, techSearch])
 
-  if (!tech && !embedded) {
-    return (
-      <div className="rounded-2xl border border-white/10 bg-slate-900/75 px-6 py-16 text-center text-slate-400">
-        Επίλεξε τεχνικό για οικονομική ανάλυση.
-      </div>
-    )
-  }
-
   const split = tech ? splitTechName(tech.displayName || tech.name) : { lastName: '', firstName: '' }
   const lastName = tech?.last_name || split.lastName
   const firstName = tech?.first_name || split.firstName
@@ -2036,6 +2028,15 @@ export default function TechAnalysisModal({
       return next
     })
   }, [])
+
+  if (!tech && !embedded) {
+    return (
+      <div className="rounded-2xl border border-white/10 bg-slate-900/75 px-6 py-16 text-center text-slate-400">
+        Επίλεξε τεχνικό για οικονομική ανάλυση.
+      </div>
+    )
+  }
+
   const innerTabs = (tabOrder?.length ? tabOrder : DEFAULT_TAB_ORDER)
     .map((id) => TAB_DEFS[id])
     .filter(Boolean)
@@ -3550,6 +3551,9 @@ export default function TechAnalysisModal({
               personnel={personnel}
               year={analysisYear}
               month={selectedMonth}
+              onOpenPerson={(person) => {
+                if (requestPersonSelect(person)) setActiveTab('analysis')
+              }}
             />
           </div>
         ) : null}

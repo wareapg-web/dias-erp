@@ -72,6 +72,10 @@ function formatCell(value) {
   return formatEuro(n)
 }
 
+function blankDash(text) {
+  return text === '-' ? '' : text
+}
+
 function formatBalance(value) {
   const n = Number(value) || 0
   if (!Number.isFinite(n) || Math.abs(n) < 0.005) return '-'
@@ -496,6 +500,7 @@ export default function EarningsBoardModal({
   year,
   month,
   onClose,
+  onOpenPerson,
 }) {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
@@ -1002,7 +1007,12 @@ export default function EarningsBoardModal({
                         setDragOverId(null)
                       }}
                       className={`sticky left-0 z-10 border-r border-white/10 bg-slate-950 ${dens.cellPx} ${dens.cellPy} cursor-grab text-left font-semibold text-white active:cursor-grabbing`}
-                      title={`${row.name} — σύρε για αλλαγή σειράς`}
+                      title={
+                        onOpenPerson
+                          ? `${row.name} — διπλό κλικ για ανάλυση · σύρε για αλλαγή σειράς`
+                          : `${row.name} — σύρε για αλλαγή σειράς`
+                      }
+                      onDoubleClick={onOpenPerson ? () => onOpenPerson(row.person) : undefined}
                       style={{ width: nameW }}
                     >
                       <span className="truncate">{row.name}</span>
@@ -1015,7 +1025,7 @@ export default function EarningsBoardModal({
                         }`}
                         style={{ width: metricW(metric.key) }}
                       >
-                        {metric.format(row.month)}
+                        {blankDash(metric.format(row.month))}
                       </td>
                     ))}
                   </tr>
@@ -1035,7 +1045,7 @@ export default function EarningsBoardModal({
                     className={`border-r border-white/5 ${dens.cellPx} ${dens.cellPy} text-center font-mono font-semibold tabular-nums text-amber-100 ${dens.monoText}`}
                     style={{ width: metricW(metric.key) }}
                   >
-                    {metric.format(totals)}
+                    {blankDash(metric.format(totals))}
                   </td>
                 ))}
               </tr>
