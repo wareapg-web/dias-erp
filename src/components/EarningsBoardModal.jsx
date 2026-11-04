@@ -436,6 +436,7 @@ export async function fetchEarningsBoardRows({ personnel, year, month }) {
       techId: primaryId,
       name: personDisplayName(person),
       month: slot,
+      earningsForm,
     }
   })
 
