@@ -22,7 +22,7 @@ export const EARNINGS_ROW_DEFS = [
  * αλλιώς form/DB = `${key}_amount` (π.χ. accountant_amount).
  */
 export const EARNINGS_AMOUNT_ONLY_DEFS = [
-  { key: 'driver_allowance', label: 'Επίδομα οδηγού', dbColumn: 'driver_allowance' },
+  { key: 'driver_allowance', label: 'Άλλο Επίδομα', dbColumn: 'driver_allowance' },
   { key: 'accountant', label: 'Λογιστής', invoiceOnly: true },
 ]
 
@@ -36,7 +36,7 @@ export const EARNINGS_AUTO_TRANSFER_DEFS = [
   {
     key: 'driver_allowance',
     transferKey: 'driver_allowance',
-    label: 'Επίδομα οδηγού',
+    label: 'Άλλο Επίδομα',
     amountOnly: true,
   },
   {
@@ -58,7 +58,7 @@ export const FIXED_EXPENSE_DEFAULT_TRUE_KEYS = new Set([
 
 /**
  * transaction_types.id → κλειδί αποδοχών (για Βασικό/Μεταβλητό ανά μήνα).
- * 3 Μισθός · 4 Υπόλοιπο Μισθού · 21 Οδηγού · 23 Λογιστής ·
+ * 3 Μισθός · 4 Υπόλοιπο Μισθού · 21 Άλλο Επίδομα · 23 Λογιστής ·
  * 7 Υπερωρίες · 8 Αργίες · 9 Νυχτερινά · 22 Διανυκτέρευση · 25 Μετρό · 24 Ticket · 26 Ασφάλιση
  * (id 41 Bonus+ — μόνο ιστορικό ledger · όχι πλέον UI/Δημιουργία)
  */
@@ -109,6 +109,9 @@ export const EARNINGS_KEY_BY_TYPE_CODE = {
   driver_allowance: 'driver_allowance',
   επίδομα_οδηγού: 'driver_allowance',
   'επίδομα οδηγού': 'driver_allowance',
+  'επιδομα οδηγού': 'driver_allowance',
+  'άλλο επίδομα': 'driver_allowance',
+  'αλλο επιδομα': 'driver_allowance',
   accountant: 'accountant',
   λογιστής: 'accountant',
   λογιστης: 'accountant',
