@@ -209,7 +209,7 @@ export async function exportMonthInvoicesToExcel({ month, year, personnel = [] }
   }
 
   const monthTitle = String(MONTH_LABELS[m - 1] || `Μήνας ${m}`).toLocaleUpperCase('el-GR')
-  const title = `ΤΙΜΟΛΟΓΙΑ · ${monthTitle} ${y}`
+  const title = `APG ΤΙΜΟΛΟΓΙΑ · ${monthTitle} ${y}`
 
   const titleCell = {
     v: title,
@@ -271,6 +271,93 @@ export async function exportMonthInvoicesToExcel({ month, year, personnel = [] }
   XLSX.utils.book_append_sheet(workbook, sheet, 'Τιμολόγια')
 
   const filename = invoiceExportFilename(m, y)
+  XLSX.writeFile(workbook, filename)
+
+  return { rowCount: rows.length, filename }
+}
+
+export function pendingInvoiceExportFilename(month, year) {
+  const m = String(Number(month) || 0).padStart(2, '0')
+  const y = Number(year) || new Date().getFullYear()
+  return `Ekkremi_Timologia_${m}_${y}.xlsx`
+}
+
+/**
+ * Εκκρεμή τιμολόγια: Αξία = Υ (ΤΙΜ) του Πίνακα Απολαβών (ήδη με προσαύξηση όπου ισχύει).
+ * ΦΠΑ 24% και παρακράτηση επί της αξίας — ίδιες στήλες με «Τιμολόγια».
+ * @param {{ month: number, year: number, boardRows: Array<{ name: string, month: object|null, earningsForm: object|null }> }} opts
+ */
+export function exportPendingInvoicesToExcel({ month, year, boardRows = [] }) {
+  const m = Number(month)
+  const y = Number(year)
+  if (!Number.isFinite(m) || m < 1 || m > 12 || !Number.isFinite(y)) {
+    throw new Error('Μη έγκυρος μήνας/έτος για εξαγωγή εκκρεμών τιμολογίων')
+  }
+
+  const rows = []
+  for (const r of boardRows || []) {
+    const grossAmount = round2(r?.month?.yTim)
+    if (!(grossAmount > 0.005)) continue
+    const { taxPercent } = resolveInvoiceTermsForMonth([], y, m, r.earningsForm || null)
+    const pct = Number(taxPercent) > 0 ? Number(taxPercent) : 20
+    const vat = round2(grossAmount * 0.24)
+    const tax = round2(grossAmount * (pct / 100))
+    rows.push({
+      name: r.name,
+      grossAmount,
+      vat,
+      tax,
+      payable: round2(grossAmount + vat - tax),
+    })
+  }
+  rows.sort((a, b) => String(a.name).localeCompare(String(b.name), 'el'))
+  if (rows.length === 0) {
+    throw new Error('Δεν υπάρχουν εκκρεμή τιμολόγια (Υ ΤΙΜ) αυτόν τον μήνα')
+  }
+
+  const monthTitle = String(MONTH_LABELS[m - 1] || `Μήνας ${m}`).toLocaleUpperCase('el-GR')
+  const title = `APG ΕΚΚΡΕΜΗ ΤΙΜΟΛΟΓΙΑ · ${monthTitle} ${y}`
+  const aoa = [
+    [title],
+    [
+      'Ονοματεπώνυμο',
+      'Αξία Τιμολογίου (€)',
+      'ΦΠΑ 24% (€)',
+      'Παρακράτηση Φόρου (€)',
+      'Πληρωτέο (€)',
+    ],
+  ]
+  let totGross = 0
+  let totVat = 0
+  let totTax = 0
+  let totPayable = 0
+  for (const r of rows) {
+    aoa.push([r.name, r.grossAmount, r.vat, r.tax, r.payable])
+    totGross = round2(totGross + r.grossAmount)
+    totVat = round2(totVat + r.vat)
+    totTax = round2(totTax + r.tax)
+    totPayable = round2(totPayable + r.payable)
+  }
+  aoa.push(['ΓΕΝΙΚΟ ΣΥΝΟΛΟ', totGross, totVat, totTax, totPayable])
+
+  const sheet = XLSX.utils.aoa_to_sheet(aoa)
+  styleTitleCell(sheet, title, 5)
+  const lastRow = aoa.length
+  for (let r = 3; r <= lastRow; r += 1) {
+    for (const col of ['B', 'C', 'D', 'E']) {
+      const cell = sheet[`${col}${r}`]
+      if (cell && typeof cell.v === 'number') {
+        cell.t = 'n'
+        cell.z = '0.00'
+      }
+    }
+  }
+  sheet['!cols'] = [{ wch: 36 }, { wch: 20 }, { wch: 14 }, { wch: 20 }, { wch: 14 }]
+
+  const workbook = XLSX.utils.book_new()
+  XLSX.utils.book_append_sheet(workbook, sheet, 'Εκκρεμή')
+
+  const filename = pendingInvoiceExportFilename(m, y)
   XLSX.writeFile(workbook, filename)
 
   return { rowCount: rows.length, filename }

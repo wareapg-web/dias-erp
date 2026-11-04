@@ -63,7 +63,12 @@ import {
   isLoanInstallmentRow,
 } from '../lib/loanUi'
 import { exportMonthPayrollToExcel } from '../lib/monthPayrollExport'
-import { exportMonthInvoicesToExcel, exportMonthTemporaryToExcel, exportMonthTemporaryOtherToExcel } from '../lib/monthInvoiceExport'
+import {
+  exportMonthInvoicesToExcel,
+  exportMonthTemporaryToExcel,
+  exportMonthTemporaryOtherToExcel,
+  exportPendingInvoicesToExcel,
+} from '../lib/monthInvoiceExport'
 import { exportJobsToExcel } from '../lib/monthJobsExport'
 import {
   computeLedgerBalances,
@@ -92,7 +97,10 @@ import LoanManagementModal from './LoanManagementModal'
 import TemporaryPayablesModal, {
   fetchTemporaryPayablesSummary,
 } from './TemporaryPayablesModal'
-import EarningsBoardModal from './EarningsBoardModal'
+import EarningsBoardModal, {
+  fetchEarningsBoardRows,
+  invalidateEarningsBoardCache,
+} from './EarningsBoardModal'
 import EarningsPackageForm from './EarningsPackageForm'
 import GreekDateInput from './GreekDateInput'
 import { useDraggableModal, MODAL_POS_KEYS } from '../lib/useDraggableModal'
@@ -234,6 +242,7 @@ export default function TechAnalysisModal({
   const [selectedMonth, setSelectedMonth] = useState(workspaceSeed.month)
   const [monthExporting, setMonthExporting] = useState(false)
   const [invoiceExporting, setInvoiceExporting] = useState(false)
+  const [pendingInvoiceExporting, setPendingInvoiceExporting] = useState(false)
   const [jobsExporting, setJobsExporting] = useState(false)
   const [jobsExportChoiceOpen, setJobsExportChoiceOpen] = useState(false)
   const [printsMenuOpen, setPrintsMenuOpen] = useState(false)
@@ -1290,6 +1299,30 @@ export default function TechAnalysisModal({
       toast.error(msg || 'Αποτυχία εξαγωγής τιμολογίων')
     } finally {
       setInvoiceExporting(false)
+    }
+  }
+
+  const handlePendingInvoiceExcelExport = async () => {
+    if (pendingInvoiceExporting) return
+    setPendingInvoiceExporting(true)
+    try {
+      invalidateEarningsBoardCache(analysisYear, selectedMonth)
+      const boardRows = await fetchEarningsBoardRows({
+        personnel,
+        year: analysisYear,
+        month: selectedMonth,
+      })
+      const { rowCount, filename } = exportPendingInvoicesToExcel({
+        month: selectedMonth,
+        year: analysisYear,
+        boardRows,
+      })
+      toast.success(`Εξαγωγή εκκρεμών τιμολογίων · ${rowCount} τεχνικοί · ${filename}`)
+    } catch (err) {
+      const msg = err?.message || String(err)
+      toast.error(msg || 'Αποτυχία εξαγωγής εκκρεμών τιμολογίων')
+    } finally {
+      setPendingInvoiceExporting(false)
     }
   }
 
@@ -2449,7 +2482,9 @@ export default function TechAnalysisModal({
                       onClick={() => setPrintsMenuOpen((v) => !v)}
                       aria-expanded={printsMenuOpen}
                       aria-haspopup="menu"
-                      disabled={invoiceExporting || monthExporting || jobsExporting}
+                      disabled={
+                        invoiceExporting || pendingInvoiceExporting || monthExporting || jobsExporting
+                      }
                       className={`group inline-flex h-[38px] items-center gap-2 rounded-xl border px-3.5 text-xs font-bold tracking-[0.12em] transition disabled:cursor-not-allowed disabled:opacity-50 ${
                         printsMenuOpen
                           ? 'border-violet-400/50 bg-gradient-to-b from-violet-500/30 to-indigo-600/25 text-violet-50 shadow-[0_0_20px_rgba(139,92,246,0.25)]'
@@ -2515,6 +2550,32 @@ export default function TechAnalysisModal({
                             </span>
                             <span className="block truncate text-[10px] text-slate-500">
                               Οδηγός ΤΙΜ · ΦΠΑ
+                            </span>
+                          </span>
+                        </button>
+                        <button
+                          type="button"
+                          role="menuitem"
+                          disabled={pendingInvoiceExporting}
+                          title="Εκκρεμή τιμολόγια: Υ (ΤΙΜ) από Πίνακα Απολαβών · ΦΠΑ 24% · Παρακράτηση · Πληρωτέο"
+                          onClick={() => {
+                            setPrintsMenuOpen(false)
+                            handlePendingInvoiceExcelExport()
+                          }}
+                          className="flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2.5 text-left transition hover:bg-rose-500/15 disabled:opacity-50"
+                        >
+                          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-rose-500/30 bg-rose-500/15 text-rose-200">
+                            <svg viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4" aria-hidden>
+                              <path d="M10.75 2.75a.75.75 0 00-1.5 0v8.69L6.3 8.49a.75.75 0 00-1.1 1.02l4.25 4.5a.75.75 0 001.1 0l4.25-4.5a.75.75 0 10-1.1-1.02l-2.95 3.12V2.75z" />
+                              <path d="M3.5 12.75a.75.75 0 00-1.5 0v2.5A2.75 2.75 0 004.75 18h10.5A2.75 2.75 0 0018 15.25v-2.5a.75.75 0 00-1.5 0v2.5c0 .69-.56 1.25-1.25 1.25H4.75c-.69 0-1.25-.56-1.25-1.25v-2.5z" />
+                            </svg>
+                          </span>
+                          <span className="min-w-0">
+                            <span className="block text-xs font-bold text-rose-100">
+                              {pendingInvoiceExporting ? '...' : greekCapsLabel('Εκκρεμή Τιμολόγια')}
+                            </span>
+                            <span className="block truncate text-[10px] text-slate-500">
+                              Υ (ΤΙΜ) · ΦΠΑ
                             </span>
                           </span>
                         </button>
