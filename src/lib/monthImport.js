@@ -29,7 +29,7 @@ function parseAmount(value) {
 
 /**
  * Form/DB field → transaction_types.id
- * 3 Μισθός · 4 Υπόλοιπο Μισθού · 21 Επίδομα Οδηγού · 23 Λογιστής
+ * 3 Μισθός · 4 Υπόλοιπο Μισθού · 21 Άλλο Επίδομα · 23 Λογιστής
  * (41 Bonus+ αφαιρέθηκε από Δημιουργία — ιστορικό ledger άθικτο)
  */
 export const TRANSFER_MAPPING = {
@@ -43,7 +43,7 @@ export const TRANSFER_MAPPING = {
 const TRANSFER_LABEL_FALLBACK = {
   salary_amount: 'Μισθός',
   bonus_amount: 'Υπόλοιπο Μισθού',
-  driver_allowance: 'Επίδομα Οδηγού',
+  driver_allowance: 'Άλλο Επίδομα',
   accountant_amount: 'Λογιστής',
 }
 

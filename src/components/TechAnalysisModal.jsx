@@ -2808,16 +2808,6 @@ export default function TechAnalysisModal({
                       </tr>
                     </thead>
                     <tbody>
-                      {!techIsTemporary || ledgerCategoryPolicy.allowInvoice ? (
-                        <MatrixRow
-                          label="Σ"
-                          hint="Απολαβές"
-                          selectedMonth={selectedMonth}
-                          onSelectMonth={requestSelectedMonth}
-                          values={salaryMatrix.months.map((m) => formatMatrixCell(m.sigma))}
-                          total={formatMatrixCell(salaryMatrix.totals.sigma)}
-                        />
-                      ) : null}
                       {!techIsTemporary || ledgerCategoryPolicy.allowSalary ? (
                         <MatrixRow
                           label="Μισθός"
@@ -2939,6 +2929,16 @@ export default function TechAnalysisModal({
                           onSelectMonth={requestSelectedMonth}
                           values={salaryMatrix.months.map((m) => formatMatrixCell(m.pi))}
                           total={formatMatrixCell(salaryMatrix.totals.pi)}
+                        />
+                      ) : null}
+                      {!techIsTemporary || ledgerCategoryPolicy.allowInvoice ? (
+                        <MatrixRow
+                          label="Σ"
+                          hint="Απολαβές"
+                          selectedMonth={selectedMonth}
+                          onSelectMonth={requestSelectedMonth}
+                          values={salaryMatrix.months.map((m) => formatMatrixCell(m.sigma))}
+                          total={formatMatrixCell(salaryMatrix.totals.sigma)}
                         />
                       ) : null}
                     </tbody>
@@ -4406,7 +4406,7 @@ function MatrixRow({ label, hint, values, total, selectedMonth, onSelectMonth, i
                 : 'bg-transparent text-slate-300'
           }`}
         >
-          {value || '·'}
+          {value === '-' ? '' : value}
         </td>
         )
       })}
@@ -4415,7 +4415,7 @@ function MatrixRow({ label, hint, values, total, selectedMonth, onSelectMonth, i
           indent ? 'text-slate-400' : 'text-cyan-200'
         }`}
       >
-        {total}
+        {total === '-' ? '' : total}
       </td>
     </tr>
   )
