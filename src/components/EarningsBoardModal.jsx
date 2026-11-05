@@ -325,6 +325,14 @@ function boardCacheKey(year, month, idList) {
   return `${Number(year)}-${Number(month)}|${idList.slice().sort().join(',')}`
 }
 
+function boardIdList(personnel) {
+  const idSet = new Set()
+  for (const p of permanentTargets(personnel)) {
+    for (const k of personTechKeys(p)) idSet.add(k)
+  }
+  return [...idSet]
+}
+
 function personnelIdFingerprint(personnel) {
   return permanentTargets(personnel)
     .map((p) => String(p.tech_id))
@@ -340,11 +348,8 @@ export async function fetchEarningsBoardRows({ personnel, year, month }) {
   const targets = permanentTargets(personnel)
   if (!targets.length) return []
 
-  const idSet = new Set()
-  for (const p of targets) {
-    for (const k of personTechKeys(p)) idSet.add(k)
-  }
-  const idList = [...idSet]
+  const idList = boardIdList(personnel)
+  const idSet = new Set(idList)
   const y = Number(year)
   const m = Number(month)
   const cacheKey = boardCacheKey(y, m, idList)
@@ -525,8 +530,7 @@ export default function EarningsBoardModal({
     let cancelled = false
 
     async function load() {
-      const idList = personnelKey ? personnelKey.split(',').filter(Boolean) : []
-      const cacheKey = boardCacheKey(year, month, idList)
+      const cacheKey = boardCacheKey(year, month, boardIdList(personnel))
       const hit = boardCache.get(cacheKey)
       const applyRows = (list) => {
         const ordered = applySavedOrder(list, loadOrder())
