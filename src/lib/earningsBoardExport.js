@@ -3,7 +3,7 @@
 import * as XLSX from 'xlsx-js-style'
 import { diasClient, fetchAllRows } from './supabase'
 import { buildLedgerYearMatrix } from './techLedger'
-import { earningsFromDb } from './techEarnings'
+import { earningsFromDb, sumLedgerChargeBoxes } from './techEarnings'
 import { parseElNumber } from './numberFormat'
 import { MONTH_LABELS } from './payrollAnalysis'
 import { loadPayrollBenefitsByTechForMonth } from './monthPayrollExport'
@@ -18,7 +18,11 @@ const METRIC_COLS = [
   { key: 'insurance', label: 'Ασφάλιση', field: 'insurance' },
   { key: 'pi', label: 'Π', field: 'pi' },
   { key: 'salary', label: 'Μισθός', field: 'salaryDebit' },
+  { key: 'otherSalary', label: 'Λοιπά Μισθού', field: 'otherSalary' },
+  { key: 'otherOvertime', label: 'Λοιπά Υπερωριών', field: 'otherOvertime' },
   { key: 'other', label: 'Λοιπά', field: 'otherDebit' },
+  { key: 'invoiceSalary', label: 'Τιμολόγιο Μισθού', field: 'invoiceSalary' },
+  { key: 'invoiceOvertime', label: 'Τιμολόγιο Υπερωριών', field: 'invoiceOvertime' },
   { key: 'invoice', label: 'Τιμολόγιο', field: 'invoiceDebit' },
 ]
 
@@ -62,6 +66,22 @@ function permanentTargets(personnel = []) {
     )
 }
 
+function placeNewChargeCols(ordered, savedKeys) {
+  const saved = new Set((savedKeys || []).map(String))
+  let list = ordered.slice()
+  const place = (key, anchor) => {
+    if (saved.has(key)) return
+    list = list.filter((k) => k !== key)
+    const at = list.indexOf(anchor)
+    list.splice(at < 0 ? list.length : at, 0, key)
+  }
+  place('otherOvertime', 'other')
+  place('otherSalary', 'otherOvertime')
+  place('invoiceOvertime', 'invoice')
+  place('invoiceSalary', 'invoiceOvertime')
+  return list
+}
+
 function loadSavedColKeys() {
   try {
     const raw = localStorage.getItem(COL_ORDER_KEY)
@@ -80,7 +100,7 @@ function loadSavedColKeys() {
     for (const c of METRIC_COLS) {
       if (!seen.has(c.key)) ordered.push(c.key)
     }
-    return ordered
+    return placeNewChargeCols(ordered, parsed.map(String))
   } catch {
     return METRIC_COLS.map((c) => c.key)
   }
@@ -140,7 +160,11 @@ function emptyTotals() {
     insurance: 0,
     pi: 0,
     salaryDebit: 0,
+    otherSalary: 0,
+    otherOvertime: 0,
     otherDebit: 0,
+    invoiceSalary: 0,
+    invoiceOvertime: 0,
     invoiceDebit: 0,
   }
 }
@@ -157,7 +181,11 @@ function accumulateTotals(rows) {
     acc.insurance += Number(s.insurance) || 0
     acc.pi += Number(s.pi) || 0
     acc.salaryDebit += Number(s.salaryDebit) || 0
+    acc.otherSalary += Number(s.otherSalary) || 0
+    acc.otherOvertime += Number(s.otherOvertime) || 0
     acc.otherDebit += Number(s.otherDebit) || 0
+    acc.invoiceSalary += Number(s.invoiceSalary) || 0
+    acc.invoiceOvertime += Number(s.invoiceOvertime) || 0
     acc.invoiceDebit += Number(s.invoiceDebit) || 0
   }
   for (const k of Object.keys(acc)) acc[k] = round2(acc[k])
@@ -384,10 +412,19 @@ async function buildPersonBoardRows({
     const name = personDisplayName(person)
     for (let mi = 0; mi < monthCount; mi += 1) {
       const monthNum = monthCount === 12 ? mi + 1 : Number(benefitsByMonth[mi]?.month) || mi + 1
+      const slot = matrix.months[monthNum - 1] || null
+      if (slot) {
+        const monthRows = (personLedger || []).filter((row) => {
+          const mm = Number(row.month)
+          const yy = Number(row.year)
+          return mm === monthNum && (!Number.isFinite(yy) || yy === y)
+        })
+        Object.assign(slot, sumLedgerChargeBoxes(monthRows))
+      }
       byMonth[mi].push({
         techId: primaryId,
         name,
-        month: matrix.months[monthNum - 1] || null,
+        month: slot,
       })
     }
   }

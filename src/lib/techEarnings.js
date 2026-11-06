@@ -156,6 +156,35 @@ export function earningsKeyFromLedgerRow(row) {
   return null
 }
 
+/**
+ * Τέσσερα κουτάκια καθολικού, χωρίς προσαύξηση.
+ * Υπόλοιπο Μισθού / Υπερωρίες × Λοιπά Χρ. / Τιμολόγιο Χρ.
+ */
+export function sumLedgerChargeBoxes(rows) {
+  const out = {
+    otherSalary: 0,
+    otherOvertime: 0,
+    invoiceSalary: 0,
+    invoiceOvertime: 0,
+  }
+  for (const row of rows || []) {
+    const key = earningsKeyFromLedgerRow(row)
+    const other = Number(row?.other_debit) || 0
+    const invoice = Number(row?.invoice_amount) || 0
+    if (key === 'bonus') {
+      out.otherSalary += other
+      out.invoiceSalary += invoice
+    } else if (key === 'overtime') {
+      out.otherOvertime += other
+      out.invoiceOvertime += invoice
+    }
+  }
+  for (const k of Object.keys(out)) {
+    out[k] = Math.round(out[k] * 100) / 100
+  }
+  return out
+}
+
 /** Form / DB field name για amount-only γραμμή. */
 export function amountOnlyField(def) {
   return def.dbColumn || `${def.key}_amount`
