@@ -188,7 +188,7 @@ function loadAnalysisWorkspace(fallbackMonth, fallbackYear) {
       month: month >= 1 && month <= 12 ? month : fallbackMonth,
       year: year >= 2020 && year <= 2035 ? year : fallbackYear,
       tab: WORKSPACE_TABS.has(tab) ? tab : 'analysis',
-      sidebarKind: parsed?.sidebarKind === 'temporary' ? 'temporary' : 'permanent',
+      sidebarKind: 'permanent',
     }
   } catch {
     return {
@@ -251,7 +251,7 @@ export default function TechAnalysisModal({
   const [settlementChoiceMode, setSettlementChoiceMode] = useState('full') // 'full' | 'partial'
   const [temporaryExporting, setTemporaryExporting] = useState(false)
   const [temporaryOtherExporting, setTemporaryOtherExporting] = useState(false)
-  const [personnelSidebarKind, setPersonnelSidebarKind] = useState(workspaceSeed.sidebarKind)
+  const [personnelSidebarKind, setPersonnelSidebarKind] = useState('permanent')
   const [temporaryPayablesOpen, setTemporaryPayablesOpen] = useState(false)
   const [earningsBoardMounted, setEarningsBoardMounted] = useState(false)
   const [tabOrder, setTabOrder] = useState(loadTabOrder)
@@ -2200,13 +2200,10 @@ export default function TechAnalysisModal({
       <div className={`relative space-y-3 ${embedded ? '' : 'flex-1 overflow-y-auto p-4 sm:p-5'}`}>
         {/* Κεφαλίδα όπως παλιό ERP: μήνας/έτος · στοιχεία · φωτογραφία */}
         {tech && (
-        <div className="relative z-20 overflow-visible rounded-2xl border border-white/10 bg-slate-900/75 p-3 shadow-xl backdrop-blur-md sm:p-4">
-          <div className="flex flex-col gap-3 overflow-visible lg:flex-row lg:items-center">
-            <div className="flex flex-nowrap items-end gap-2 overflow-visible">
-              <div className="flex shrink-0 flex-col gap-1">
-                <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
-                  Μήνας
-                </span>
+        <div className="relative z-20 overflow-visible rounded-2xl border border-white/10 bg-slate-900/75 p-2 shadow-xl backdrop-blur-md sm:p-2.5">
+          <div className="flex flex-col gap-2 overflow-visible lg:flex-row lg:items-center">
+            <div className="flex flex-nowrap items-center gap-2 overflow-visible">
+              <div className="flex shrink-0">
                 <div className="inline-flex h-[38px] items-center gap-0.5 rounded-xl border border-cyan-500/25 bg-gradient-to-b from-slate-900/90 to-slate-950/90 p-0.5 shadow-lg shadow-cyan-950/20">
                   <button
                     type="button"
@@ -2246,10 +2243,7 @@ export default function TechAnalysisModal({
                   </button>
                 </div>
               </div>
-              <div className="flex flex-col gap-1">
-                <label htmlFor="analysis-year" className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
-                  Έτος
-                </label>
+              <div className="flex">
                 <div className="inline-flex h-[38px] items-center gap-0.5 rounded-xl border border-cyan-500/25 bg-gradient-to-b from-slate-900/90 to-slate-950/90 p-0.5 shadow-lg shadow-cyan-950/20">
                   <button
                     type="button"
@@ -2298,25 +2292,6 @@ export default function TechAnalysisModal({
                   </button>
                 </div>
               </div>
-              <button
-                type="button"
-                aria-pressed={showEarningsBoard}
-                title={
-                  showEarningsBoard
-                    ? 'Επιστροφή στην Οικονομική Ανάλυση υπαλλήλου'
-                    : 'Συγκεντρωτικός Πίνακας Απολαβών μήνα'
-                }
-                onClick={() =>
-                  requestActiveTab(showEarningsBoard ? 'analysis' : 'earningsBoard')
-                }
-                className={`inline-flex h-[38px] shrink-0 items-center rounded-xl border px-3 text-xs font-bold uppercase tracking-wide transition ${
-                  showEarningsBoard
-                    ? 'border-amber-400/60 bg-amber-400/20 text-amber-100 shadow-[0_0_12px_rgba(251,191,36,0.2)]'
-                    : 'border-cyan-500/25 bg-gradient-to-b from-slate-900/90 to-slate-950/90 text-cyan-100 hover:border-cyan-400/50 hover:bg-cyan-500/15'
-                }`}
-              >
-                {greekCapsLabel('Πίνακας Απολαβών')}
-              </button>
               {showTechDropdown && (
                 <div className="flex flex-col gap-1">
                   <label htmlFor="analysis-tech" className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
@@ -2339,11 +2314,8 @@ export default function TechAnalysisModal({
               )}
             </div>
 
-            <div className="flex min-w-0 flex-1 flex-col items-center justify-center px-2 text-center">
-              <p className="text-[10px] font-semibold tracking-wider text-slate-500">
-                {greekCapsLabel('Υπάλληλος')}
-              </p>
-              <p className="mt-0.5 truncate text-lg font-bold tracking-wide text-white sm:text-xl">
+            <div className="flex min-w-0 flex-1 items-center justify-center px-2 text-center">
+              <p className="truncate text-lg font-bold tracking-wide text-white sm:text-xl">
                 {[lastName, firstName].filter(Boolean).join(' ') || displayName || '—'}
               </p>
             </div>
@@ -2666,7 +2638,7 @@ export default function TechAnalysisModal({
                     {employmentLabel(tech.employment_type)}
                   </span>
                 )}
-                <div className="h-20 w-20 shrink-0 overflow-hidden rounded-xl border border-white/10 bg-slate-800">
+                <div className="h-14 w-14 shrink-0 overflow-hidden rounded-xl border border-white/10 bg-slate-800">
                   {photoUrl ? (
                     <img src={photoUrl} alt={displayName} className="h-full w-full object-cover" />
                   ) : (
@@ -2680,6 +2652,37 @@ export default function TechAnalysisModal({
           </div>
         </div>
         )}
+
+        <div className="flex">
+          <button
+            type="button"
+            aria-pressed={showEarningsBoard}
+            title={
+              showEarningsBoard
+                ? 'Επιστροφή στην Οικονομική Ανάλυση υπαλλήλου'
+                : personnelSidebarKind === 'temporary'
+                  ? 'Συγκεντρωτικός πίνακας έκτακτων μήνα'
+                  : 'Συγκεντρωτικός Πίνακας Απολαβών μήνα'
+            }
+            onClick={() =>
+              requestActiveTab(showEarningsBoard ? 'analysis' : 'earningsBoard')
+            }
+            className={`inline-flex h-9 items-center gap-2 rounded-xl border px-3 text-xs font-bold uppercase tracking-wide shadow-md transition ${
+              showEarningsBoard
+                ? 'border-amber-400/70 bg-amber-400 text-slate-950 shadow-[0_0_16px_rgba(251,191,36,0.28)]'
+                : personnelSidebarKind === 'temporary'
+                  ? 'border-violet-400/50 bg-violet-500/85 text-white shadow-violet-950/40 hover:bg-violet-400'
+                  : 'border-cyan-400/40 bg-cyan-500/80 text-slate-950 shadow-cyan-950/40 hover:bg-cyan-400'
+            }`}
+          >
+            <svg viewBox="0 0 20 20" fill="currentColor" className="h-3.5 w-3.5" aria-hidden>
+              <path d="M3 3.75A.75.75 0 013.75 3h4.5a.75.75 0 01.75.75v4.5a.75.75 0 01-.75.75h-4.5A.75.75 0 013 8.25v-4.5zM11 3.75a.75.75 0 01.75-.75h4.5a.75.75 0 01.75.75v4.5a.75.75 0 01-.75.75h-4.5a.75.75 0 01-.75-.75v-4.5zM3 11.75a.75.75 0 01.75-.75h4.5a.75.75 0 01.75.75v4.5a.75.75 0 01-.75.75h-4.5a.75.75 0 01-.75-.75v-4.5zM11 11.75a.75.75 0 01.75-.75h4.5a.75.75 0 01.75.75v4.5a.75.75 0 01-.75.75h-4.5a.75.75 0 01-.75-.75v-4.5z" />
+            </svg>
+            {greekCapsLabel(
+              personnelSidebarKind === 'temporary' ? 'Πίνακας Εκτακτών' : 'Πίνακας Απολαβών'
+            )}
+          </button>
+        </div>
 
         {/* Tabs παλιού ERP — δεξιά από τη στήλη ονομάτων · σύρε για σειρά */}
         <div className="flex gap-1 overflow-x-auto border-b border-white/10 pb-px">
@@ -3631,6 +3634,7 @@ export default function TechAnalysisModal({
               personnel={personnel}
               year={analysisYear}
               month={selectedMonth}
+              audience={personnelSidebarKind === 'temporary' ? 'temporary' : 'permanent'}
               onOpenPerson={(person) => {
                 if (requestPersonSelect(person)) setActiveTab('analysis')
               }}
