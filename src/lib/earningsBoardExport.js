@@ -20,10 +20,10 @@ const METRIC_COLS = [
   { key: 'salary', label: 'Μισθός', field: 'salaryDebit' },
   { key: 'otherSalary', label: 'Λοιπά Μισθού', field: 'otherSalary' },
   { key: 'otherOvertime', label: 'Λοιπά Υπερωριών', field: 'otherOvertime' },
-  { key: 'other', label: 'Λοιπά', field: 'otherDebit' },
+  { key: 'other', label: 'Λοιπά Σύνολο', field: 'otherDebit' },
   { key: 'invoiceSalary', label: 'Τιμολόγιο Μισθού', field: 'invoiceSalary' },
   { key: 'invoiceOvertime', label: 'Τιμολόγιο Υπερωριών', field: 'invoiceOvertime' },
-  { key: 'invoice', label: 'Τιμολόγιο', field: 'invoiceDebit' },
+  { key: 'invoice', label: 'Τιμολόγιο Σύνολο', field: 'invoiceDebit' },
 ]
 
 const COL_ORDER_KEY = 'dias-erp:earnings-board:col-order'
@@ -419,7 +419,7 @@ async function buildPersonBoardRows({
           const yy = Number(row.year)
           return mm === monthNum && (!Number.isFinite(yy) || yy === y)
         })
-        Object.assign(slot, sumLedgerChargeBoxes(monthRows))
+        Object.assign(slot, sumLedgerChargeBoxes(monthRows, earningsForm))
       }
       byMonth[mi].push({
         techId: primaryId,

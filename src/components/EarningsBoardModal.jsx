@@ -82,13 +82,14 @@ function formatBalance(value) {
   return formatEuro(n)
 }
 
-function permanentTargets(personnel = []) {
+function permanentTargets(personnel = [], audience = 'permanent') {
+  const wantTemporary = audience === 'temporary'
   return (personnel || [])
     .filter(
       (p) =>
         p &&
         p.is_active !== false &&
-        !isTemporaryPersonnel(p) &&
+        isTemporaryPersonnel(p) === wantTemporary &&
         p.tech_id != null &&
         String(p.tech_id).trim() !== ''
     )
@@ -168,7 +169,7 @@ const METRIC_ROWS = [
   },
   {
     key: 'other',
-    label: 'Λοιπά',
+    label: 'Λοιπά Σύνολο',
     hint: 'Χρεώσεις',
     format: (slot) => formatCell(slot?.otherDebit),
     indent: true,
@@ -189,7 +190,7 @@ const METRIC_ROWS = [
   },
   {
     key: 'invoice',
-    label: 'Τιμολόγιο',
+    label: 'Τιμολόγιο Σύνολο',
     hint: 'Χρεώσεις',
     format: (slot) => formatCell(slot?.invoiceDebit),
     indent: true,
@@ -247,9 +248,13 @@ function saveWidths(widths) {
   }
 }
 
-function loadOrder() {
+function orderStorageKey(audience) {
+  return audience === 'temporary' ? `${ORDER_KEY}:temporary` : ORDER_KEY
+}
+
+function loadOrder(audience = 'permanent') {
   try {
-    const raw = localStorage.getItem(ORDER_KEY)
+    const raw = localStorage.getItem(orderStorageKey(audience))
     if (!raw) return []
     const parsed = JSON.parse(raw)
     return Array.isArray(parsed) ? parsed.map(String) : []
@@ -258,9 +263,9 @@ function loadOrder() {
   }
 }
 
-function saveOrder(ids) {
+function saveOrder(ids, audience = 'permanent') {
   try {
-    localStorage.setItem(ORDER_KEY, JSON.stringify(ids.map(String)))
+    localStorage.setItem(orderStorageKey(audience), JSON.stringify(ids.map(String)))
   } catch {
     /* ignore */
   }
@@ -366,20 +371,20 @@ function minWidthFor(colId) {
 /** Session cache — instant reopen του ίδιου μήνα. */
 const boardCache = new Map()
 
-function boardCacheKey(year, month, idList) {
-  return `${Number(year)}-${Number(month)}|${idList.slice().sort().join(',')}`
+function boardCacheKey(year, month, idList, audience = 'permanent') {
+  return `${Number(year)}-${Number(month)}|${audience}|${idList.slice().sort().join(',')}`
 }
 
-function boardIdList(personnel) {
+function boardIdList(personnel, audience = 'permanent') {
   const idSet = new Set()
-  for (const p of permanentTargets(personnel)) {
+  for (const p of permanentTargets(personnel, audience)) {
     for (const k of personTechKeys(p)) idSet.add(k)
   }
   return [...idSet]
 }
 
-function personnelIdFingerprint(personnel) {
-  return permanentTargets(personnel)
+function personnelIdFingerprint(personnel, audience = 'permanent') {
+  return permanentTargets(personnel, audience)
     .map((p) => String(p.tech_id))
     .sort()
     .join(',')
@@ -389,15 +394,15 @@ function personnelIdFingerprint(personnel) {
  * Μήνας απολαβών για όλους τους ενεργούς μόνιμους — ίδια λογική με την ετήσια μήτρα.
  * Φορτώνει ΜΟΝΟ τον επιλεγμένο μήνα (όχι όλο το έτος) + earnings · χωρίς agreement versions.
  */
-export async function fetchEarningsBoardRows({ personnel, year, month }) {
-  const targets = permanentTargets(personnel)
+export async function fetchEarningsBoardRows({ personnel, year, month, audience = 'permanent' }) {
+  const targets = permanentTargets(personnel, audience)
   if (!targets.length) return []
 
-  const idList = boardIdList(personnel)
+  const idList = boardIdList(personnel, audience)
   const idSet = new Set(idList)
   const y = Number(year)
   const m = Number(month)
-  const cacheKey = boardCacheKey(y, m, idList)
+  const cacheKey = boardCacheKey(y, m, idList, audience)
   const cached = boardCache.get(cacheKey)
   if (cached?.rows) return cached.rows
 
@@ -475,12 +480,12 @@ export async function fetchEarningsBoardRows({ personnel, year, month }) {
     const matrix = buildLedgerYearMatrix(personLedger, y, yearPayrolls, {
       earningsTicketAmount: round2(parseElNumber(earningsForm?.ticket_amount) || 0),
       earningsInsuranceAmount: round2(parseElNumber(earningsForm?.insurance_amount) || 0),
-      techIsTemporary: false,
+      techIsTemporary: audience === 'temporary',
       agreementVersions: [],
       earningsForm,
     })
     const slot = matrix.months[m - 1] || null
-    if (slot) Object.assign(slot, sumLedgerChargeBoxes(personLedger))
+    if (slot) Object.assign(slot, sumLedgerChargeBoxes(personLedger, earningsForm))
 
     return {
       person,
@@ -553,6 +558,7 @@ export default function EarningsBoardModal({
   month,
   onClose,
   onOpenPerson,
+  audience = 'permanent',
 }) {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
@@ -568,20 +574,28 @@ export default function EarningsBoardModal({
   const dragIdRef = useRef(null)
   const colDragKeyRef = useRef(null)
 
-  const metrics = useMemo(() => metricsInOrder(colOrder), [colOrder])
-  const personnelKey = useMemo(() => personnelIdFingerprint(personnel), [personnel])
+  const metrics = useMemo(() => {
+    const ordered = metricsInOrder(colOrder)
+    if (audience !== 'temporary') return ordered
+    const allow = ['sigma', 'yL', 'yTim', 'pi', 'other', 'invoice']
+    return allow.map((key) => ordered.find((m) => m.key === key)).filter(Boolean)
+  }, [colOrder, audience])
+  const personnelKey = useMemo(
+    () => personnelIdFingerprint(personnel, audience),
+    [personnel, audience]
+  )
 
   useEffect(() => {
     if (!open) return
     let cancelled = false
 
     async function load() {
-      const cacheKey = boardCacheKey(year, month, boardIdList(personnel))
+      const cacheKey = boardCacheKey(year, month, boardIdList(personnel, audience), audience)
       const hit = boardCache.get(cacheKey)
       const applyRows = (list) => {
-        const ordered = applySavedOrder(list, loadOrder())
+        const ordered = applySavedOrder(list, loadOrder(audience))
         setRows(ordered)
-        saveOrder(ordered.map((r) => r.techId))
+        saveOrder(ordered.map((r) => r.techId), audience)
       }
 
       // Instant paint από cache · soft refresh στο background
@@ -590,7 +604,7 @@ export default function EarningsBoardModal({
         setLoading(false)
         setError(null)
         boardCache.delete(cacheKey)
-        fetchEarningsBoardRows({ personnel, year, month })
+        fetchEarningsBoardRows({ personnel, year, month, audience })
           .then((next) => {
             if (!cancelled) applyRows(next)
           })
@@ -607,6 +621,7 @@ export default function EarningsBoardModal({
           personnel,
           year,
           month,
+          audience,
         })
         if (cancelled) return
         applyRows(next)
@@ -631,7 +646,7 @@ export default function EarningsBoardModal({
     return () => {
       cancelled = true
     }
-  }, [open, personnel, personnelKey, year, month])
+  }, [open, personnel, personnelKey, year, month, audience])
 
   useEffect(() => {
     const onMove = (e) => {
@@ -690,10 +705,10 @@ export default function EarningsBoardModal({
       const next = prev.slice()
       const [item] = next.splice(fromIdx, 1)
       next.splice(toIdx, 0, item)
-      saveOrder(next.map((r) => r.techId))
+      saveOrder(next.map((r) => r.techId), audience)
       return next
     })
-  }, [])
+  }, [audience])
 
   const reorderColumns = useCallback((fromKey, toKey) => {
     if (!fromKey || !toKey || fromKey === toKey) return
@@ -726,7 +741,7 @@ export default function EarningsBoardModal({
         toast.success(
           `Εξαγωγή Πίνακα Απολαβών · ${
             scope === 'year' ? year : `${MONTH_LABELS[Number(month) - 1] || month} ${year}`
-          } · ${rowCount} μόνιμοι · ${filename}`
+          } · ${rowCount} ${audience === 'temporary' ? 'έκτακτοι' : 'μόνιμοι'} · ${filename}`
         )
       } catch (err) {
         toast.error(err?.message || 'Αποτυχία εξαγωγής Πίνακα Απολαβών')
@@ -734,7 +749,7 @@ export default function EarningsBoardModal({
         setExporting(false)
       }
     },
-    [exporting, month, year, personnel, rows]
+    [exporting, month, year, personnel, rows, audience]
   )
 
   const monthLabel = MONTH_LABELS[Number(month) - 1] || String(month)
@@ -831,6 +846,7 @@ export default function EarningsBoardModal({
                   {monthLabel} {year}
                 </span>
               </button>
+              {audience === 'temporary' ? null : (
               <button
                 type="button"
                 onClick={() => confirmBoardExport('year')}
@@ -842,6 +858,7 @@ export default function EarningsBoardModal({
                   12 φύλλα · όλο το {year}
                 </span>
               </button>
+              )}
               <button
                 type="button"
                 onClick={() => setExportChoiceOpen(false)}
@@ -883,11 +900,11 @@ export default function EarningsBoardModal({
                 : 'truncate text-lg font-bold text-white sm:text-xl'
             }
           >
-            Πίνακας Απολαβών · {monthLabel} {year}
+            {audience === 'temporary' ? 'Πίνακας Εκτακτών' : 'Πίνακας Απολαβών'} · {monthLabel} {year}
           </h3>
           <p className="mt-0.5 text-xs text-slate-400">
             Σύρε γραμμές / headers για σειρά · τράβα άκρη στήλης για πλάτος ·{' '}
-            {rows.length} μόνιμοι
+            {rows.length} {audience === 'temporary' ? 'έκτακτοι' : 'μόνιμοι'}
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-2">

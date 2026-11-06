@@ -1,6 +1,7 @@
 /** Αποδοχές τεχνικού — map UI ↔ DIAS table `tech_earnings`. */
 
 import { parseElNumber } from './numberFormat'
+import { isLoanDisbursementRow, isLoanInstallmentRow } from './loanUi'
 
 export const EARNINGS_ROW_DEFS = [
   // Ομάδα 1 (με checkbox Δημιουργίας) — εμφανίζονται πρώτα μαζί με amount-only
@@ -11,9 +12,9 @@ export const EARNINGS_ROW_DEFS = [
   { key: 'holiday', label: 'Αργίες' },
   { key: 'night', label: 'Νυχτερινά' },
   { key: 'overnight', label: 'Διανυκτέρευση' },
-  { key: 'ticket', label: 'Ticket Restaurant' },
-  { key: 'insurance', label: 'Ασφάλιση' },
   { key: 'metro', label: 'Μετρό' },
+  { key: 'insurance', label: 'Ασφάλιση' },
+  { key: 'ticket', label: 'Ticket Restaurant' },
 ]
 
 /**
@@ -158,9 +159,10 @@ export function earningsKeyFromLedgerRow(row) {
 
 /**
  * Τέσσερα κουτάκια καθολικού, χωρίς προσαύξηση.
- * Υπόλοιπο Μισθού / Υπερωρίες × Λοιπά Χρ. / Τιμολόγιο Χρ.
+ * Σταθερό (checkbox Αποδοχών) → Μισθού. Αλλιώς → Υπερωριών.
+ * Εκτός: Ticket, δόση 94, εκταμίευση 95.
  */
-export function sumLedgerChargeBoxes(rows) {
+export function sumLedgerChargeBoxes(rows, earningsForm) {
   const out = {
     otherSalary: 0,
     otherOvertime: 0,
@@ -168,13 +170,17 @@ export function sumLedgerChargeBoxes(rows) {
     invoiceOvertime: 0,
   }
   for (const row of rows || []) {
+    if (isLoanDisbursementRow(row) || isLoanInstallmentRow(row)) continue
     const key = earningsKeyFromLedgerRow(row)
+    if (key === 'ticket') continue
     const other = Number(row?.other_debit) || 0
     const invoice = Number(row?.invoice_amount) || 0
-    if (key === 'bonus') {
+    if (!(other > 0) && !(invoice > 0)) continue
+    const fixed = key ? isFixedExpense(earningsForm, key) : false
+    if (fixed) {
       out.otherSalary += other
       out.invoiceSalary += invoice
-    } else if (key === 'overtime') {
+    } else {
       out.otherOvertime += other
       out.invoiceOvertime += invoice
     }
