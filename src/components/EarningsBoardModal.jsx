@@ -4,7 +4,7 @@ import toast from 'react-hot-toast'
 import { diasClient, fetchAllRows, formatSupabaseError } from '../lib/supabase'
 import { isTemporaryPersonnel } from '../lib/personnel'
 import { buildLedgerYearMatrix } from '../lib/techLedger'
-import { earningsFromDb } from '../lib/techEarnings'
+import { earningsFromDb, sumLedgerChargeBoxes } from '../lib/techEarnings'
 import { parseElNumber } from '../lib/numberFormat'
 import {
   formatEuro,
@@ -153,10 +153,38 @@ const METRIC_ROWS = [
     indent: true,
   },
   {
+    key: 'otherSalary',
+    label: 'Λοιπά Μισθού',
+    hint: 'Υπόλοιπο Μισθού · Λοιπά Χρ.',
+    format: (slot) => formatCell(slot?.otherSalary),
+    indent: true,
+  },
+  {
+    key: 'otherOvertime',
+    label: 'Λοιπά Υπερωριών',
+    hint: 'Υπερωρίες · Λοιπά Χρ.',
+    format: (slot) => formatCell(slot?.otherOvertime),
+    indent: true,
+  },
+  {
     key: 'other',
     label: 'Λοιπά',
     hint: 'Χρεώσεις',
     format: (slot) => formatCell(slot?.otherDebit),
+    indent: true,
+  },
+  {
+    key: 'invoiceSalary',
+    label: 'Τιμολόγιο Μισθού',
+    hint: 'Υπόλοιπο Μισθού · Τιμολόγιο Χρ.',
+    format: (slot) => formatCell(slot?.invoiceSalary),
+    indent: true,
+  },
+  {
+    key: 'invoiceOvertime',
+    label: 'Τιμολόγιο Υπερωριών',
+    hint: 'Υπερωρίες · Τιμολόγιο Χρ.',
+    format: (slot) => formatCell(slot?.invoiceOvertime),
     indent: true,
   },
   {
@@ -242,6 +270,23 @@ function defaultColOrder() {
   return METRIC_ROWS.map((m) => m.key)
 }
 
+/** Νέες στήλες αριστερά από Λοιπά / Τιμολόγιο, μόνο αν δεν τις έχει ήδη σύρει ο χρήστης. */
+function placeNewChargeCols(ordered, savedKeys) {
+  const saved = new Set(savedKeys || [])
+  let list = ordered.slice()
+  const place = (key, anchor) => {
+    if (saved.has(key)) return
+    list = list.filter((k) => k !== key)
+    const at = list.indexOf(anchor)
+    list.splice(at < 0 ? list.length : at, 0, key)
+  }
+  place('otherOvertime', 'other')
+  place('otherSalary', 'otherOvertime')
+  place('invoiceOvertime', 'invoice')
+  place('invoiceSalary', 'invoiceOvertime')
+  return list
+}
+
 function loadColOrder() {
   const defaults = defaultColOrder()
   try {
@@ -262,7 +307,7 @@ function loadColOrder() {
     for (const k of defaults) {
       if (!seen.has(k)) ordered.push(k)
     }
-    return ordered
+    return placeNewChargeCols(ordered, parsed.map(String))
   } catch {
     return defaults
   }
@@ -435,6 +480,7 @@ export async function fetchEarningsBoardRows({ personnel, year, month }) {
       earningsForm,
     })
     const slot = matrix.months[m - 1] || null
+    if (slot) Object.assign(slot, sumLedgerChargeBoxes(personLedger))
 
     return {
       person,
@@ -715,7 +761,11 @@ export default function EarningsBoardModal({
       insurance: 0,
       pi: 0,
       salaryDebit: 0,
+      otherSalary: 0,
+      otherOvertime: 0,
       otherDebit: 0,
+      invoiceSalary: 0,
+      invoiceOvertime: 0,
       invoiceDebit: 0,
     }
     for (const row of rows) {
@@ -728,7 +778,11 @@ export default function EarningsBoardModal({
       acc.insurance += Number(s.insurance) || 0
       acc.pi += Number(s.pi) || 0
       acc.salaryDebit += Number(s.salaryDebit) || 0
+      acc.otherSalary += Number(s.otherSalary) || 0
+      acc.otherOvertime += Number(s.otherOvertime) || 0
       acc.otherDebit += Number(s.otherDebit) || 0
+      acc.invoiceSalary += Number(s.invoiceSalary) || 0
+      acc.invoiceOvertime += Number(s.invoiceOvertime) || 0
       acc.invoiceDebit += Number(s.invoiceDebit) || 0
     }
     for (const k of Object.keys(acc)) acc[k] = round2(acc[k])
