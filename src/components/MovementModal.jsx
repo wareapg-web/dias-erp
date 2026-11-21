@@ -44,7 +44,9 @@ import { getLedgerCategoryPolicy } from '../lib/personnel'
 import {
   LOAN_DISBURSEMENT_TYPE_ID,
   LOAN_INSTALLMENT_TYPE_ID,
+  isLoanDisbursementRow,
   isLoanInstallmentRow,
+  loanDebitColumnsForCategory,
   loanSeriesNotesKey,
 } from '../lib/loanUi'
 
@@ -433,6 +435,11 @@ export default function MovementModal({
   const isEdit = Boolean(selectedRowData?.id)
   const rowSource = selectedRowData?.source || 'PAYROLL'
   const showLoanDelete = isEdit && isLoanInstallmentRow(selectedRowData)
+  /** Δόση (94) / Εκταμίευση (95) στο payment_entries: επιτρέπεται μόνο αλλαγή σημειώσεων. */
+  const isLoanNotesOnly =
+    isEdit &&
+    rowSource === 'PAYMENT' &&
+    (isLoanInstallmentRow(selectedRowData) || isLoanDisbursementRow(selectedRowData))
 
   const uiCategory = normalizeCategory(form.ledger_group)
 
@@ -1006,6 +1013,39 @@ export default function MovementModal({
     e.preventDefault()
     setSaveError(null)
 
+    // Γραμμές δανείου 94/95: ΜΟΝΟ notes — ποσά, στήλες, type_id, payment_type, ημερομηνίες, batch μένουν ως έχουν
+    if (isLoanNotesOnly) {
+      const loanNotes = form.notes?.trim() || ''
+      if (!loanNotes) {
+        const msg = 'Οι σημειώσεις γραμμής δανείου δεν μπορούν να μείνουν κενές'
+        setSaveError(msg)
+        toast.error(msg)
+        return
+      }
+      setSaving(true)
+      try {
+        const { error } = await diasClient
+          .from('payment_entries')
+          .update({ notes: loanNotes })
+          .eq('id', selectedRowData.id)
+          .in('type_id', [LOAN_INSTALLMENT_TYPE_ID, LOAN_DISBURSEMENT_TYPE_ID])
+        if (error) throw error
+        onSaved?.({ wasPayment: true })
+        toast.success('Οι σημειώσεις ενημερώθηκαν.')
+        onClose?.()
+      } catch (err) {
+        const msg =
+          formatSupabaseError(err, { table: 'payment_entries', clientLabel: 'DIAS ERP' }) ||
+          err.message ||
+          String(err)
+        setSaveError(msg)
+        toast.error(msg)
+      } finally {
+        setSaving(false)
+      }
+      return
+    }
+
     if (typesLoading || !selectedType || noAvailableTypes) {
       const msg = typesLoading
         ? 'Περίμενε φόρτωση τύπων...'
@@ -1172,13 +1212,23 @@ export default function MovementModal({
             effectiveType.description,
             effectiveGroup
           )
-          const credits = paymentCreditColumns({
-            amount,
-            paymentType,
-            postToInvoice: invoiceFlag,
-            typeId: effectiveType.id,
-            ledgerGroup: effectiveGroup,
-          })
+          // Χρέωση σε payment_entries (π.χ. εκταμίευση): στήλες χρέωσης — ποτέ μετατροπή σε πίστωση
+          const credits = postAsPayment
+            ? paymentCreditColumns({
+                amount,
+                paymentType,
+                postToInvoice: invoiceFlag,
+                typeId: effectiveType.id,
+                ledgerGroup: effectiveGroup,
+              })
+            : loanDebitColumnsForCategory(
+                invoiceFlag
+                  ? 'invoice'
+                  : normalizeCategory(form.ledger_group) === 'SALARY'
+                    ? 'salary'
+                    : 'other',
+                amount
+              )
           const { error } = await diasClient
             .from('payment_entries')
             .update({
@@ -1353,8 +1403,9 @@ export default function MovementModal({
   const displayError = saveError || externalError
   const typesBusy = typesLoading && types.length === 0
   const formDisabled = typesBusy || types.length === 0 || saving || deleting
-  const saveDisabled =
-    formDisabled || noAvailableTypes || !selectedType || selectedTypeId == null
+  const saveDisabled = isLoanNotesOnly
+    ? formDisabled
+    : formDisabled || noAvailableTypes || !selectedType || selectedTypeId == null
 
   const periodMonthNum =
     Number(presetMonth) ||
@@ -1433,7 +1484,7 @@ export default function MovementModal({
             </h3>
             <p className="text-[11px] text-slate-400">
               {isEdit
-                ? `Επεξεργασία · ${rowSource === 'PAYMENT' ? 'Πίστωση' : 'Χρέωση'} · ${selectedRowData?.entry_date ? new Date(selectedRowData.entry_date).toLocaleDateString('el-GR') : ''}`
+                ? `Επεξεργασία · ${rowSource === 'PAYMENT' && form.side !== 'DEBIT' ? 'Πίστωση' : 'Χρέωση'} · ${selectedRowData?.entry_date ? new Date(selectedRowData.entry_date).toLocaleDateString('el-GR') : ''}`
                 : shouldPostAsPayment(form.side)
                   ? 'Νέα πίστωση → payment_entries'
                   : 'Νέα χρέωση → payroll_entries'}
@@ -1466,7 +1517,17 @@ export default function MovementModal({
             </div>
           ) : null}
 
-          <fieldset disabled={formDisabled} className="space-y-2 disabled:opacity-60">
+          {isLoanNotesOnly ? (
+            <div className="rounded-lg border border-sky-500/30 bg-sky-500/10 px-2.5 py-1.5 text-[11px] text-sky-100">
+              Γραμμή δανείου: επιτρέπεται μόνο η αλλαγή σημειώσεων. Για αλλαγές ποσών ή δόσεων
+              χρησιμοποίησε την καρτέλα Δάνεια.
+            </div>
+          ) : null}
+
+          <fieldset
+            disabled={formDisabled || isLoanNotesOnly}
+            className="space-y-2 disabled:opacity-60"
+          >
             <div>
               <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
                 {greekCapsLabel('Ημερομηνία')}
@@ -1604,6 +1665,9 @@ export default function MovementModal({
               </div>
             )}
 
+          </fieldset>
+
+          <fieldset disabled={formDisabled} className="space-y-2 disabled:opacity-60">
             <div>
               <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
                 {greekCapsLabel('Σημειώσεις')}
